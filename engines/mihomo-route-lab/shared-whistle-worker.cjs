@@ -15,9 +15,15 @@ const settings = JSON.parse(process.env.NETVERGE_MITM_WORKER_CONFIG || '{}');
 delete process.env.NETVERGE_MITM_WORKER_CONFIG;
 const { dataDir, port, routes, hosts, targetPort } = settings;
 if (!path.isAbsolute(dataDir || '') || !Number.isInteger(port) || port < 1024 || port > 65535 ||
-    targetPort !== 443 || JSON.stringify(hosts) !== '["route.netverge.test"]' ||
-    !Array.isArray(routes) || routes.length < 2 || routes.length > 8) {
+    targetPort !== 443 || JSON.stringify(hosts) !== '["route.netverge.test"]') {
   throw new Error('Invalid shared route lab settings');
+}
+// Review 17 exercises 18 independent leases in one worker. Keep a bounded
+// fixture capacity without changing per-route authorization or isolation.
+const maxLabRoutes = 32;
+if (!Array.isArray(routes) || routes.length < 2 || routes.length > maxLabRoutes) {
+  const count = Array.isArray(routes) ? routes.length : 'not an array';
+  throw new Error('Invalid shared route lab count: ' + count + ' (expected 2..' + maxLabRoutes + ')');
 }
 const authority = 'route.netverge.test:443';
 const credentials = new Set();
