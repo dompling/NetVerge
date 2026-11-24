@@ -18,6 +18,7 @@ use std::{
 
 pub(crate) mod trust;
 pub(crate) mod settings;
+pub(crate) mod route_runtime;
 
 const PROXY: &str = "NETVERGE-MITM";
 const RETURN: &str = "netverge-return";
@@ -57,7 +58,7 @@ struct PublicState {
 // The status reader never waits for a worker spawn, process exit or network probe.
 pub(crate) fn status() -> MitmStatus {
     let current = crate::core::CoreManager::global().current_core_readiness_generation();
-    status_from_snapshot(&PUBLIC_STATE.lock(), current, development_requested())
+    status_from_snapshot(&PUBLIC_STATE.lock(), current, development_requested() || route_runtime::requested())
 }
 
 fn status_from_snapshot(snapshot: &PublicState, current: Option<u64>, development_requested: bool) -> MitmStatus {
@@ -343,18 +344,22 @@ fn stop(child: &mut Child) {
 }
 
 fn start_worker(settings: &Settings, data: &Path, password: &str, forward_password: &str, health_secret: &str) -> Result<(Child, MitmPublicCa)> {
+    let payload = serde_json::json!({
+        "dataDir": data, "port": settings.port, "returnPort": settings.return_port,
+        "hosts": settings.hosts, "password": password, "forwardPassword": forward_password, "targetPort": 443, "healthSecret": health_secret
+    });
+    start_worker_payload(&settings.node, &settings.worker, data, &payload)
+}
+
+fn start_worker_payload(node: &Path, worker: &Path, data: &Path, payload: &serde_json::Value) -> Result<(Child, MitmPublicCa)> {
     std::fs::create_dir_all(data)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(data, std::fs::Permissions::from_mode(0o700))?;
     }
-    let payload = serde_json::json!({
-        "dataDir": data, "port": settings.port, "returnPort": settings.return_port,
-        "hosts": settings.hosts, "password": password, "forwardPassword": forward_password, "targetPort": 443, "healthSecret": health_secret
-    });
-    let mut command = Command::new(&settings.node);
-    command.arg(&settings.worker).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut command = Command::new(node);
+    command.arg(worker).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -534,7 +539,13 @@ pub(crate) async fn record_applied_runtime(generation: Option<u64>) {
         session.set_health(Health::Checking);
         true
     }).await.unwrap_or(false);
-    if activated && !MONITOR_STARTED.swap(true, Ordering::AcqRel) {
+    if activated {
+        start_monitor();
+    }
+}
+
+fn start_monitor() {
+    if !MONITOR_STARTED.swap(true, Ordering::AcqRel) {
         let _ = tokio::spawn(monitor_worker());
     }
 }
@@ -558,6 +569,9 @@ async fn monitor_worker() {
         let Some(generation) = manager.current_core_readiness_generation() else {
             continue;
         };
+        if route_runtime::monitor(generation).await {
+            continue;
+        }
         let Ok(data) = crate::utils::dirs::app_home_dir().map(|dir| dir.join("netverge-mitm-dev")) else {
             continue;
         };
@@ -648,6 +662,7 @@ fn recover_session(session: &mut Session, generation: u64, data: &Path) {
 
 // Call only after confirmed core stop or application of a non-MITM runtime.
 pub(crate) async fn stop_worker() {
+    route_runtime::stop_worker().await;
     if !development_requested() {
         return;
     }

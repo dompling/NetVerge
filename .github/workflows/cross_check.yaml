@@ -9,7 +9,7 @@ on:
         default: false
         required: false
   push:
-    branches: [feat/whistle-integration]
+    branches: [feat/whistle-integration, feat/mitm-route-integration]
     paths:
       - 'src-tauri/**'
       - 'src/services/bindings.ts'
@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.include_linux && '[{"os":"macos-latest","target":"aarch64-apple-darwin"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]' || '[{"os":"macos-latest","target":"aarch64-apple-darwin"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc"}]') }}
+        include: ${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/feat/mitm-route-integration' && '[{"os":"windows-latest","target":"x86_64-pc-windows-msvc"}]' || inputs.include_linux && '[{"os":"macos-latest","target":"aarch64-apple-darwin"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]' || '[{"os":"macos-latest","target":"aarch64-apple-darwin"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout Repository
@@ -86,7 +86,7 @@ jobs:
           key: '${{ matrix.os }}-${{ matrix.target }}'
           workspaces: |
             . -> target
-          save-if: ${{ github.ref == 'refs/heads/feat/whistle-integration' }}
+          save-if: ${{ github.ref == 'refs/heads/feat/whistle-integration' || github.ref == 'refs/heads/feat/mitm-route-integration' }}
           cache-all-crates: true
           cache-workspace-crates: false
 

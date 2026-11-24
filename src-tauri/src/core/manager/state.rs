@@ -189,6 +189,7 @@ impl CoreManager {
         let app_handle = handle::Handle::app_handle();
         let clash_core = Config::verge().await.latest_arc().get_valid_clash_core();
         let config_dir = dirs::app_home_dir()?;
+        let route_launch = crate::core::mitm::route_runtime::prepare_sidecar().await?;
         #[cfg(unix)]
         discard_unwritable_core_cache(&config_dir);
 
@@ -215,6 +216,12 @@ impl CoreManager {
             "LISTEN_NAMEDPIPE_SDDL",
             crate::core::owner_identity::current_user_pipe_sddl()?,
         );
+        let command = if let Some(launch) = route_launch.as_ref() {
+            command.env("NETVERGE_CORE_CONTROL_PORT", launch.port().to_string())
+                .env("NETVERGE_CORE_CONTROL_SECRET", launch.secret())
+        } else {
+            command
+        };
         let (mut rx, child) = command.spawn().map_err(|error| {
             anyhow::anyhow!(
                 "failed to start sidecar core {clash_core:?} with config {} and data directory {}: {error:#}",
@@ -307,6 +314,13 @@ impl CoreManager {
             };
         }
 
+        if let Some(launch) = route_launch {
+            if let Err(error) = crate::core::mitm::route_runtime::activate(launch, core_readiness_generation).await {
+                self.core_stopped();
+                let _ = child.kill();
+                return Err(error);
+            }
+        }
         #[cfg(target_os = "windows")]
         self.set_job_handle(Some(job));
         self.set_running_child_sidecar(child);
