@@ -58,7 +58,9 @@ type nvLabTypeTrace interface {
 
 func nvLabTypedEligible(proxy C.Proxy, conn C.Conn) bool {
 	if proxy == nil || conn == nil { return false }
-	traced, ok := conn.(nvLabTypeTrace)
+	// DIRECT is wrapped by the upstream loopback close callback. Inspect
+	// its evidence without replacing the connection or skipping callbacks.
+	traced, ok := N.FindUpstream[nvLabTypeTrace](conn, nil)
 	if !ok || N.NeedHandshake(conn) { return false }
 	types := traced.NetVergeLabAdapterTypes()
 	if len(types) == 0 || len(types) != len(conn.Chains()) || types[len(types)-1] != proxy.Type() { return false }
