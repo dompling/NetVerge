@@ -2,8 +2,14 @@ name: NetVerge original route lease laboratory
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to verify
+        type: choice
+        default: windows-latest
+        options: [windows-latest, macos-15, macos-15-intel, all]
   push:
-    branches: [feat/whistle-integration]
+    branches: [feat/whistle-integration, feat/mitm-dynamic-group-lab]
     paths:
       - 'engines/mihomo-route-lab/**'
       - 'engines/whistle/mitm-worker.cjs'
@@ -23,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-15, macos-15-intel]
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.platform == 'all' && '["windows-latest","macos-15","macos-15-intel"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.platform) || '["windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
