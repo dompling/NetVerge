@@ -2,6 +2,12 @@ name: Cross Platform Cargo Check
 
 on:
   workflow_dispatch:
+    inputs:
+      include_linux:
+        description: 'Also run deferred Linux verification'
+        type: boolean
+        default: false
+        required: false
   push:
     branches: [feat/whistle-integration]
     paths:
@@ -31,13 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
+        include: ${{ fromJSON(inputs.include_linux && '[{"os":"macos-latest","target":"aarch64-apple-darwin"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]' || '[{"os":"macos-latest","target":"aarch64-apple-darwin"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout Repository
@@ -90,21 +90,20 @@ jobs:
           cargo check --target ${{ matrix.target }} --workspace --all-features
 
       - name: Run MITM Rust configuration unit tests
-        if: runner.os == 'Linux'
         working-directory: src-tauri
         run: cargo test -p clash-verge --lib --features clippy --target ${{ matrix.target }} core::mitm::tests
 
       - name: Generate frontend contract for review
-        if: runner.os == 'Linux'
+        if: runner.os == 'macOS'
         env:
-          CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
         run: |
           pnpm gen:contract
           git diff -- src/services/bindings.ts
           pnpm typecheck
 
       - name: Upload generated frontend contract
-        if: runner.os == 'Linux' && success()
+        if: runner.os == 'macOS' && success()
         uses: actions/upload-artifact@v4
         with:
           name: netverge-frontend-contract

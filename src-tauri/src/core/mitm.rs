@@ -729,7 +729,7 @@ mod tests {
         assert_ne!(health_proof(secret, "forward-response", nonce), health_proof("another", "forward-response", nonce));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn supervisor_restarts_exited_child_only_for_active_generation() -> Result<()> {
         // Exercise the real process spawning and recovery path, without TUN or
@@ -742,8 +742,13 @@ mod tests {
         let script = data.join("worker.cjs");
         let cert_path = data.join("fixture.der");
         let key_path = data.join("fixture.key");
+        // Use a config file rather than OpenSSL's newer -addext flag:
+        // macOS may provide LibreSSL instead of OpenSSL.
+        let cert_config = data.join("fixture.cnf");
+        std::fs::write(&cert_config, "[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=ca_ext\n[dn]\nCN=NetVerge test CA\n[ca_ext]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n")?;
         let output = Command::new("openssl")
-            .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=NetVerge test CA", "-addext", "basicConstraints=critical,CA:TRUE", "-outform", "DER", "-out"])
+            .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-config"])
+            .arg(&cert_config).args(["-outform", "DER", "-out"])
             .arg(&cert_path).arg("-keyout").arg(&key_path).output()?;
         ensure!(output.status.success(), "OpenSSL test certificate generation failed");
         let encoded = STANDARD.encode(std::fs::read(&cert_path)?);

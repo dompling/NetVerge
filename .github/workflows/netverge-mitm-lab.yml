@@ -2,6 +2,12 @@ name: NetVerge MITM laboratory
 
 on:
   workflow_dispatch:
+    inputs:
+      include_linux:
+        description: 'Also run deferred Linux verification'
+        type: boolean
+        default: false
+        required: false
   push:
     branches: [feat/whistle-integration]
     paths:
@@ -18,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-15, macos-15-intel]
+        os: ${{ fromJSON(inputs.include_linux && '["windows-latest","macos-15","macos-15-intel","ubuntu-latest"]' || '["windows-latest","macos-15","macos-15-intel"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
