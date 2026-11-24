@@ -149,7 +149,8 @@ async fn restore_backup_archive(path: PathBuf) -> Result<()> {
         let mut zip = zip::ZipArchive::new(file)?;
         for index in 0..zip.len() {
             let entry = zip.by_index(index)?;
-            crate::core::mitm::validate_backup_entry(entry.name(), entry.unix_mode())?;
+            let name = entry.name()?;
+            crate::core::mitm::validate_backup_entry(name.as_ref(), entry.unix_mode())?;
         }
         zip.extract(&home_dir)?;
         Ok(())
