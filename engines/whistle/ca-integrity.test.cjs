@@ -24,6 +24,32 @@ function makeRoot(serial) {
   return { pem: forge.pki.certificateToPem(cert), key: forge.pki.privateKeyToPem(keys.privateKey) };
 }
 
+test('path and descriptor report the same full-width identity on the supported runtime', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'netverge-stat-'));
+  try {
+    const file = path.join(dir, 'fixture.txt');
+    fs.writeFileSync(file, 'public test fixture');
+    const fd = fs.openSync(file, 'r');
+    try {
+      const byPath = fs.lstatSync(file, { bigint: true });
+      const byHandle = fs.fstatSync(fd, { bigint: true });
+      const runtime = 'Node ' + process.version + ', libuv ' + process.versions.uv;
+      console.log(runtime);
+      assert.equal(byPath.dev, byHandle.dev, 'volume identity mismatch: ' + runtime);
+      assert.notEqual(byHandle.ino, 0n, 'missing file identity: ' + runtime);
+      assert.equal(byPath.ino, byHandle.ino, 'file identity mismatch: ' + runtime);
+      assert.equal(byPath.nlink, 1n);
+      assert.equal(byHandle.nlink, 1n);
+      assert.equal(byPath.mtimeNs, byHandle.mtimeNs);
+      assert.equal(byPath.ctimeNs, byHandle.ctimeNs);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('CA custody validation fails closed on wrong keys, unsafe files and permissions', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'netverge-ca-integrity-'));
   try {

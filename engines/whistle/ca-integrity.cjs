@@ -14,32 +14,47 @@ function privateDirectory(dir) {
   }
 }
 
+// Keep full-width file identities: NTFS file IDs may exceed Number's
+// exact integer range. Do not waive volume or inode checks on Windows.
+// libuv < 1.51 has a known Windows path/handle volume-serial mismatch.
+function sameFileSnapshot(a, b) {
+  return a.isFile() && b.isFile() && a.dev === b.dev && a.ino !== 0n &&
+    a.ino === b.ino && a.nlink === 1n && b.nlink === 1n &&
+    a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+}
+
+function privateKeyStat(stat) {
+  return !unix || (stat.uid === BigInt(process.getuid()) && (stat.mode & 0o077n) === 0n);
+}
+
 function readSingleFile(file, isKey) {
-  const initial = fs.lstatSync(file);
-  if (!initial.isFile() || initial.nlink !== 1 || initial.size < 1 || initial.size > MAX_FILE ||
-      fs.realpathSync(file) !== file ||
-      (unix && isKey && (initial.uid !== process.getuid() || (initial.mode & 0o077) !== 0))) {
+  const initial = fs.lstatSync(file, { bigint: true });
+  if (!initial.isFile() || initial.nlink !== 1n || initial.size < 1n ||
+      initial.size > BigInt(MAX_FILE) || fs.realpathSync(file) !== file ||
+      (isKey && !privateKeyStat(initial))) {
     throw new Error('Unsafe CA file');
   }
   const fd = fs.openSync(file, fs.constants.O_RDONLY | (unix ? fs.constants.O_NOFOLLOW : 0));
   let bytes;
   try {
-    const opened = fs.fstatSync(fd);
-    if (!opened.isFile() || opened.dev !== initial.dev || opened.ino !== initial.ino ||
-        opened.nlink !== 1 || opened.size !== initial.size ||
-        (unix && isKey && (opened.uid !== process.getuid() || (opened.mode & 0o077) !== 0))) {
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (!sameFileSnapshot(initial, opened) || (isKey && !privateKeyStat(opened))) {
       throw new Error('CA file changed while opening');
     }
-    bytes = Buffer.alloc(opened.size + 1);
+    // Size was bounded before conversion to Number.
+    const size = Number(opened.size);
+    bytes = Buffer.alloc(size + 1);
     let offset = 0;
     while (offset < bytes.length) {
       const count = fs.readSync(fd, bytes, offset, bytes.length - offset, null);
       if (count === 0) break;
       offset += count;
     }
-    const final = fs.fstatSync(fd);
-    if (offset !== opened.size || final.size !== opened.size || final.nlink !== 1 ||
-        (unix && isKey && (final.uid !== process.getuid() || (final.mode & 0o077) !== 0))) {
+    const final = fs.fstatSync(fd, { bigint: true });
+    const current = fs.lstatSync(file, { bigint: true });
+    if (offset !== size || !sameFileSnapshot(opened, final) ||
+        !sameFileSnapshot(final, current) || fs.realpathSync(file) !== file ||
+        (isKey && (!privateKeyStat(final) || !privateKeyStat(current)))) {
       throw new Error('CA file changed while reading');
     }
     return bytes.subarray(0, offset);
