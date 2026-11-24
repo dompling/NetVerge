@@ -46,3 +46,6 @@
 ## 5. 当前状态
 
 仅更新范围决策。已有 engines/whistle 原型仍未实测，不能作为 MITM 已完成的证据。不合并 dev、不发布、不提前开发其他功能。
+
+
+> Superseding product decision: [review 12](mitm-desktop-review-12.md). Fixed-return topology is historical lab only; original routing inheritance is mandatory before desktop activation.

@@ -807,6 +807,11 @@
       "none": "无",
       "restartNote": "配置修改仅在完全重启应用后生效。TUN、规则模式、fake-IP DNS 和证书信任仍需分别满足。",
       "currentNotProof": "启动配置不代表流量已经被拦截。"
-    }
+    },
+    "routingPaused": "正在修正原有分流规则继承机制，HTTPS 解密暂不可启用。原有分流保持不变，可先编辑域名列表，重启也不会开启拦截。",
+    "addHost": "添加域名",
+    "editHost": "编辑域名",
+    "removeHost": "删除域名",
+    "confirmHost": "确定"
   }
 }

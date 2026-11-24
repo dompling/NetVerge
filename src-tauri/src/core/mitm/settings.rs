@@ -106,7 +106,9 @@ fn load_boot() -> Result<Boot> {
         saved_path: crate::utils::dirs::app_home_dir()?.join(FILE_NAME),
     };
     boot.active.mitm = read_saved(&boot)?;
-    boot.active.clone().into_settings()?;
+    if super::ROUTING_INHERITANCE_READY {
+        boot.active.clone().into_settings()?;
+    }
     Ok(boot)
 }
 
@@ -161,8 +163,24 @@ fn view(boot: &Boot, saved: MitmSettings, policies: Vec<String>) -> Result<MitmC
     })
 }
 
+// The previous experimental setting may still be on disk. Never display its
+// enable or fixed policy as an active product setting while routing is paused.
+// Keep the revision of the actual bytes for conflict checks and host migration.
+fn product_view(boot: &Boot, saved: MitmSettings, names: Vec<String>) -> Result<MitmConfigView> {
+    let mut result = view(boot, saved, names)?;
+    if !super::ROUTING_INHERITANCE_READY {
+        for selection in [&mut result.active, &mut result.saved].into_iter().flatten() {
+            selection.enable = false;
+            selection.policy = None;
+        }
+        result.policies.clear();
+        result.restart_required = false;
+    }
+    Ok(result)
+}
+
 pub(crate) async fn inspect() -> Result<MitmConfigView> {
-    if !cfg!(any(windows, target_os = "macos")) || !super::development_requested() {
+    if !cfg!(any(windows, target_os = "macos")) || !super::bootstrap_requested() {
         return Ok(MitmConfigView {
             available: false, active: None, saved: None, revision: None,
             restart_required: false, policies: Vec::new(),
@@ -171,7 +189,7 @@ pub(crate) async fn inspect() -> Result<MitmConfigView> {
     let names = policies().await;
     tokio::task::spawn_blocking(move || {
         let boot = boot()?;
-        view(boot, read_saved(boot)?, names)
+        product_view(boot, read_saved(boot)?, names)
     }).await?
 }
 
@@ -188,8 +206,10 @@ fn check_candidate(boot: &Boot, candidate: &MitmSettings, names: &[String]) -> R
 }
 
 pub(crate) async fn save(expected_revision: String, candidate: MitmSettings) -> Result<Option<MitmConfigView>> {
-    ensure!(cfg!(any(windows, target_os = "macos")) && super::development_requested(),
+    ensure!(cfg!(any(windows, target_os = "macos")) && super::bootstrap_requested(),
         "MITM developer bootstrap is not configured on this platform");
+    ensure!(super::ROUTING_INHERITANCE_READY || (!candidate.enable && candidate.policy.is_none()),
+        "MITM activation and fixed return policies are disabled until original routing inheritance is verified");
     let _permit = SAVE.try_acquire().context("MITM settings save already running")?;
     let (boot, previous) = tokio::task::spawn_blocking(|| -> Result<_> {
         let boot = boot()?;
@@ -200,7 +220,7 @@ pub(crate) async fn save(expected_revision: String, candidate: MitmSettings) -> 
     let names = policies().await;
     check_candidate(boot, &candidate, &names)?;
     if previous == candidate {
-        return Ok(Some(view(boot, previous, names)?));
+        return Ok(Some(product_view(boot, previous, names)?));
     }
     // Confirmation is native, includes the actual scope, and is required for
     // every change. It cannot be bypassed by a frontend boolean.
@@ -210,6 +230,7 @@ pub(crate) async fn save(expected_revision: String, candidate: MitmSettings) -> 
         candidate.hostname.join(", "),
         candidate.policy.as_deref().unwrap_or("(none)"),
     );
+    if super::ROUTING_INHERITANCE_READY {
     let answer = rfd::AsyncMessageDialog::new()
         .set_title("Save NetVerge MITM configuration")
         .set_description(description)
@@ -218,6 +239,7 @@ pub(crate) async fn save(expected_revision: String, candidate: MitmSettings) -> 
         .show().await;
     if answer != rfd::MessageDialogResult::Ok {
         return Ok(None);
+    }
     }
     let names = policies().await;
     check_candidate(boot, &candidate, &names)?;
@@ -230,7 +252,7 @@ pub(crate) async fn save(expected_revision: String, candidate: MitmSettings) -> 
     })?;
     ensure!(yaml.len() as u64 <= MAX_YAML, "MITM settings exceed size limit");
     crate::utils::help::save_yaml_str_private(&boot.saved_path, &yaml, Some("# NetVerge local MITM configuration; apply on next application start")).await?;
-    Ok(Some(view(boot, candidate, names)?))
+    Ok(Some(product_view(boot, candidate, names)?))
 }
 
 #[cfg(test)]
@@ -287,6 +309,23 @@ mod tests {
         assert_eq!(wire["saved"]["enable"], true);
         assert!(wire.get("runtime").is_none());
         assert!(wire.get("savedPath").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn paused_product_view_never_exposes_legacy_enable_or_policy() -> Result<()> {
+        let bootstrap: LocalConfig = serde_yaml_ng::from_str("mitm: {enable: true, hostname: [a.test], policy: DIRECT}")?;
+        let boot = Boot { active: bootstrap.clone(), bootstrap, bootstrap_sha256: "first".into(), saved_path: PathBuf::new() };
+        let saved = boot.bootstrap.mitm.clone();
+        let expected = revision(&boot.bootstrap_sha256, &saved)?;
+        let result = product_view(&boot, saved, vec!["DIRECT".into()])?;
+        assert!(!result.active.as_ref().unwrap().enable);
+        assert!(!result.saved.as_ref().unwrap().enable);
+        assert_eq!(result.saved.as_ref().unwrap().hostname, vec!["a.test"]);
+        assert!(result.saved.as_ref().unwrap().policy.is_none());
+        assert!(result.policies.is_empty());
+        assert!(!result.restart_required);
+        assert_eq!(result.revision.as_deref(), Some(expected.as_str()));
         Ok(())
     }
 

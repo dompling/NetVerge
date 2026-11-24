@@ -807,6 +807,11 @@
       "none": "None",
       "restartNote": "Configuration changes take effect only after a full application restart. TUN, rule mode, fake-IP DNS and certificate trust are separate prerequisites.",
       "currentNotProof": "Startup configuration is not proof that traffic is being intercepted."
-    }
+    },
+    "routingPaused": "HTTPS decryption is temporarily unavailable while original routing inheritance is being implemented. Existing routing is unchanged. Hostnames can be prepared; no restart activates interception.",
+    "addHost": "Add hostname",
+    "editHost": "Edit hostname",
+    "removeHost": "Remove hostname",
+    "confirmHost": "Confirm"
   }
 }

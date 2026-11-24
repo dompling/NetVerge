@@ -1,6 +1,6 @@
 import { RefreshRounded } from '@mui/icons-material'
 import {
-  Alert, Box, Button, Card, Chip, Divider, Grid, Stack, Typography,
+  Alert, Box, Button, Card, Chip, Divider, Grid, Stack, Switch, Typography,
 } from '@mui/material'
 import { useLockFn } from 'ahooks'
 import { useState } from 'react'
@@ -69,7 +69,10 @@ const MitmPage = () => {
   const mismatch = hasMitmIdentityMismatch(data)
   return (
     <BasePage
-      title={t('settings.mitm.title')}
+      title={<Stack direction="row" sx={{ alignItems: 'center', gap: 1 }}>
+        <Typography component="span" variant="h6" sx={{ fontWeight: 700 }}>{t('settings.mitm.title')}</Typography>
+        <Switch checked={false} disabled slotProps={{ input: { 'aria-label': t('settings.mitm.config.enable') } }} />
+      </Stack>}
       header={
         <Button size="small" variant="outlined" startIcon={<RefreshRounded />}
           disabled={busy || isValidating} onClick={() => { void mutate(); void revalidate(MITM_CONFIG_KEY) }}>
@@ -79,38 +82,16 @@ const MitmPage = () => {
     >
       <Stack spacing={1.5}>
         <Typography variant="body2" color="text.secondary">{t('settings.mitm.summary')}</Typography>
-        <Alert severity="info">{t('settings.mitm.experimental')}</Alert>
-        <MitmConfigEditor />
+        <Alert severity="info">{t('settings.mitm.routingPaused')}</Alert>
         {error && <Alert severity="error">{t('settings.mitm.error')}</Alert>}
         {isValidating && <Typography variant="caption" role="status">{t('settings.mitm.loading')}</Typography>}
-        {status && !error && (
-          <>
-            {!status.developmentRequested && <Alert severity="info">{t('settings.mitm.inactive')}</Alert>}
-            <Grid container spacing={1.5} columns={12}>
-              <Grid size={{ xs: 12, md: 5 }}>
-                <Card variant="outlined" sx={{ p: 2, height: '100%' }}>
-                  <Stack spacing={1.5}>
-                    <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>{t('settings.mitm.health')}</Typography>
-                      <Chip size="small" label={t(`settings.mitm.states.${status.state}`)} />
-                    </Stack>
-                    <Divider />
-                    <Stack direction="row" sx={{ justifyContent: 'space-between', gap: 1 }}>
-                      <Typography variant="body2" color="text.secondary">{t('settings.mitm.generation')}</Typography>
-                      <Typography variant="body2">{status.coreGenerationCurrent ? t('settings.mitm.yes') : t('settings.mitm.no')}</Typography>
-                    </Stack>
-                    <Stack direction="row" sx={{ justifyContent: 'space-between', gap: 1 }}>
-                      <Typography variant="body2" color="text.secondary">{t('settings.mitm.recovery')}</Typography>
-                      <Typography variant="body2">{status.recoveryAttempts} / {status.maxRecoveryAttempts}</Typography>
-                    </Stack>
-                    <Typography variant="caption" color="text.secondary">{t('settings.mitm.localOnly')}</Typography>
-                  </Stack>
-                </Card>
-              </Grid>
-              <Grid size={{ xs: 12, md: 7 }}>
+        <Grid container spacing={1.5} columns={12}>
+          {status && !error && (
+              <Grid size={{ xs: 12, md: 6 }}>
                 <Card variant="outlined" sx={{ p: 2, height: '100%' }}>
                   <Stack spacing={1.5}>
                     <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>{t('settings.mitm.certificate')}</Typography>
+                    <Chip size="small" sx={{ alignSelf: 'flex-start' }} label={t(`settings.mitm.states.${status.state}`)} />
                     <Divider />
                     {status.caFingerprint ? (
                       <Box>
@@ -134,9 +115,9 @@ const MitmPage = () => {
                   </Stack>
                 </Card>
               </Grid>
-            </Grid>
-          </>
-        )}
+          )}
+          <Grid size={{ xs: 12, md: 6 }}><MitmConfigEditor /></Grid>
+        </Grid>
       </Stack>
     </BasePage>
   )

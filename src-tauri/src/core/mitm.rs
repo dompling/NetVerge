@@ -417,8 +417,17 @@ fn plan_overlay(mut config: Mapping, settings: Option<Settings>, state: &mut Opt
     Ok(config)
 }
 
-pub(crate) fn development_requested() -> bool {
+// Product gate: the legacy fixed-return laboratory changes rule semantics.
+// Do not expose it through desktop startup, reload or mode guards. Reopen
+// only after the core's original routing decision is preserved end to end.
+pub(super) const ROUTING_INHERITANCE_READY: bool = false;
+
+pub(super) fn bootstrap_requested() -> bool {
     std::env::var_os("NETVERGE_MITM_DEV_CONFIG").is_some()
+}
+
+pub(crate) fn development_requested() -> bool {
+    ROUTING_INHERITANCE_READY && bootstrap_requested()
 }
 
 pub(crate) async fn prepare(mut config: Mapping) -> Result<Mapping> {
@@ -473,6 +482,10 @@ fn validate_runtime(config: &Mapping, session: &Session) -> Result<()> {
 
 pub(crate) async fn ensure_runtime_worker() -> Result<()> {
     if !development_requested() {
+        // Never start a stale generated fixed-return overlay when the route
+        // inheritance gate is closed, even if a previous runtime is reused.
+        let runtime = crate::config::Config::runtime().await.latest_arc();
+        ensure!(!runtime.config.as_ref().is_some_and(runtime_has_overlay), "stale MITM overlay; regenerate normal profile before starting the core");
         return Ok(());
     }
     let runtime = crate::config::Config::runtime().await.latest_arc();
@@ -652,6 +665,12 @@ pub(crate) async fn stop_worker() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_gate_disables_fixed_return_experiment() {
+        assert!(!ROUTING_INHERITANCE_READY);
+        assert!(!development_requested());
+    }
 
     #[test]
     fn overlay_preserves_original_rules_and_scopes_interception() -> Result<()> {

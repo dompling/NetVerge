@@ -904,6 +904,7 @@ export interface TranslationResources {
         }
       }
       mitm: {
+        addHost: string
         assessments: {
           explicitly_distrusted: string
           no_certificate: string
@@ -950,6 +951,8 @@ export interface TranslationResources {
           title: string
           tooManyHosts: string
         }
+        confirmHost: string
+        editHost: string
         error: string
         experimental: string
         export: string
@@ -967,6 +970,8 @@ export interface TranslationResources {
         noCa: string
         recovery: string
         refresh: string
+        removeHost: string
+        routingPaused: string
         states: {
           checking: string
           degraded: string
