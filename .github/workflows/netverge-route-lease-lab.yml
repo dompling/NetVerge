@@ -9,7 +9,7 @@ on:
         default: windows-latest
         options: [windows-latest, macos-15, macos-15-intel, all]
   push:
-    branches: [feat/whistle-integration, feat/mitm-dynamic-group-lab]
+    branches: [feat/whistle-integration, feat/mitm-dynamic-group-lab, feat/mitm-lazy-handshake-lab]
     paths:
       - 'engines/mihomo-route-lab/**'
       - 'engines/whistle/mitm-worker.cjs'
@@ -63,6 +63,8 @@ jobs:
           cp netverge/engines/mihomo-route-lab/netverge_route_whistle_lab_test.go mihomo-source/tunnel/netverge_route_whistle_lab_test.go
           cp netverge/engines/mihomo-route-lab/netverge_route_shared_whistle_lab_test.go mihomo-source/tunnel/netverge_route_shared_whistle_lab_test.go
           cp netverge/engines/mihomo-route-lab/netverge_route_dynamic_groups_lab_test.go mihomo-source/tunnel/netverge_route_dynamic_groups_lab_test.go
+          cp netverge/engines/mihomo-route-lab/netverge_route_lazy_lab_test.go mihomo-source/tunnel/netverge_route_lazy_lab_test.go
+          gofmt -w mihomo-source/tunnel/netverge_route_lazy_lab_test.go
           gofmt -w mihomo-source/tunnel/netverge_route_lease_lab_test.go mihomo-source/tunnel/netverge_route_lease_export_test.go mihomo-source/tunnel/netverge_route_whistle_lab_test.go mihomo-source/tunnel/netverge_route_shared_whistle_lab_test.go mihomo-source/tunnel/netverge_route_dynamic_groups_lab_test.go
       - name: Verify original route and single-use CONNECT lease
         working-directory: mihomo-source
@@ -84,3 +86,10 @@ jobs:
           NETVERGE_ROUTE_LAB_WORKER: ${{ github.workspace }}/netverge/engines/whistle/mitm-worker.cjs
           NETVERGE_ROUTE_LAB_SHARED_WORKER: ${{ github.workspace }}/netverge/engines/mihomo-route-lab/shared-whistle-worker.cjs
         run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseDynamicGroups$' -count=1 -timeout=5m -v
+
+      - name: Verify lazy first-write handoff and failure containment
+        working-directory: mihomo-source
+        env:
+          NETVERGE_ROUTE_LAB_WORKER: ${{ github.workspace }}/netverge/engines/whistle/mitm-worker.cjs
+          NETVERGE_ROUTE_LAB_SHARED_WORKER: ${{ github.workspace }}/netverge/engines/mihomo-route-lab/shared-whistle-worker.cjs
+        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseLazyFirstWrite$' -count=1 -timeout=5m -v
