@@ -903,6 +903,57 @@ export interface TranslationResources {
           }
         }
       }
+      mitm: {
+        assessments: {
+          explicitly_distrusted: string
+          no_certificate: string
+          not_found_in_checked_stores: string
+          present_unverified: string
+          root_policy_accepted: string
+          root_policy_rejected: string
+          unknown: string
+          unsupported: string
+        }
+        certificate: string
+        close: string
+        error: string
+        experimental: string
+        export: string
+        exported: string
+        fingerprint: string
+        generation: string
+        health: string
+        identityChanged: string
+        inactive: string
+        loading: string
+        localOnly: string
+        manage: string
+        manual: string
+        no: string
+        noCa: string
+        recovery: string
+        refresh: string
+        states: {
+          checking: string
+          degraded: string
+          failed: string
+          inactive: string
+          local_link_healthy: string
+          recovering: string
+        }
+        stores: {
+          absent: string
+          present: string
+          unknown: string
+          unsupported: string
+        }
+        summary: string
+        systemStore: string
+        title: string
+        trust: string
+        userStore: string
+        yes: string
+      }
       modals: {
         backup: {
           actions: {

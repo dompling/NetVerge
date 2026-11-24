@@ -723,5 +723,56 @@
     "back": "Back to results",
     "results": "Search results",
     "empty": "No settings found"
+  },
+  "mitm": {
+    "title": "MITM",
+    "summary": "Experimental HTTPS inspection and certificates",
+    "experimental": "Experimental local configuration only. Uses Clash YAML and selected domains; no system trust or interception setting is changed here.",
+    "inactive": "Not configured",
+    "health": "Local link",
+    "generation": "Current core generation",
+    "recovery": "Recovery attempts",
+    "certificate": "CA certificate",
+    "fingerprint": "SHA-256 fingerprint",
+    "userStore": "User certificate store / trust settings",
+    "systemStore": "System certificate store / trust settings",
+    "trust": "Trust assessment",
+    "refresh": "Refresh",
+    "export": "Export CA",
+    "manage": "Manage certificates",
+    "close": "Close",
+    "loading": "Checking status…",
+    "error": "Unable to read MITM status. Refresh to retry.",
+    "identityChanged": "The certificate changed during the status check. Refresh before managing it.",
+    "noCa": "No verified CA available. Configure the local development worker and start MITM first.",
+    "localOnly": "Local link health does not verify external HTTPS, TUN interception, or browser trust.",
+    "manual": "Install or remove the exact CA manually in the native certificate manager. NetVerge never changes trust automatically.",
+    "exported": "Public CA exported.",
+    "yes": "Current",
+    "no": "Not current",
+    "states": {
+      "inactive": "Inactive",
+      "checking": "Checking",
+      "local_link_healthy": "Local link healthy",
+      "degraded": "Degraded",
+      "recovering": "Recovering",
+      "failed": "Failed"
+    },
+    "stores": {
+      "present": "Present",
+      "absent": "Not found",
+      "unknown": "Unknown",
+      "unsupported": "Unsupported"
+    },
+    "assessments": {
+      "no_certificate": "No certificate",
+      "not_found_in_checked_stores": "Not found in checked stores",
+      "present_unverified": "Present, trust not verified",
+      "explicitly_distrusted": "Explicitly distrusted",
+      "root_policy_accepted": "Root policy accepted",
+      "root_policy_rejected": "Root policy rejected",
+      "unknown": "Unknown",
+      "unsupported": "Unsupported"
+    }
   }
 }

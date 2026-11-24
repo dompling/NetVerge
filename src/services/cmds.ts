@@ -503,3 +503,9 @@ export async function checkMediaUnlock(onComplete: Channel<UnlockItem>) {
 export async function checkMediaUnlockItem(name: string) {
   return commands.checkMediaUnlockItem(name)
 }
+
+// NetVerge uses the generated IPC contract; no raw invoke or file paths.
+export const getMitmStatus = commands.getMitmStatus
+export const getMitmTrustStatus = commands.getMitmTrustStatus
+export const exportMitmPublicCa = commands.exportMitmPublicCa
+export const openMitmCertificateManager = commands.openMitmCertificateManager

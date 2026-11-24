@@ -13,6 +13,10 @@ on:
     paths:
       - 'src-tauri/**'
       - 'src/services/bindings.ts'
+      - 'src/services/cmds.ts'
+      - 'src/components/setting/**'
+      - 'src/locales/**/settings.json'
+      - 'src/types/generated/i18n-*.ts'
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -116,6 +120,10 @@ jobs:
           pnpm gen:contract
           git diff -- src/services/bindings.ts
           pnpm typecheck
+          pnpm i18n:types
+          git diff --exit-code -- src/types/generated/i18n-keys.ts src/types/generated/i18n-resources.ts
+          pnpm test src/components/setting/mods/mitm-view-model.test.ts
+          pnpm arch:check
 
       - name: Upload generated frontend contract
         if: runner.os == 'macOS' && success()

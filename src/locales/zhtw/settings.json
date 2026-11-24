@@ -723,5 +723,56 @@
     "back": "返回結果",
     "results": "搜尋結果",
     "empty": "找不到設定"
+  },
+  "mitm": {
+    "title": "MITM",
+    "summary": "實驗性 HTTPS 解密與憑證管理",
+    "experimental": "目前僅支援本機開發設定，使用 Clash YAML 與指定網域。此處不會修改系統信任或攔截設定。",
+    "inactive": "未設定",
+    "health": "本機連線",
+    "generation": "目前核心世代",
+    "recovery": "復原次數",
+    "certificate": "CA 憑證",
+    "fingerprint": "SHA-256 指紋",
+    "userStore": "使用者憑證庫 / 信任設定",
+    "systemStore": "系統憑證庫 / 信任設定",
+    "trust": "信任評估",
+    "refresh": "重新整理",
+    "export": "匯出 CA",
+    "manage": "管理憑證",
+    "close": "關閉",
+    "loading": "正在檢查狀態…",
+    "error": "無法讀取 MITM 狀態，請重新整理。",
+    "identityChanged": "檢查期間憑證已變更，請重新整理後再管理。",
+    "noCa": "尚無已驗證 CA，請先設定本機開發引擎並啟動 MITM。",
+    "localOnly": "本機連線正常不代表外部 HTTPS、TUN 攔截或瀏覽器信任已驗證。",
+    "manual": "在系統原生憑證管理員中手動安裝或移除對應 CA。NetVerge 不會自動修改系統信任。",
+    "exported": "公開 CA 已匯出。",
+    "yes": "目前有效",
+    "no": "非目前",
+    "states": {
+      "inactive": "未執行",
+      "checking": "檢查中",
+      "local_link_healthy": "本機連線正常",
+      "degraded": "異常",
+      "recovering": "復原中",
+      "failed": "失敗"
+    },
+    "stores": {
+      "present": "存在",
+      "absent": "未找到",
+      "unknown": "未知",
+      "unsupported": "不支援"
+    },
+    "assessments": {
+      "no_certificate": "無憑證",
+      "not_found_in_checked_stores": "所檢查憑證庫未找到",
+      "present_unverified": "憑證存在，信任未驗證",
+      "explicitly_distrusted": "明確不信任",
+      "root_policy_accepted": "根憑證原則通過",
+      "root_policy_rejected": "根憑證原則未通過",
+      "unknown": "未知",
+      "unsupported": "不支援"
+    }
   }
 }

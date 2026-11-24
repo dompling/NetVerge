@@ -28,12 +28,15 @@ import { ControllerViewer } from './mods/controller-viewer'
 import { DnsViewer } from './mods/dns-viewer'
 import { HeaderConfiguration } from './mods/external-controller-cors'
 import { GuardState } from './mods/guard-state'
+import { MitmViewer } from './mods/mitm-viewer'
 import { NetworkInterfaceViewer } from './mods/network-interface-viewer'
 import { SettingItem, SettingList } from './mods/setting-comp'
 import { TunnelsViewer } from './mods/tunnels-viewer'
 import { WebUIViewer } from './mods/web-ui-viewer'
 
-const isWIN = getSystem() === 'windows'
+const platform = getSystem()
+const isWIN = platform === 'windows'
+const supportsMitm = isWIN || platform === 'macos'
 
 interface Props {
   onError: (err: Error) => void
@@ -72,6 +75,7 @@ const SettingClash = ({ onError }: Props) => {
   const coreRef = useRef<DialogRef>(null)
   const networkRef = useRef<DialogRef>(null)
   const dnsRef = useRef<DialogRef>(null)
+  const mitmRef = useRef<DialogRef>(null)
   const corsRef = useRef<DialogRef>(null)
   const tunnelRef = useRef<DialogRef>(null)
 
@@ -135,6 +139,7 @@ const SettingClash = ({ onError }: Props) => {
       <ClashCoreViewer ref={coreRef} />
       <NetworkInterfaceViewer ref={networkRef} />
       <DnsViewer ref={dnsRef} />
+      {supportsMitm && <MitmViewer ref={mitmRef} />}
       <BaseDialog
         open={dnsConfirmation !== null}
         title={t('settings.modals.dns.protection.title')}
@@ -209,6 +214,15 @@ const SettingClash = ({ onError }: Props) => {
           onChange={(_, checked) => handleDnsToggle(checked)}
         />
       </SettingItem>
+
+      {supportsMitm && (
+        <SettingItem
+          data-setting-target="settings.mitm.title"
+          label={t('settings.mitm.title')}
+          secondary={t('settings.mitm.summary')}
+          onClick={() => mitmRef.current?.open()}
+        />
+      )}
 
       <SettingItem
         data-setting-target="settings.sections.clash.form.fields.ipv6"
