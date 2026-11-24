@@ -1,0 +1,16 @@
+{
+  "name": "netverge-whistle-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node engine.cjs",
+    "test": "node --test smoke.test.cjs"
+  },
+  "dependencies": {
+    "whistle": "2.10.15"
+  }
+}
