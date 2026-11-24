@@ -46,7 +46,33 @@ func nvLabEligible(proxy C.Proxy, conn C.Conn) bool {
 		return false
 	}
 	chain := conn.Chains()
-	return len(chain) == 1 && chain[0] == proxy.Name() && !N.NeedHandshake(conn)
+	return len(chain) == 1 && chain[0] == proxy.Name() && nvLabTypedEligible(proxy, conn)
+}
+
+// Test-only conservative admission from the actual upstream dial chain.
+// Unknown wrappers, non-eager streams, denied types and untested protocols
+// stay outside the experiment. No names, rematch or second Unwrap call.
+type nvLabTypeTrace interface {
+	NetVergeLabAdapterTypes() []C.AdapterType
+}
+
+func nvLabTypedEligible(proxy C.Proxy, conn C.Conn) bool {
+	if proxy == nil || conn == nil { return false }
+	traced, ok := conn.(nvLabTypeTrace)
+	if !ok || N.NeedHandshake(conn) { return false }
+	types := traced.NetVergeLabAdapterTypes()
+	if len(types) == 0 || len(types) != len(conn.Chains()) || types[len(types)-1] != proxy.Type() { return false }
+	switch types[0] {
+	case C.Direct, C.Http:
+	default: return false
+	}
+	for _, tp := range types[1:] {
+		switch tp {
+		case C.Selector, C.URLTest, C.Fallback, C.LoadBalance:
+		default: return false
+		}
+	}
+	return true
 }
 
 type nvLabLease struct {
@@ -372,6 +398,23 @@ func TestNetVergeRouteLeaseOriginalDecision(t *testing.T) {
 			}
 		})
 	}
+	// The display name is not evidence of rejection: a real HTTP adapter
+	// with the same name as REJECT remains distinguishable by its dial type.
+	t.Run("typed admission ignores display name", func(t *testing.T) {
+		var count atomic.Int32
+		alias := nvLabProxy(t, reject.Name(), authority, originAddr.String(), &count)
+		metadata := &C.Metadata{Type:C.TUN, NetWork:C.TCP, Host:"route.netverge.test", DstPort:443}
+		ctx, cancel := context.WithTimeout(context.Background(), nvLabTimeout)
+		defer cancel()
+		conn, err := alias.DialContext(ctx, metadata)
+		if err != nil { t.Fatal(err) }
+		defer conn.Close()
+		if !nvLabTypedEligible(alias, conn) || nvLabTypedEligible(reject, conn) || count.Load()!=1 {
+			t.Fatal("actual HTTP type not distinguished from reject name")
+		}
+		if nvLabTypedEligible(alias, struct{ C.Conn }{conn}) { t.Fatal("missing type trace admitted") }
+		nvLabTLSRequest(t, conn, tlsConfig)
+	})
 	for _, host := range []string{"blocked.netverge.test", "drop.netverge.test"} {
 		t.Run(host, func(t *testing.T) {
 			beforeA, beforeB := countA.Load(), countB.Load()

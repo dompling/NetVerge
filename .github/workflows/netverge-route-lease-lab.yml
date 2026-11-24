@@ -56,6 +56,8 @@ jobs:
         shell: bash
         run: |
           test "$(git -C mihomo-source rev-parse HEAD)" = 0455d0d28c4526937380505153e65a843d8612e8
+          node netverge/engines/mihomo-route-lab/install-adapter-type-lab.cjs mihomo-source
+          gofmt -w mihomo-source/adapter/outbound/base.go
           cp netverge/engines/mihomo-route-lab/netverge_route_lease_lab_test.go mihomo-source/tunnel/netverge_route_lease_lab_test.go
           cp netverge/engines/mihomo-route-lab/netverge_route_lease_export_test.go mihomo-source/tunnel/netverge_route_lease_export_test.go
           cp netverge/engines/mihomo-route-lab/netverge_route_whistle_lab_test.go mihomo-source/tunnel/netverge_route_whistle_lab_test.go

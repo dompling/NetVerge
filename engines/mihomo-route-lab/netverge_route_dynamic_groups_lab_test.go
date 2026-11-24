@@ -148,6 +148,9 @@ func TestNetVergeRouteLeaseDynamicGroups(t *testing.T) {
 			if countB.Load()!=beforeB+1 || countA.Load()!=beforeA { t.Fatal("wrong actual proxy B dial") }
 			f.origin,f.proof=originB,"group-b-proof"
 		}
+		if !nvLabTypedEligible(groups[group],conn) {
+			t.Fatalf("%s actual eager group stream not admitted by adapter type",group)
+		}
 		f.lease=nvLabLeaseVerifiedStream(t,conn,nvWhistleAuthority)
 		routes[f.key]=f.lease
 		fixtures=append(fixtures,f)
@@ -206,7 +209,12 @@ func TestNetVergeRouteLeaseDynamicGroups(t *testing.T) {
 			c.Close()
 			t.Fatal("nested reject chain changed")
 		}
-		if nvLabEligible(groups["outer-reject"],c) { c.Close(); t.Fatal("rejected group admitted") }
+		trace, ok := c.(nvLabTypeTrace)
+		if !ok || !slices.Equal(trace.NetVergeLabAdapterTypes(), []C.AdapterType{denied.Type(),C.Selector,C.Selector}) {
+			c.Close()
+			t.Fatal("nested rejection type evidence missing")
+		}
+		if nvLabTypedEligible(groups["outer-reject"],c) { c.Close(); t.Fatal("rejected group admitted") }
 		c.Close()
 	}
 	if countA.Load()!=wantA || countB.Load()!=wantB { t.Fatal("reject reached real outbound") }
