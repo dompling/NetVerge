@@ -118,11 +118,22 @@ rules.getProxy = function(url, req, callback) {
   return originalGetProxy.call(this, url, req, (err, ip, p) => {
     if (!admission) return callback(err, ip, p);
     if (err || !admission.active || !sameAuthority(req, url) || !req.rules?.proxy) {
-      // The fallback is a bound deny-only listener. Never return a direct rule.
-      return callback(err || new Error('Route lease unavailable'), ip, p);
+      // The response inspector does not consistently propagate getProxy's
+      // error argument. Explicitly retain a deny-only proxy instead.
+      const deniedMatcher = 'proxy://127.0.0.1:' + denied.address().port;
+      req.rules.proxy = { matcher: deniedMatcher, url: deniedMatcher, lineProps: {}, raw: 'NetVerge deny route' };
+      console.error('Shared route lab: unavailable lease denied');
+      return callback();
     }
     const matcher = 'proxy://netverge:' + admission.route.password + '@127.0.0.1:' + admission.route.port;
-    req.rules.proxy = { matcher, url: matcher, raw: 'NetVerge test route lease' };
+    // Preserve the resolved Whistle rule shape (notably lineProps, which
+    // util.isInternalProxy dereferences). Clear alternate matcher values
+    // so util.rule.getMatcher cannot select the original deny proxy.
+    req.rules.proxy = {
+      ...req.rules.proxy, matcher, url: matcher, value: undefined, path: undefined,
+      lineProps: { ...req.rules.proxy.lineProps }, raw: 'NetVerge test route lease',
+    };
+    console.error('Shared route lab: admitted request selected its lease');
     // Match the original ordinary proxy branch: res.js resolves loopback.
     return callback();
   });
@@ -139,6 +150,7 @@ config.getHttpsAgent = function(options, requestOptions) {
     const prior = agents.get(agent);
     if (prior && prior !== route) throw new Error('Cross-route HTTPS agent reuse');
     agents.set(agent, route);
+    console.error('Shared route lab: lease-specific HTTPS agent selected');
   }
   return agent;
 };
