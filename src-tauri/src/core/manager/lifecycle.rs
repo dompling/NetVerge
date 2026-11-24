@@ -523,6 +523,9 @@ impl CoreManager {
     async fn stop_sidecar_after_proxy_clear(&self) -> Result<()> {
         let result =
             run_sidecar_termination_transition(proxy_control::clear, || self.stop_core_by_sidecar_unprepared()).await;
+        if result.is_ok() {
+            crate::core::mitm::stop_worker().await;
+        }
         #[cfg(target_os = "macos")]
         if matches!(*self.get_running_mode(), RunningMode::NotRunning) {
             crate::utils::resolve::dns::sync_public_dns().await;
@@ -805,6 +808,11 @@ impl CoreManager {
 
     pub(crate) async fn restart_core_during_config_update(&self) -> Result<()> {
         let _life = self.lifecycle_lock.lock().await;
+        self.restart_core_locked().await
+    }
+
+    /// Caller must hold lifecycle_lock and config-update ownership.
+    pub(super) async fn restart_core_locked(&self) -> Result<()> {
         let proxy_intent = self.proxy_stop_intent().await;
         run_core_replacement_transition(
             || self.controlled_stop_core_with_intent(proxy_intent),

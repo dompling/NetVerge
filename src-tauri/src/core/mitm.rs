@@ -1,6 +1,7 @@
 //! Opt-in desktop MITM integration. The normal runtime path is unchanged without the dev flag.
 
 use anyhow::{Context, Result, bail, ensure};
+use clash_verge_logging::{Type, logging};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_yaml_ng::{Mapping, Value};
@@ -8,13 +9,15 @@ use std::{
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::mpsc,
+    sync::{atomic::{AtomicBool, Ordering}, mpsc},
     time::Duration,
 };
 
 const PROXY: &str = "NETVERGE-MITM";
 const RETURN: &str = "netverge-return";
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
+const MAX_RECOVERY_ATTEMPTS: u8 = 3;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,6 +79,28 @@ struct Session {
     child: Option<Child>,
     password: String,
     forward_password: String,
+    recovery: RecoveryBudget,
+}
+
+#[derive(Default)]
+struct RecoveryBudget {
+    generation: Option<u64>,
+    attempts: u8,
+}
+
+impl RecoveryBudget {
+    fn activate(&mut self, generation: u64) {
+        self.generation = Some(generation);
+        self.attempts = 0;
+    }
+
+    fn claim(&mut self, generation: u64) -> bool {
+        if self.generation != Some(generation) || self.attempts >= MAX_RECOVERY_ATTEMPTS {
+            return false;
+        }
+        self.attempts += 1;
+        true
+    }
 }
 
 fn valid_host(host: &str) -> bool {
@@ -232,7 +257,7 @@ fn plan_overlay(mut config: Mapping, settings: Option<Settings>, state: &mut Opt
     let password = nanoid::nanoid!(32);
     let forward_password = nanoid::nanoid!(32);
     overlay(&mut config, &settings, &password, &forward_password)?;
-    *state = Some(Session { settings, child: None, password, forward_password });
+    *state = Some(Session { settings, child: None, password, forward_password, recovery: RecoveryBudget::default() });
     Ok(config)
 }
 
@@ -314,6 +339,93 @@ pub(crate) async fn ensure_runtime_worker() -> Result<()> {
     }).await?
 }
 
+// The caller holds CoreManager.lifecycle_lock and has confirmed application.
+// Do not infer activation from an uncommitted config draft or a live child alone.
+pub(crate) async fn record_applied_runtime(generation: Option<u64>) {
+    if !development_requested() {
+        return;
+    }
+    if !runtime_requests_mitm().await {
+        stop_worker().await;
+        return;
+    }
+    let Some(generation) = generation else {
+        return;
+    };
+    let activated = tokio::task::spawn_blocking(move || {
+        let mut state = SESSION.lock();
+        let Some(session) = state.as_mut() else {
+            return false;
+        };
+        session.recovery.activate(generation);
+        true
+    }).await.unwrap_or(false);
+    if activated && !MONITOR_STARTED.swap(true, Ordering::AcqRel) {
+        let _ = tokio::spawn(monitor_worker());
+    }
+}
+
+async fn monitor_worker() {
+    use crate::core::{CoreManager, handle::Handle};
+    let manager = CoreManager::global();
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if Handle::global().is_exiting() {
+            break;
+        }
+        // Use the same owner lock as core start, stop and reload. Never restart a
+        // child for an old core generation or while a core transition is running.
+        let Ok(_life) = manager.lifecycle_lock.try_lock() else {
+            continue;
+        };
+        if Handle::global().is_exiting() {
+            break;
+        }
+        let Some(generation) = manager.current_core_readiness_generation() else {
+            continue;
+        };
+        let Ok(data) = crate::utils::dirs::app_home_dir().map(|dir| dir.join("netverge-mitm-dev")) else {
+            continue;
+        };
+        let _ = tokio::task::spawn_blocking(move || recover_worker(generation, &data)).await;
+    }
+}
+
+fn recover_worker(generation: u64, data: &Path) {
+    let mut state = SESSION.lock();
+    let Some(session) = state.as_mut() else {
+        return;
+    };
+    if session.recovery.generation != Some(generation) {
+        return;
+    }
+    if let Some(child) = session.child.as_mut() {
+        match child.try_wait() {
+            Ok(None) => return,
+            Ok(Some(_)) => session.child = None,
+            // Do not replace a child whose exit status cannot be established.
+            Err(_) => return,
+        }
+    }
+    if !session.recovery.claim(generation) {
+        return;
+    }
+    let attempt = session.recovery.attempts;
+    logging!(warn, Type::Core, "MITM worker exited; recovery attempt {attempt}/{MAX_RECOVERY_ATTEMPTS}");
+    match start_worker(&session.settings, data, &session.password, &session.forward_password) {
+        Ok(child) => {
+            session.child = Some(child);
+            logging!(info, Type::Core, "MITM worker restarted; end-to-end health has not been verified");
+        }
+        Err(_) => {
+            logging!(warn, Type::Core, "MITM worker recovery failed ({attempt}/{MAX_RECOVERY_ATTEMPTS})");
+        }
+    }
+    if attempt == MAX_RECOVERY_ATTEMPTS {
+        logging!(warn, Type::Core, "MITM automatic recovery budget exhausted; further worker loss requires an explicit core restart or config apply");
+    }
+}
+
 // Call only after confirmed core stop or application of a non-MITM runtime.
 pub(crate) async fn stop_worker() {
     if !development_requested() {
@@ -321,6 +433,7 @@ pub(crate) async fn stop_worker() {
     }
     let _ = tokio::task::spawn_blocking(|| {
         if let Some(session) = SESSION.lock().as_mut() {
+            session.recovery = RecoveryBudget::default();
             if let Some(mut child) = session.child.take() {
                 stop(&mut child);
             }
@@ -379,6 +492,23 @@ mod tests {
         assert!(disabled.into_settings()?.is_none());
         assert!(serde_yaml_ng::from_str::<LocalConfig>("mitm: {enable: true, hostname: [], unexpected: true}").is_err());
         Ok(())
+    }
+
+    #[test]
+    fn recovery_budget_is_bounded_and_generation_scoped() {
+        let mut budget = RecoveryBudget::default();
+        assert!(!budget.claim(10));
+        budget.activate(10);
+        assert!(!budget.claim(11));
+        for _ in 0..MAX_RECOVERY_ATTEMPTS {
+            assert!(budget.claim(10));
+        }
+        assert!(!budget.claim(10));
+        budget.activate(12);
+        assert!(!budget.claim(10));
+        assert!(budget.claim(12));
+        budget = RecoveryBudget::default();
+        assert!(!budget.claim(12));
     }
 
     #[test]

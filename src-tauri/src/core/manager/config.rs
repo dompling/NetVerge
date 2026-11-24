@@ -357,21 +357,28 @@ impl CoreManager {
             return Ok(outcome);
         }
 
-        let run_path = Config::write_runtime_file(&yaml).await?;
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        if handle::Handle::global().is_exiting() {
+            anyhow::bail!("application is exiting");
+        }
+        #[cfg(target_os = "windows")]
+        if matches!(*self.get_running_mode(), RunningMode::Sidecar)
+            && !crate::core::runstate::RUN_STATE.state().is_admin
+            && crate::core::mitm::runtime_requests_mitm().await
+        {
+            anyhow::bail!("MITM requires a TUN-capable core; refusing unprivileged reload");
+        }
+        // Serialize validation of the worker, the runtime write and core application
+        // with stop/restart. A rejected worker must not overwrite the runtime file.
         crate::core::mitm::ensure_runtime_worker().await?;
+        let run_path = Config::write_runtime_file(&yaml).await?;
         let previous = self.current_core_readiness_generation();
         let result = self.apply_config(run_path).await;
         self.retain_applied_runtime(&Config::runtime().await, previous, &result);
         result?;
-        if !crate::core::mitm::runtime_requests_mitm().await {
-            crate::core::mitm::stop_worker().await;
-        }
-        // Under the lifecycle lock, so a stop for exit waits for this write instead of outrunning it.
+        crate::core::mitm::record_applied_runtime(self.current_core_readiness_generation()).await;
         #[cfg(target_os = "macos")]
-        {
-            let _lifecycle = self.lifecycle_lock.lock().await;
-            crate::utils::resolve::dns::sync_public_dns().await;
-        }
+        crate::utils::resolve::dns::sync_public_dns().await;
         Ok(ValidationOutcome::Valid)
     }
 
@@ -391,12 +398,9 @@ impl CoreManager {
     }
 
     /// Applies a generated configuration through the active core owner.
+    /// Caller must hold `lifecycle_lock`.
     async fn apply_config(&self, path: PathBuf) -> Result<()> {
         if matches!(*self.get_running_mode(), RunningMode::Service) {
-            let _lifecycle = self.lifecycle_lock.lock().await;
-            if !matches!(*self.get_running_mode(), RunningMode::Service) {
-                return Err(anyhow!("core mode changed while applying service configuration"));
-            }
             return self.apply_config_by_service(&path).await;
         }
 
@@ -458,7 +462,7 @@ impl CoreManager {
             Type::Core,
             "Failed to apply configuration by mihomo api, restart core to apply it, error msg: {err}"
         );
-        match self.restart_core_during_config_update().await {
+        match self.restart_core_locked().await {
             Ok(_) => {
                 tracing::Span::current().record("outcome", "restarted");
                 Ok(())

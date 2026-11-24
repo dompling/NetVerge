@@ -311,6 +311,7 @@ impl CoreManager {
         self.set_job_handle(Some(job));
         self.set_running_child_sidecar(child);
         self.core_started(RunningMode::Sidecar);
+        crate::core::mitm::record_applied_runtime(self.current_core_readiness_generation()).await;
         self.restore_selected_nodes().await;
 
         Ok(())
@@ -376,6 +377,7 @@ impl CoreManager {
             .await?;
             self.mark_core_ready();
             self.core_started(RunningMode::Service);
+            crate::core::mitm::record_applied_runtime(self.current_core_readiness_generation()).await;
             self.restore_selected_nodes().await;
             service::request_runtime_provider_sync(timing::RUNTIME_PROVIDER_SYNC_DELAY);
             Ok(())
@@ -386,6 +388,7 @@ impl CoreManager {
             service::run_core_by_service(config_file).await?;
             self.mark_core_ready();
             self.core_started(RunningMode::Service);
+            crate::core::mitm::record_applied_runtime(self.current_core_readiness_generation()).await;
             self.restore_selected_nodes().await;
             service::request_runtime_provider_sync(crate::constants::timing::RUNTIME_PROVIDER_SYNC_DELAY);
             Ok(())
@@ -409,6 +412,7 @@ impl CoreManager {
         self.set_job_handle(None);
         proxy_control::stop_guard().await;
         self.core_stopped();
+        crate::core::mitm::stop_worker().await;
         #[cfg(target_os = "macos")]
         crate::utils::resolve::dns::sync_public_dns().await;
     }
