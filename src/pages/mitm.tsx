@@ -87,16 +87,16 @@ const MitmPage = () => {
               <Grid size={{ xs: 12, md: 5 }}>
                 <Card variant="outlined" sx={{ p: 2, height: '100%' }}>
                   <Stack spacing={1.5}>
-                    <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
-                      <Typography variant="subtitle1" fontWeight={600}>{t('settings.mitm.health')}</Typography>
+                    <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>{t('settings.mitm.health')}</Typography>
                       <Chip size="small" label={t(`settings.mitm.states.${status.state}`)} />
                     </Stack>
                     <Divider />
-                    <Stack direction="row" justifyContent="space-between" gap={1}>
+                    <Stack direction="row" sx={{ justifyContent: 'space-between', gap: 1 }}>
                       <Typography variant="body2" color="text.secondary">{t('settings.mitm.generation')}</Typography>
                       <Typography variant="body2">{status.coreGenerationCurrent ? t('settings.mitm.yes') : t('settings.mitm.no')}</Typography>
                     </Stack>
-                    <Stack direction="row" justifyContent="space-between" gap={1}>
+                    <Stack direction="row" sx={{ justifyContent: 'space-between', gap: 1 }}>
                       <Typography variant="body2" color="text.secondary">{t('settings.mitm.recovery')}</Typography>
                       <Typography variant="body2">{status.recoveryAttempts} / {status.maxRecoveryAttempts}</Typography>
                     </Stack>
@@ -107,7 +107,7 @@ const MitmPage = () => {
               <Grid size={{ xs: 12, md: 7 }}>
                 <Card variant="outlined" sx={{ p: 2, height: '100%' }}>
                   <Stack spacing={1.5}>
-                    <Typography variant="subtitle1" fontWeight={600}>{t('settings.mitm.certificate')}</Typography>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>{t('settings.mitm.certificate')}</Typography>
                     <Divider />
                     {status.caFingerprint ? (
                       <Box>
@@ -123,7 +123,7 @@ const MitmPage = () => {
                         <Typography variant="body2">{t('settings.mitm.trust')}: {t(`settings.mitm.assessments.${trust.assessment}`)}</Typography>
                       </Stack>
                     )}
-                    <Stack direction="row" flexWrap="wrap" gap={1}>
+                    <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
                       <Button size="small" variant="outlined" disabled={disabled} onClick={() => void action('export')}>{t('settings.mitm.export')}</Button>
                       <Button size="small" variant="contained" disabled={disabled} onClick={() => void action('manage')}>{t('settings.mitm.manage')}</Button>
                     </Stack>

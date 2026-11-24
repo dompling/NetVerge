@@ -12,3 +12,7 @@ One route and one view model. Remove the old dialog and move its model/tests to 
 
 ## Security/stability
 No trust mutation, arbitrary file input, or network routing changes. Certificate actions still use the verified public snapshot and native confirmation. Local link health and trust assessment remain distinct. Linux nav hidden until its milestone. Real UI visual inspection, desktop TUN, private ACL and full production trust mutation remain pending. No claim of completed CI until the replacement build passes. Old integration CI push is superseded by concurrency.
+
+## MUI compatibility repair
+
+Run 45346209382 macOS frontend typecheck failed at six TS2769 sites in src/pages/mitm.tsx. Current MUI Stack/Typography types reject direct system-style props (alignItems, justifyContent, flexWrap, fontWeight). Move all six affected style sets, including gap, into the existing sx API. Preserve layout, navigation, status and certificate operations. No casts, suppression, dependency changes or skipped tests. Static three-dimensional re-review: functionality unchanged, architecture uses existing MUI styling convention, security checks untouched. CI revalidation required; superseded push CI is automatically canceled.
