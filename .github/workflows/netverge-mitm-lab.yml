@@ -1,0 +1,52 @@
+name: NetVerge MITM laboratory
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/whistle-integration]
+    paths:
+      - 'engines/whistle/**'
+      - '.github/workflows/netverge-mitm-lab.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  mitm:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Fetch verified Mihomo (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'mihomo.zip'
+          Invoke-WebRequest 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.34/mihomo-windows-amd64-v1.19.34.zip' -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -ne 'f6b855de8722781caea62686f0301f89625fc558d48c1103ffdd98dad7f7f488') { throw 'Mihomo checksum mismatch' }
+          Expand-Archive $archive (Join-Path $env:RUNNER_TEMP 'mihomo-bin')
+          $exe = Get-ChildItem (Join-Path $env:RUNNER_TEMP 'mihomo-bin') -Recurse -Filter '*.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'Mihomo executable not found' }
+          "NETVERGE_MIHOMO_BIN=$($exe.FullName)" >> $env:GITHUB_ENV
+      - name: Fetch verified Mihomo (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.34/mihomo-linux-amd64-v1.19.34.gz' -o "$RUNNER_TEMP/mihomo.gz"
+          echo "223fab877e5795ce780ba39902e5f0b1113c1256ae244a7160f1165e017e9ccc  $RUNNER_TEMP/mihomo.gz" | sha256sum --check
+          gzip -dc "$RUNNER_TEMP/mihomo.gz" > "$RUNNER_TEMP/mihomo"
+          chmod +x "$RUNNER_TEMP/mihomo"
+          echo "NETVERGE_MIHOMO_BIN=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
+      - name: Install lab dependencies
+        working-directory: engines/whistle
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Verify selective HTTPS interception
+        working-directory: engines/whistle
+        run: npm run test:mitm
