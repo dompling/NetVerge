@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -111,7 +112,18 @@ func nvWhistleStart(t *testing.T, lease *nvLabLease, caPath string) *nvWhistleWo
 	if err != nil { t.Fatal(err) }
 	port := reservation.Addr().(*net.TCPAddr).Port
 	reservation.Close()
-	dir := t.TempDir()
+	// testing.T.TempDir creates its numbered child with mode 0777 before
+	// umask. Whistle requires a private CA data root, even inside a private
+	// parent. MkdirTemp creates the actual worker root with mode 0700.
+	dir, err := os.MkdirTemp(t.TempDir(), "worker-")
+	if err != nil { t.Fatal(err) }
+	dir, err = filepath.EvalSymlinks(dir)
+	if err != nil { t.Fatal(err) }
+	info, err := os.Lstat(dir)
+	if err != nil { t.Fatal(err) }
+	if !info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm() & 0077 != 0) {
+		t.Fatal("worker CA directory is not private")
+	}
 	password := nvWhistlePassword(t)
 	settings, err := json.Marshal(map[string]any{
 		"dataDir": dir, "port": port, "returnPort": lease.listener.Addr().(*net.TCPAddr).Port,
