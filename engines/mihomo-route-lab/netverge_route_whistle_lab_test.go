@@ -123,6 +123,7 @@ func nvWhistleLaunch(t *testing.T, caPath string, routes map[string]*nvLabLease,
 	t.Helper()
 	worker := os.Getenv("NETVERGE_ROUTE_LAB_WORKER")
 	if routes != nil { worker = os.Getenv("NETVERGE_ROUTE_LAB_SHARED_WORKER") }
+	if routes != nil && len(routes)==0 { worker=os.Getenv("NETVERGE_ROUTE_DYNAMIC_WORKER") }
 	if !filepath.IsAbs(worker) { t.Fatal("NETVERGE_ROUTE_LAB_WORKER must point to the actual worker") }
 	if _, err := os.Stat(worker); err != nil { t.Fatal(err) }
 	// Existing worker requires an explicit nonzero port. The test binds and
@@ -150,6 +151,8 @@ func nvWhistleLaunch(t *testing.T, caPath string, routes map[string]*nvLabLease,
 		config["password"] = lease.password
 		config["forwardPassword"] = password
 		config["healthSecret"] = nvWhistlePassword(t)
+	} else if len(routes)==0 {
+		config["controlSecret"]=password
 	} else {
 		entries := make([]map[string]any,0,len(routes))
 		for ingress, route := range routes {

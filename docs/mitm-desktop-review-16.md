@@ -54,3 +54,7 @@ Windows run 45366974743 passed the reusable broker and all protocol regressions.
 ### CI repair
 
 Run 45369099433 was rejected before job creation: a JavaScript replacement string interpreted `$'` from the Go test selector as the suffix of the original YAML. Reconstruct from the last passing workflow and insert the literal text using callback replacements. Verify unique step names and preserve every existing regression. No native hook changes; runtime verification still pending.
+
+## Review 27: dynamic shared Whistle worker
+
+Windows run 45376330804 passed native TCP handoff. Add a separate integration candidate worker with a bounded authenticated loopback control endpoint, exact configured authorities, per-route random credentials, one-use ingress, duplicate rejection, registration expiry and revocation. Retain pinned Whistle request identity, deny-only fallback, TLS verification and CA integrity. Exercise the actual native TCP hook with two concurrent process-based HTTP proxy decisions, real broker and one initially empty worker; verify distinct TLS origin proofs, duplicate and invalid control refusal, post-removal denial and no fallback on revoked admission. No public configuration, production activation, or release packaging changes. The test controller is temporary; reusable desktop/core orchestration, longer sessions, resource/agent cache lifecycle and live TUN remain open. Windows CI required.

@@ -14,6 +14,7 @@ on:
       - 'engines/mihomo-route-lab/**'
       - 'engines/mihomo-route/**'
       - 'engines/whistle/mitm-worker.cjs'
+      - 'engines/whistle/route-worker.cjs'
       - 'engines/whistle/ca-integrity.cjs'
       - 'engines/whistle/package.json'
       - '.github/workflows/netverge-route-lease-lab.yml'
@@ -62,8 +63,9 @@ jobs:
           gofmt -w mihomo-source/routelease/*.go
           cp netverge/engines/mihomo-route/tunnel/netverge_route_hook.go mihomo-source/tunnel/
           cp netverge/engines/mihomo-route/tunnel/netverge_route_hook_test.go mihomo-source/tunnel/
+          cp netverge/engines/mihomo-route/tunnel/netverge_route_dynamic_worker_test.go mihomo-source/tunnel/
           node netverge/engines/mihomo-route/install-tunnel-hook.cjs mihomo-source
-          gofmt -w mihomo-source/tunnel/tunnel.go mihomo-source/tunnel/netverge_route_hook*.go
+          gofmt -w mihomo-source/tunnel/tunnel.go mihomo-source/tunnel/netverge_route_hook*.go mihomo-source/tunnel/netverge_route_dynamic_worker_test.go
           node netverge/engines/mihomo-route-lab/install-adapter-type-lab.cjs mihomo-source
           gofmt -w mihomo-source/adapter/outbound/base.go
           cp netverge/engines/mihomo-route-lab/netverge_route_lease_lab_test.go mihomo-source/tunnel/netverge_route_lease_lab_test.go
@@ -90,6 +92,11 @@ jobs:
       - name: Verify native TCP handoff boundary
         working-directory: mihomo-source
         run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeNativeTCPHandoff$' -count=1 -timeout=5m -v
+      - name: Verify dynamic Whistle registration and native handoff
+        working-directory: mihomo-source
+        env:
+          NETVERGE_ROUTE_DYNAMIC_WORKER: ${{ github.workspace }}/netverge/engines/whistle/route-worker.cjs
+        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeDynamicWhistleRegistry$' -count=1 -timeout=5m -v
       - name: Verify original route and single-use CONNECT lease
         working-directory: mihomo-source
         run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseOriginalDecision$' -count=1 -timeout=5m -v
