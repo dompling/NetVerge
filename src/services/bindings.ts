@@ -39,6 +39,11 @@ export const commands = {
   /**  Returns one coherent core/service snapshot instead of independently refreshed state. */
   getRuntimeState: () =>
     __TAURI_INVOKE<RunStateView_Serialize>('get_runtime_state'),
+  /**  Read-only MITM state; no configuration or process changes. */
+  getMitmStatus: () => __TAURI_INVOKE<MitmStatus_Serialize>('get_mitm_status'),
+  /**  Returns the last verified public CA only. Never installs trust or exports a private key. */
+  getMitmPublicCa: () =>
+    __TAURI_INVOKE<MitmPublicCa | null>('get_mitm_public_ca'),
   getPendingFailures: () =>
     __TAURI_INVOKE<PendingFailure[]>('get_pending_failures'),
   getSidecarFailure: () =>
@@ -301,6 +306,14 @@ export type FailedOperation =
   | 'systemProxyDisable'
   | 'systemProxyRestore'
   | 'systemProxyGuard'
+
+export type Health =
+  | 'inactive'
+  | 'checking'
+  | 'local_link_healthy'
+  | 'degraded'
+  | 'recovering'
+  | 'failed'
 
 /**  Define the `profiles.yaml` schema */
 export type IProfiles = IProfiles_Serialize | IProfiles_Deserialize
@@ -591,6 +604,31 @@ export type LocalBackupFile = {
   path: string
   last_modified: string
   content_length: number
+}
+
+export type MitmPublicCa = {
+  sha256Fingerprint: string
+  pem: string
+}
+
+export type MitmStatus = MitmStatus_Serialize | MitmStatus_Deserialize
+
+export type MitmStatus_Deserialize = {
+  developmentRequested: boolean
+  state: Health
+  coreGenerationCurrent: boolean
+  recoveryAttempts: number
+  maxRecoveryAttempts: number
+  caFingerprint?: string | null
+}
+
+export type MitmStatus_Serialize = {
+  developmentRequested: boolean
+  state: Health
+  coreGenerationCurrent: boolean
+  recoveryAttempts: number
+  maxRecoveryAttempts: number
+  caFingerprint: string | null
 }
 
 export type NetworkInterfaceView =
