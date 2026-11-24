@@ -97,11 +97,11 @@ func TestNetVergeRouteLeaseSharedWhistle(t *testing.T) {
 		if c==nil || status!=200 { return &net.OpError{Op:"CONNECT",Net:"tcp",Err:C.ErrNotSupport} }
 		peer,err := nvWhistleRequestProof(c,worker.root,proof)
 		if err!=nil { return err }
-		if string(peer)==string(original) || !leases[i].used.Load() { return C.ErrNotSupport }
+		if string(peer)==string(original) || !leases[i].Used() { return C.ErrNotSupport }
 		return nil
 	}
 	if err=request(0,"route-a-proof",originA.leaf); err!=nil { t.Fatal(err) }
-	if originA.requests.Load()!=1 || originB.requests.Load()!=0 || leaseB1.used.Load() { t.Fatal("route A crossed into B") }
+	if originA.requests.Load()!=1 || originB.requests.Load()!=0 || leaseB1.Used() { t.Fatal("route A crossed into B") }
 	if err=request(1,"route-b-proof",originB.leaf); err!=nil { t.Fatal(err) }
 	if originA.requests.Load()!=1 || originB.requests.Load()!=1 { t.Fatal("route B crossed into A") }
 
@@ -133,7 +133,7 @@ func TestNetVergeRouteLeaseSharedWhistle(t *testing.T) {
 	if err==nil && status==200 {
 		if _,err=nvWhistleRequestProof(c,worker.root,"route-a-proof"); err==nil { t.Fatal("revoked lease returned origin response") }
 	}
-	if revoked.used.Load() || originA.requests.Load()!=2 || originB.requests.Load()!=2 ||
+	if revoked.Used() || originA.requests.Load()!=2 || originB.requests.Load()!=2 ||
 		originA.leaked.Load() || originB.leaked.Load() || countA.Load()!=3 || countB.Load()!=2 {
 		t.Fatal("revocation, credential isolation or route identity failed")
 	}

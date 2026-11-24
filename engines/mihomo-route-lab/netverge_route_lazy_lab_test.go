@@ -119,7 +119,7 @@ func TestNetVergeRouteLeaseLazyFirstWrite(t *testing.T) {
 	tc := tls.Client(c,&tls.Config{RootCAs:aOrigin.root,ServerName:nvWhistleHost})
 	if err=tc.Handshake(); err==nil { tc.Close(); t.Fatal("failed first write unexpectedly succeeded") }
 	tc.Close()
-	if ff.started.Load()!=1 || ff.done.Load() || !lf.used.Load() || aOrigin.requests.Load()!=0 ||
+	if ff.started.Load()!=1 || ff.done.Load() || !lf.Used() || aOrigin.requests.Load()!=0 ||
 		countA.Load()!=2 || countB.Load()!=1 {
 		t.Fatal("failed first write retried, redirected or reached origin")
 	}
@@ -150,7 +150,7 @@ func TestNetVergeRouteLeaseLazyFirstWrite(t *testing.T) {
 		if err!=nil || status!=200 { t.Fatalf("lazy ingress: %d %v",status,err) }
 		peer,err := nvWhistleRequestProof(c,w.root,f.proof)
 		if err!=nil || string(peer)==string(f.origin.leaf) { t.Fatalf("lazy TLS proof: %v",err) }
-		if f.lazy.started.Load()!=1 || !f.lazy.done.Load() || !f.lease.used.Load() ||
+		if f.lazy.started.Load()!=1 || !f.lazy.done.Load() || !f.lease.Used() ||
 			f.origin.requests.Load()!=1 { t.Fatal("first write did not complete exactly once") }
 	}
 	if countA.Load()!=2 || countB.Load()!=1 || aOrigin.leaked.Load() || bOrigin.leaked.Load() {

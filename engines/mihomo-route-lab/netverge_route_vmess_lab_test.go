@@ -160,7 +160,7 @@ func TestNetVergeRouteLeaseVmess(t *testing.T) {
 		if err!=nil || status!=200 { t.Fatalf("VMess ingress: %d %v",status,err) }
 		peer,err:=nvWhistleRequestProof(c,w.root,f.proof)
 		if err!=nil || string(peer)==string(f.origin.leaf) { t.Fatalf("VMess TLS proof: %v",err) }
-		if !f.lease.used.Load() || f.origin.requests.Load()!=1 { t.Fatal("original VMess stream not consumed exactly once") }
+		if !f.lease.Used() || f.origin.requests.Load()!=1 { t.Fatal("original VMess stream not consumed exactly once") }
 		_,status,err=nvWhistleConnect(w,nvWhistleAuthority,auth)
 		if err!=nil || status!=403 { t.Fatalf("VMess lease replay: %d %v",status,err) }
 	}

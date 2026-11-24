@@ -163,7 +163,7 @@ func TestNetVergeRouteLeaseHysteria2(t *testing.T) {
 		if err!=nil || status!=200 { t.Fatalf("Hysteria2 ingress: %d %v",status,err) }
 		peer,err:=nvWhistleRequestProof(c,w.root,f.proof)
 		if err!=nil || string(peer)==string(f.origin.leaf) { t.Fatalf("Hysteria2 TLS proof: %v",err) }
-		if N.NeedHandshake(f.lease.upstream) || !f.lease.used.Load() || f.origin.requests.Load()!=f.wantRequests { t.Fatal("original Hysteria2 stream not consumed exactly once") }
+		if N.NeedHandshake(f.lease.upstream) || !f.lease.Used() || f.origin.requests.Load()!=f.wantRequests { t.Fatal("original Hysteria2 stream not consumed exactly once") }
 		_,status,err=nvWhistleConnect(w,nvWhistleAuthority,auth)
 		if err!=nil || status!=403 { t.Fatalf("Hysteria2 lease replay: %d %v",status,err) }
 	}

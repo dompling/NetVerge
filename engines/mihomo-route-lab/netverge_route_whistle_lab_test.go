@@ -146,14 +146,14 @@ func nvWhistleLaunch(t *testing.T, caPath string, routes map[string]*nvLabLease,
 	password := nvWhistlePassword(t)
 	config := map[string]any{"dataDir":dir,"port":port,"hosts":[]string{nvWhistleHost},"targetPort":443}
 	if routes == nil {
-		config["returnPort"] = lease.listener.Addr().(*net.TCPAddr).Port
+		config["returnPort"] = lease.Addr().(*net.TCPAddr).Port
 		config["password"] = lease.password
 		config["forwardPassword"] = password
 		config["healthSecret"] = nvWhistlePassword(t)
 	} else {
 		entries := make([]map[string]any,0,len(routes))
 		for ingress, route := range routes {
-			entries = append(entries,map[string]any{"ingress":ingress,"port":route.listener.Addr().(*net.TCPAddr).Port,"password":route.password})
+			entries = append(entries,map[string]any{"ingress":ingress,"port":route.Addr().(*net.TCPAddr).Port,"password":route.password})
 		}
 		config["routes"] = entries
 	}
@@ -315,8 +315,8 @@ func TestNetVergeRouteLeaseWhistle(t *testing.T) {
 		if err!=nil || status!=200 { t.Fatalf("%s ingress: status=%d err=%v",f.name,status,err) }
 		peer,err := nvWhistleRequest(c,f.w.root)
 		if err!=nil || string(peer)==string(origin.leaf) { t.Fatalf("%s MITM TLS proof failed: %v",f.name,err) }
-		if !f.lease.used.Load() || origin.requests.Load()!=before+1 { t.Fatalf("%s did not use the original lease",f.name) }
-		if f.name=="route-a" && f.other.used.Load() { t.Fatal("route B lease consumed by route A") }
+		if !f.lease.Used() || origin.requests.Load()!=before+1 { t.Fatalf("%s did not use the original lease",f.name) }
+		if f.name=="route-a" && f.other.Used() { t.Fatal("route B lease consumed by route A") }
 		if countA.Load()!=2 || countB.Load()!=2 { t.Fatal("unexpected second outbound dial") }
 		t.Logf("PASS: %s used the original adapter's one-shot stream with a different trusted TLS leaf",f.name)
 	}
@@ -337,7 +337,7 @@ func TestNetVergeRouteLeaseWhistle(t *testing.T) {
 	if err==nil && status==200 {
 		if _,err := nvWhistleRequest(c,revokedWorker.root); err==nil { t.Fatal("revoked lease permitted origin request") }
 	}
-	if origin.requests.Load()!=before || revoked.used.Load() { t.Fatal("revoked route fell back or was consumed") }
+	if origin.requests.Load()!=before || revoked.Used() { t.Fatal("revoked route fell back or was consumed") }
 	blocked := dialOriginal("blocked-app",reject)
 	defer blocked.Close()
 	if nvLabEligible(reject,blocked) || origin.requests.Load()!=before || countA.Load()!=3 || countB.Load()!=2 { t.Fatal("REJECT route admitted or dialed") }

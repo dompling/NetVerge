@@ -5,8 +5,6 @@ package tunnel_test
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
@@ -16,12 +14,12 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/routelease"
 	"github.com/metacubex/mihomo/adapter/outbound"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/process"
@@ -77,113 +75,29 @@ func nvLabTypedEligible(proxy C.Proxy, conn C.Conn) bool {
 	return true
 }
 
+// All protocol regression tests now exercise the reusable core transport.
+var nvLabBroker, nvLabBrokerErr = routelease.NewBroker(32, 60*time.Second, nvLabTimeout)
 type nvLabLease struct {
-	server *http.Server
-	listener net.Listener
+	*routelease.Lease
 	upstream C.Conn
-	token string
-	password string
-	used atomic.Bool
-	mu sync.Mutex
-	client net.Conn
-	closed bool
-	done chan struct{}
+	password,token string
 }
-
-// The one-shot credential authorizes a single fixed authority and stream.
-// The caller must own the original successful dial and close the lease when
-// the original connection ends. This lab has no production control endpoint.
-func nvLabNewLease(t *testing.T, proxy C.Proxy, upstream C.Conn, authority string) *nvLabLease {
+func nvLabNewLease(t *testing.T,proxy C.Proxy,upstream C.Conn,authority string)*nvLabLease {
 	t.Helper()
-	if !nvLabEligible(proxy, upstream) {
-		t.Fatal("route is outside the eager single-adapter lab scope")
-	}
-	return nvLabLeaseVerifiedStream(t, upstream, authority)
+	if !nvLabEligible(proxy,upstream){t.Fatal("route is outside the eager single-adapter lab scope")}
+	return nvLabLeaseVerifiedStream(t,upstream,authority)
 }
-
-// Only test fixtures may call this after checking the actual dial result.
-// Do not generalize chain-name checks into production admission.
-func nvLabLeaseVerifiedStream(t *testing.T, upstream C.Conn, authority string) *nvLabLease {
+func nvLabLeaseVerifiedStream(t *testing.T,upstream C.Conn,authority string)*nvLabLease{
 	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var secret [24]byte
-	if _, err = rand.Read(secret[:]); err != nil {
-		listener.Close()
-		t.Fatal(err)
-	}
-	password := base64.RawURLEncoding.EncodeToString(secret[:])
-	lease := &nvLabLease{
-		listener: listener, upstream: upstream, password: password,
-		token: "Basic " + base64.StdEncoding.EncodeToString([]byte("netverge:" + password)),
-		done: make(chan struct{}),
-	}
-	lease.server = &http.Server{
-		ReadHeaderTimeout: 2 * time.Second,
-		MaxHeaderBytes: 4096,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			auth := r.Header.Values("Proxy-Authorization")
-			if len(auth) != 1 || subtle.ConstantTimeCompare([]byte(auth[0]), []byte(lease.token)) != 1 {
-				w.WriteHeader(http.StatusProxyAuthRequired)
-				return
-			}
-			if r.Method != http.MethodConnect || r.RequestURI != authority ||
-				r.Host != authority || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
-				w.WriteHeader(http.StatusForbidden)
-				return
-			}
-			lease.mu.Lock()
-			if lease.closed || !lease.used.CompareAndSwap(false, true) {
-				lease.mu.Unlock()
-				w.WriteHeader(http.StatusForbidden)
-				return
-			}
-			client, rw, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				lease.mu.Unlock()
-				upstream.Close()
-				return
-			}
-			lease.client = client
-			lease.mu.Unlock()
-			defer client.Close()
-			defer upstream.Close()
-			client.SetDeadline(time.Now().Add(nvLabTimeout))
-			upstream.SetDeadline(time.Now().Add(nvLabTimeout))
-			if _, err = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-				return
-			}
-			if err = rw.Flush(); err != nil {
-				return
-			}
-			nvLabRelay(client, rw.Reader, upstream)
-		}),
-	}
-	go func() {
-		defer close(lease.done)
-		_ = lease.server.Serve(listener)
-	}()
-	t.Cleanup(lease.close)
-	return lease
+	if nvLabBrokerErr!=nil{t.Fatal(nvLabBrokerErr)}
+	core,err:=nvLabBroker.Open(context.Background(),upstream,authority)
+	if err!=nil{upstream.Close();t.Fatal(err)}
+	password:=core.Password()
+	l:=&nvLabLease{Lease:core,upstream:upstream,password:password,token:"Basic "+base64.StdEncoding.EncodeToString([]byte("netverge:"+password))}
+	t.Cleanup(l.close)
+	return l
 }
-
-func (l *nvLabLease) close() {
-	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
-		return
-	}
-	l.closed = true
-	if l.client != nil {
-		l.client.Close()
-	}
-	l.upstream.Close()
-	l.mu.Unlock()
-	l.server.Close()
-	<-l.done
-}
+func(l *nvLabLease)close(){l.Close()}
 
 func nvLabRelay(client net.Conn, input io.Reader, upstream net.Conn) {
 	done := make(chan struct{})
@@ -259,7 +173,7 @@ func (c nvLabBufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p)
 
 func nvLabConnect(t *testing.T, lease *nvLabLease, authority, token string, want int) net.Conn {
 	t.Helper()
-	c, err := net.DialTimeout("tcp", lease.listener.Addr().String(), nvLabTimeout)
+	c, err := net.DialTimeout("tcp", lease.Addr().String(), nvLabTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}

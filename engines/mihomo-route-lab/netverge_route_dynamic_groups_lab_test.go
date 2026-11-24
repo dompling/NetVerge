@@ -237,7 +237,7 @@ func TestNetVergeRouteLeaseDynamicGroups(t *testing.T) {
 			if err!=nil || status!=200 { t.Fatalf("group ingress: %d %v",status,err) }
 			peer,err := nvWhistleRequestProof(c,w.root,f.proof)
 			if err!=nil || string(peer)==string(f.origin.leaf) { t.Fatalf("group HTTPS proof failed: %v",err) }
-			if !f.lease.used.Load() || f.origin.requests.Load()!=before+1 {
+			if !f.lease.Used() || f.origin.requests.Load()!=before+1 {
 				t.Fatal("original connection not consumed exactly once")
 			}
 			if countA.Load()!=wantA || countB.Load()!=wantB { t.Fatal("Whistle redialed group") }
