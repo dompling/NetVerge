@@ -265,34 +265,43 @@ pub(crate) async fn runtime_requests_mitm() -> bool {
         && crate::config::Config::runtime().await.latest_arc().config.as_ref().is_some_and(runtime_has_overlay)
 }
 
+fn validate_runtime(config: &Mapping, session: &Session) -> Result<()> {
+    ensure!(enabled_block(config, "tun"), "MITM runtime requires TUN");
+    ensure!(config.get("mode").and_then(Value::as_str).is_none_or(|mode| mode.eq_ignore_ascii_case("rule")), "MITM runtime requires rule mode");
+    // Require the exact generated entries and rule prefix. Direct runtime
+    // patches must not silently change the authenticated worker's route.
+    let mut expected = config.clone();
+    for (key, name) in [("proxies", PROXY), ("listeners", RETURN)] {
+        let mut items = sequence(&mut expected, key)?;
+        items.retain(|item| item.get("name").and_then(Value::as_str) != Some(name));
+        expected.insert(key.into(), Value::Sequence(items));
+    }
+    let mut rules = sequence(&mut expected, "rules")?;
+    let prefix_len = session.settings.hosts.len() * 2 + 1;
+    ensure!(rules.len() >= prefix_len, "MITM rule prefix is missing");
+    drop(rules.drain(..prefix_len));
+    expected.insert("rules".into(), Value::Sequence(rules));
+    overlay(&mut expected, &session.settings, &session.password, &session.forward_password)?;
+    for key in ["proxies", "listeners", "rules"] {
+        ensure!(expected.get(key) == config.get(key), "MITM runtime {key} changed after planning");
+    }
+    Ok(())
+}
+
 pub(crate) async fn ensure_runtime_worker() -> Result<()> {
-    if !runtime_requests_mitm().await {
+    if !development_requested() {
         return Ok(());
     }
-    let config = crate::config::Config::runtime().await.latest_arc().config.clone().context("missing MITM runtime")?;
-    ensure!(enabled_block(&config, "tun"), "MITM runtime requires TUN");
-    ensure!(config.get("mode").and_then(Value::as_str).is_none_or(|mode| mode.eq_ignore_ascii_case("rule")), "MITM runtime requires rule mode");
+    let runtime = crate::config::Config::runtime().await.latest_arc();
+    let Some(config) = runtime.config.as_ref().filter(|config| runtime_has_overlay(config)).cloned() else {
+        return Ok(());
+    };
+    drop(runtime);
     let data = crate::utils::dirs::app_home_dir()?.join("netverge-mitm-dev");
     tokio::task::spawn_blocking(move || {
         let mut state = SESSION.lock();
         let session = state.as_mut().context("MITM runtime has no local session")?;
-        // Require the exact generated entries and rule prefix. Direct runtime
-        // patches must not silently change the authenticated worker's route.
-        let mut expected = config.clone();
-        for (key, name) in [("proxies", PROXY), ("listeners", RETURN)] {
-            let mut items = sequence(&mut expected, key)?;
-            items.retain(|item| item.get("name").and_then(Value::as_str) != Some(name));
-            expected.insert(key.into(), Value::Sequence(items));
-        }
-        let mut rules = sequence(&mut expected, "rules")?;
-        let prefix_len = session.settings.hosts.len() * 2 + 1;
-        ensure!(rules.len() >= prefix_len, "MITM rule prefix is missing");
-        rules.drain(..prefix_len);
-        expected.insert("rules".into(), Value::Sequence(rules));
-        overlay(&mut expected, &session.settings, &session.password, &session.forward_password)?;
-        for key in ["proxies", "listeners", "rules"] {
-            ensure!(expected.get(key) == config.get(key), "MITM runtime {key} changed after planning");
-        }
+        validate_runtime(&config, session)?;
         if let Some(child) = session.child.as_mut() {
             if child.try_wait()?.is_none() {
                 return Ok(());
@@ -355,7 +364,17 @@ mod tests {
         let first = plan_overlay(config.clone(), settings.clone(), &mut state)?;
         let second = plan_overlay(config, settings, &mut state)?;
         assert_eq!(first, second);
-        assert!(state.as_ref().is_some_and(|session| session.child.is_none()));
+        let session = state.as_ref().context("session was not planned")?;
+        assert!(session.child.is_none());
+        validate_runtime(&first, session)?;
+        let mut altered = first.clone();
+        let mut rules = sequence(&mut altered, "rules")?;
+        rules[0] = Value::from("MATCH,DIRECT");
+        altered.insert("rules".into(), Value::Sequence(rules));
+        assert!(validate_runtime(&altered, session).is_err());
+        let mut altered = first.clone();
+        altered.insert("mode".into(), Value::from("global"));
+        assert!(validate_runtime(&altered, session).is_err());
         let disabled: LocalConfig = serde_yaml_ng::from_str("mitm: {enable: false}")?;
         assert!(disabled.into_settings()?.is_none());
         assert!(serde_yaml_ng::from_str::<LocalConfig>("mitm: {enable: true, hostname: [], unexpected: true}").is_err());

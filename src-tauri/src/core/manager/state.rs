@@ -160,6 +160,10 @@ impl CoreManager {
 
     #[tracing::instrument(skip_all, level = "info", fields(pid = tracing::field::Empty))]
     pub(super) async fn start_core_by_sidecar(&self) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        if !crate::core::runstate::RUN_STATE.state().is_admin && crate::core::mitm::runtime_requests_mitm().await {
+            anyhow::bail!("MITM requires an elevated TUN-capable core; refusing sidecar fallback");
+        }
         self.wait_for_sidecar_exit().await?;
         let execution = clash_verge_service_ipc::execution::reserve_sidecar()
             .await
@@ -181,10 +185,6 @@ impl CoreManager {
         };
         #[cfg(not(target_os = "windows"))]
         let config_file = Config::generate_file().await?;
-        #[cfg(target_os = "windows")]
-        if !crate::core::runstate::RUN_STATE.state().is_admin && crate::core::mitm::runtime_requests_mitm().await {
-            anyhow::bail!("MITM requires an elevated TUN-capable core; refusing sidecar fallback");
-        }
         crate::core::mitm::ensure_runtime_worker().await?;
         let app_handle = handle::Handle::app_handle();
         let clash_core = Config::verge().await.latest_arc().get_valid_clash_core();
