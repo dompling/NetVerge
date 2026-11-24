@@ -53,8 +53,11 @@ struct PublicState {
 
 // The status reader never waits for a worker spawn, process exit or network probe.
 pub(crate) fn status() -> MitmStatus {
-    let snapshot = PUBLIC_STATE.lock();
     let current = crate::core::CoreManager::global().current_core_readiness_generation();
+    status_from_snapshot(&PUBLIC_STATE.lock(), current, development_requested())
+}
+
+fn status_from_snapshot(snapshot: &PublicState, current: Option<u64>, development_requested: bool) -> MitmStatus {
     let generation_current = snapshot.generation.is_some() && snapshot.generation == current;
     let state = if snapshot.generation.is_some() && !generation_current {
         Health::Degraded
@@ -62,7 +65,7 @@ pub(crate) fn status() -> MitmStatus {
         snapshot.health
     };
     MitmStatus {
-        development_requested: development_requested(),
+        development_requested,
         state,
         core_generation_current: generation_current,
         recovery_attempts: snapshot.attempts,
@@ -487,7 +490,11 @@ pub(crate) async fn ensure_runtime_worker() -> Result<()> {
             }
             session.child = None;
         }
-        session.start(&data)
+        let result = session.start(&data);
+        if result.is_err() {
+            session.set_health(Health::Failed);
+        }
+        result
     }).await?
 }
 
@@ -799,6 +806,46 @@ mod tests {
         assert!(validate_backup_entry("netverge-mitm-dev\\root.key", None).is_err());
         assert!(validate_backup_entry("profiles/link", Some(0o120777)).is_err());
         validate_backup_entry("profiles/ordinary.yaml", Some(0o100644))?;
+        Ok(())
+    }
+
+    #[test]
+    fn public_status_does_not_report_an_old_core_as_healthy() -> Result<()> {
+        let snapshot = PublicState {
+            health: Health::LocalLinkHealthy, generation: Some(42), attempts: 1, ca: None,
+        };
+        let current = status_from_snapshot(&snapshot, Some(42), true);
+        assert_eq!(current.state, Health::LocalLinkHealthy);
+        assert!(current.core_generation_current);
+        let stale = status_from_snapshot(&snapshot, Some(43), true);
+        assert_eq!(stale.state, Health::Degraded);
+        assert!(!stale.core_generation_current);
+        let wire = serde_json::to_value(stale)?;
+        assert_eq!(wire["state"], "degraded");
+        assert_eq!(wire["recoveryAttempts"], 1);
+        assert!(wire.get("password").is_none());
+        assert!(wire.get("healthSecret").is_none());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn private_runtime_write_does_not_inherit_old_permissions() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("netverge-private-runtime-{}", nanoid::nanoid!(12)));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("runtime.yaml");
+        let result = async {
+            std::fs::write(&path, "old: true")?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+            crate::utils::help::save_yaml_str_private(&path, "private: true", None).await?;
+            assert_eq!(std::fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::read_to_string(&path)?, "private: true");
+            Ok::<(), anyhow::Error>(())
+        }.await;
+        let cleanup = std::fs::remove_dir_all(dir);
+        result?;
+        cleanup?;
         Ok(())
     }
 

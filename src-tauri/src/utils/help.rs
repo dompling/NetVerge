@@ -142,13 +142,26 @@ pub async fn save_yaml<T: Serialize + Sync>(path: &Path, data: &T, prefix: Optio
 
 /// Atomic replace with pre-serialized content; the payload must not need the encryption scope.
 pub async fn save_yaml_str(path: &Path, yaml_str: &str, prefix: Option<&str>) -> Result<()> {
+    save_yaml_str_inner(path, yaml_str, prefix, false).await
+}
+
+/// For local runtime credentials: create private temporary bytes and do not
+/// inherit permissive Unix modes from an older destination.
+pub(crate) async fn save_yaml_str_private(path: &Path, yaml_str: &str, prefix: Option<&str>) -> Result<()> {
+    save_yaml_str_inner(path, yaml_str, prefix, true).await
+}
+
+async fn save_yaml_str_inner(path: &Path, yaml_str: &str, prefix: Option<&str>, private: bool) -> Result<()> {
     let (temporary, file) = loop {
         let temporary = path.with_extension(format!("tmp-{}-{}", std::process::id(), nanoid!()));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-        {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
             Ok(file) => break (temporary, file),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => {
@@ -183,7 +196,7 @@ pub async fn save_yaml_str(path: &Path, yaml_str: &str, prefix: Option<&str>) ->
     drop(file);
 
     match tokio::fs::symlink_metadata(path).await {
-        Ok(metadata) if metadata.file_type().is_file() => {
+        Ok(metadata) if metadata.file_type().is_file() && (!private || !cfg!(unix)) => {
             tokio::fs::set_permissions(temporary.as_path(), metadata.permissions())
                 .await
                 .with_context(|| format!("failed to preserve permissions for \"{}\"", path.display()))?;

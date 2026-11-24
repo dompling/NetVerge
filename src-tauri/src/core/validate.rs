@@ -429,7 +429,11 @@ impl CoreConfigValidator {
         }
 
         let check_path = dirs::app_home_dir()?.join(crate::constants::files::CHECK_CONFIG);
-        help::save_yaml_str(&check_path, yaml, None).await?;
+        if crate::core::mitm::development_requested() {
+            help::save_yaml_str_private(&check_path, yaml, None).await?;
+        } else {
+            help::save_yaml_str(&check_path, yaml, None).await?;
+        }
         let outcome = Self::validate_config_internal_outcome(dirs::path_to_str(&check_path)?).await?;
         if outcome.is_valid() {
             *LAST_VALIDATED.lock() = Some(fingerprint);

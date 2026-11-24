@@ -17,3 +17,5 @@ One Session owns process and CA. Lightweight public snapshot only mirrors observ
 - No system trust modification, no UI, no release. Previous full network and lifecycle regressions must remain green.
 
 **Gate: pending compilation, generated contract parity, network test and security re-review.** Public snapshot is not a real-time proof of external TLS health.
+
+Re-review: the pre-existing atomic YAML writer preserved destination permissions and created temporary files with default mode. Reuse that writer with a private option for MITM development runtime and validation YAML; on Unix create with 0600 before writing and do not inherit an old permissive mode. Windows ACL behavior is intentionally not claimed. Add a test replacing an existing 0644 file. Add a public snapshot stale-generation/wire-contract test and publish Failed when initial worker startup fails. The remaining service staging copies and Windows ACL still need validation. CI generation uses the existing Specta script; the generated file is uploaded for review and is not yet committed to the branch.
