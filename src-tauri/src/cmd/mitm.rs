@@ -28,3 +28,11 @@ pub async fn export_mitm_public_ca() -> super::CmdResult<bool> {
     use super::StringifyErr as _;
     mitm::trust::export().await.stringify_err()
 }
+
+/// Open the native certificate manager after explicit confirmation; never changes trust.
+#[tauri::command]
+#[specta::specta]
+pub async fn open_mitm_certificate_manager(expected_fingerprint: String) -> super::CmdResult<bool> {
+    use super::StringifyErr as _;
+    mitm::trust::open_manager(expected_fingerprint).await.stringify_err()
+}

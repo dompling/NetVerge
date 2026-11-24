@@ -1,5 +1,5 @@
-//! Read-only native trust assessment and explicit public CA export.
-//! No certificate installation, private key access, arbitrary input or elevation.
+//! Native read-only trust assessment, public CA export and explicit OS manager launch.
+//! No automatic certificate installation/removal, private key access or elevation.
 use super::{MitmPublicCa, public_ca};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -10,6 +10,7 @@ use tokio::{io::AsyncWriteExt as _, sync::Semaphore};
 
 static INSPECTION: Semaphore = Semaphore::const_new(1);
 static EXPORT: Semaphore = Semaphore::const_new(1);
+static MANAGEMENT: Semaphore = Semaphore::const_new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
@@ -243,6 +244,75 @@ pub(crate) async fn export() -> Result<bool> {
     Ok(true)
 }
 
+
+// The frontend may identify the current public CA, never supply a certificate,
+// executable path, store name, or arbitrary arguments.
+fn management_identity(ca: &MitmPublicCa, expected_fingerprint: &str) -> Result<()> {
+    ensure!(ca.sha256_fingerprint == expected_fingerprint, "MITM CA changed; refresh certificate status");
+    ca_der(ca)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn launch_native_manager() -> Result<()> {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, process::Command};
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    // SAFETY: buffer is writable and remains alive during the Win32 call.
+    let mut buffer = vec![0u16; 32768];
+    let len = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    ensure!(len != 0 && len < buffer.len(), "Windows system directory unavailable");
+    let system = PathBuf::from(OsString::from_wide(&buffer[..len]));
+    let mmc = system.join("mmc.exe");
+    let console = system.join("certmgr.msc");
+    ensure!(mmc.is_file() && console.is_file(), "Windows certificate manager unavailable");
+    // certmgr.msc opens the current user's stores. Do not request elevation.
+    Command::new(mmc).arg(console).spawn().context("failed to open Windows certificate manager")?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn launch_native_manager() -> Result<()> {
+    use std::process::Command;
+    let app = [
+        "/System/Library/CoreServices/Applications/Keychain Access.app",
+        "/System/Applications/Utilities/Keychain Access.app",
+    ].into_iter().find(|candidate| Path::new(candidate).is_dir())
+        .context("macOS Keychain Access unavailable")?;
+    let status = Command::new("/usr/bin/open").arg("-a").arg(app).status()
+        .context("failed to open Keychain Access")?;
+    ensure!(status.success(), "macOS certificate manager did not open");
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn launch_native_manager() -> Result<()> {
+    anyhow::bail!("native certificate management is deferred on this platform")
+}
+
+pub(crate) async fn open_manager(expected_fingerprint: String) -> Result<bool> {
+    ensure!(cfg!(any(windows, target_os = "macos")), "native certificate management is deferred on this platform");
+    let _permit = MANAGEMENT.try_acquire().context("certificate management already running")?;
+    let ca = public_ca().context("no verified MITM public certificate is available")?;
+    management_identity(&ca, &expected_fingerprint)?;
+    let description = format!(
+        "NetVerge CA SHA-256:\n{}\n\nRoot certificate trust allows HTTPS interception. This opens the system certificate manager only. Review the exact certificate; do not remove or trust unrelated certificates. NetVerge will not change trust automatically. After a manual change, refresh certificate status.",
+        ca.sha256_fingerprint
+    );
+    let answer = rfd::AsyncMessageDialog::new()
+        .set_title("Manage NetVerge CA")
+        .set_description(description)
+        .set_level(rfd::MessageLevel::Warning)
+        .set_buttons(rfd::MessageButtons::OkCancel)
+        .show().await;
+    if answer != rfd::MessageDialogResult::Ok {
+        return Ok(false);
+    }
+    let current = public_ca().context("MITM CA unavailable; refresh certificate status")?;
+    management_identity(&current, &expected_fingerprint)?;
+    tokio::task::spawn_blocking(launch_native_manager).await.context("certificate manager task failed")??;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +330,17 @@ mod tests {
     // Public-only test fixture, generated for this test; its key was discarded.
     fn fixture() -> Result<MitmPublicCa> {
         super::super::public_ca_from_der(include_str!("test-ca.der.b64").trim())
+    }
+
+    #[test]
+    fn native_management_requires_the_exact_current_certificate() -> Result<()> {
+        let ca = fixture()?;
+        management_identity(&ca, &ca.sha256_fingerprint)?;
+        assert!(management_identity(&ca, "").is_err());
+        assert!(management_identity(&ca, &"0".repeat(64)).is_err());
+        let tampered = MitmPublicCa { sha256_fingerprint: ca.sha256_fingerprint.clone(), pem: "not a certificate".into() };
+        assert!(management_identity(&tampered, &ca.sha256_fingerprint).is_err());
+        Ok(())
     }
 
     #[tokio::test]

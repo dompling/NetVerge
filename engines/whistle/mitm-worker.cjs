@@ -1,9 +1,9 @@
 'use strict';
 
 const path = require('node:path');
-const fs = require('node:fs');
 const http = require('node:http');
-const { timingSafeEqual, randomBytes, createHash, X509Certificate } = require('node:crypto');
+const { timingSafeEqual, randomBytes, createHash } = require('node:crypto');
+const { readVerifiedCa } = require('./ca-integrity.cjs');
 if (process.platform !== 'win32') process.umask(0o077);
 const whistle = require('whistle');
 const [legacyDataDir, portText, returnPortText] = process.argv.slice(2);
@@ -217,32 +217,7 @@ server.listen(port, '127.0.0.1', () => whistle({
   // Never return arbitrary paths or file contents to the parent.
   let caPath, caDer;
   try {
-    const root = fs.realpathSync(dataDir);
-    caPath = proxy.httpsUtil.getRootCAFile();
-    const resolved = fs.realpathSync(caPath);
-    const relative = path.relative(root, resolved);
-    const stat = fs.lstatSync(caPath);
-    if (!relative || relative === '..' || relative.startsWith('..' + path.sep) ||
-        path.isAbsolute(relative) || !stat.isFile() || stat.size > 32768 ||
-        !['root.crt', 'root_new.crt'].includes(path.basename(resolved))) {
-      throw new Error('Unexpected CA location');
-    }
-    const pem = fs.readFileSync(resolved, 'utf8');
-    if (!/^\s*-----BEGIN CERTIFICATE-----[\sA-Za-z0-9+/=]+-----END CERTIFICATE-----\s*$/.test(pem)) {
-      throw new Error('Expected one public certificate');
-    }
-    const cert = new X509Certificate(pem);
-    if (!cert.ca || !cert.checkIssued(cert) || !cert.verify(cert.publicKey) ||
-        Date.parse(cert.validFrom) > Date.now() || Date.parse(cert.validTo) <= Date.now()) {
-      throw new Error('Invalid CA');
-    }
-    if (process.platform !== 'win32') {
-      const key = path.join(path.dirname(resolved), path.basename(resolved, '.crt') + '.key');
-      if (!fs.lstatSync(key).isFile() || fs.realpathSync(key) !== key) throw new Error('Unexpected CA key location');
-      fs.chmodSync(key, 0o600);
-    }
-    caDer = cert.raw.toString('base64');
-    if (cert.raw.length > 16384) throw new Error('CA too large');
+    ({ caPath, caDer } = readVerifiedCa(dataDir, proxy.httpsUtil.getRootCAFile()));
   } catch {
     console.error('MITM root certificate validation failed');
     process.exit(1);

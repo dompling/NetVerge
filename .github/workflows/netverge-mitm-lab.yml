@@ -81,6 +81,9 @@ jobs:
       - name: Install lab dependencies
         working-directory: engines/whistle
         run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Verify root CA custody and key correspondence
+        working-directory: engines/whistle
+        run: node --test ca-integrity.test.cjs
       - name: Verify selective HTTPS interception
         working-directory: engines/whistle
         run: npm run test:mitm
