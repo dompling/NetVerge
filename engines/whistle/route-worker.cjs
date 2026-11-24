@@ -32,7 +32,26 @@ function removeRoute(route) {
   clearTimeout(route.timer);
   route.active = false;
   route.socket?.destroy();
-  route.agent?.destroy();
+  // Whistle 2.10.15 uses hagent.TunnelingAgent, not http.Agent.
+  // Drain pending requests before destroying sockets: removeSocket would
+  // otherwise launch another queued CONNECT. Socket entries can be placeholders.
+  for (const state of route.agentStates || []) {
+    const { agent, connecting } = state;
+    const pending = Array.isArray(agent.requests) ? agent.requests.splice(0) : [];
+    for (const item of pending) {
+      item.request?.destroy?.();
+    }
+    for (const req of connecting) req.destroy();
+    connecting.clear();
+    if (typeof agent.destroy === 'function') {
+      agent.destroy();
+    } else if (Array.isArray(agent.sockets)) {
+      for (const socket of agent.sockets.slice()) {
+        if (typeof socket?.destroy === 'function') socket.destroy();
+      }
+    }
+  }
+  route.agentStates?.clear();
 }
 function reply(res,status) {
   if (res.destroyed || res.writableEnded) return;
@@ -199,8 +218,34 @@ config.getHttpsAgent = function(options, requestOptions) {
   if (route) {
     const prior = agents.get(agent);
     if (prior && prior !== route) throw new Error('Cross-route HTTPS agent reuse');
-    agents.set(agent, route);
-    route.agent = agent;
+    if (!prior) {
+      // hagent.request is the underlying CONNECT ClientRequest factory.
+      // Retain pending CONNECTs as well as established sockets so a
+      // revocation cannot leave an asynchronous connection in flight.
+      if (!Array.isArray(agent.sockets) || !Array.isArray(agent.requests) ||
+          typeof agent.request !== 'function' || typeof agent.addRequest !== 'function') {
+        throw new Error('Unsupported pinned Whistle agent layout');
+      }
+      const connecting = new Set();
+      const originalRequest = agent.request;
+      const originalAddRequest = agent.addRequest;
+      agent.request = function(...args) {
+        const req = originalRequest.apply(this, args);
+        connecting.add(req);
+        req.once('close', () => connecting.delete(req));
+        if (!route.active) req.destroy();
+        return req;
+      };
+      agent.addRequest = function(req, ...args) {
+        if (!route.active) {
+          req.destroy(new Error('NetVerge route revoked'));
+          return;
+        }
+        return originalAddRequest.call(this, req, ...args);
+      };
+      (route.agentStates ||= new Set()).add({agent,connecting});
+      agents.set(agent, route);
+    }
     console.error('Dynamic route: lease-specific HTTPS agent selected');
   }
   return agent;

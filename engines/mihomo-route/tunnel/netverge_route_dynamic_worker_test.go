@@ -119,7 +119,9 @@ func TestNetVergeDynamicWhistleRegistry(t *testing.T) {
 	go func(){results<-run("dynamic-a","dynamic-a")}()
 	go func(){results<-run("dynamic-b","dynamic-b")}()
 	for i:=0;i<2;i++{if err:=<-results;err!=nil{t.Fatal(err)}}
-	if ca.Load()!=1||cb.Load()!=1||oa.requests.Load()!=1||ob.requests.Load()!=1||handlerErrors.Load()!=0||removeErrors.Load()!=0{t.Fatal("concurrent dynamic routes crossed or redialed")}
+	if ca.Load()!=1||cb.Load()!=1||oa.requests.Load()!=1||ob.requests.Load()!=1||handlerErrors.Load()!=0||removeErrors.Load()!=0{
+		t.Fatalf("dynamic registry counters: dials=%d/%d origin=%d/%d handlerErrors=%d removeErrors=%d",ca.Load(),cb.Load(),oa.requests.Load(),ob.requests.Load(),handlerErrors.Load(),removeErrors.Load())
+	}
 	for _,id:=range ids{
 		token:="Basic "+base64.StdEncoding.EncodeToString([]byte("netverge:"+id))
 		raw,status,err:=nvWhistleConnect(w,nvWhistleAuthority,token)
@@ -129,6 +131,13 @@ func TestNetVergeDynamicWhistleRegistry(t *testing.T) {
 	revoke.Store(true)
 	if err=run("dynamic-a","dynamic-a");err==nil{t.Fatal("revoked route succeeded")}
 	if ca.Load()!=2||cb.Load()!=1||oa.requests.Load()!=1||ob.requests.Load()!=1||handlerErrors.Load()!=1||removeErrors.Load()!=0{t.Fatal("revocation retried or fell back")}
+	// A successful new registration after DELETE proves the worker and its
+	// agent cleanup path remain operational, not merely that DELETE returned.
+	revoke.Store(false)
+	if err=run("dynamic-b","dynamic-b");err!=nil{t.Fatal(err)}
+	if ca.Load()!=2||cb.Load()!=2||oa.requests.Load()!=1||ob.requests.Load()!=2||handlerErrors.Load()!=1||removeErrors.Load()!=0{
+		t.Fatalf("post-revoke counters: dials=%d/%d origin=%d/%d handlerErrors=%d removeErrors=%d",ca.Load(),cb.Load(),oa.requests.Load(),ob.requests.Load(),handlerErrors.Load(),removeErrors.Load())
+	}
 	if oa.leaked.Load()||ob.leaked.Load(){t.Fatal("credential leakage")}
 	t.Log("PASS: native TCP handoff through one dynamic Whistle worker; concurrent route isolation, authenticated registration, revocation and no fallback")
 }
