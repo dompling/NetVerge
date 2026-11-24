@@ -17,6 +17,11 @@ on:
       - 'src-tauri/src/core/manager/**'
       - '.github/workflows/netverge-mitm-lab.yml'
 
+# Only the latest push to this integration branch matters; preserve manual runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && 'latest-push' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
 permissions:
   contents: read
 

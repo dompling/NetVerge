@@ -20,6 +20,11 @@ on:
       - '.cargo/config.toml'
       - '.github/workflows/cross_check.yaml'
 
+# Only the latest push to this integration branch matters; preserve manual runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && 'latest-push' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
 permissions:
   contents: read
 

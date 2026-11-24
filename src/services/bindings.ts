@@ -44,6 +44,11 @@ export const commands = {
   /**  Returns the last verified public CA only. Never installs trust or exports a private key. */
   getMitmPublicCa: () =>
     __TAURI_INVOKE<MitmPublicCa | null>('get_mitm_public_ca'),
+  /**  Inspect the exact public CA in the native stores without modifying trust. */
+  getMitmTrustStatus: () =>
+    __TAURI_INVOKE<MitmTrustStatus_Serialize>('get_mitm_trust_status'),
+  /**  Save the verified public CA using an explicit native save dialog. */
+  exportMitmPublicCa: () => __TAURI_INVOKE<boolean>('export_mitm_public_ca'),
   getPendingFailures: () =>
     __TAURI_INVOKE<PendingFailure[]>('get_pending_failures'),
   getSidecarFailure: () =>
@@ -629,6 +634,36 @@ export type MitmStatus_Serialize = {
   recoveryAttempts: number
   maxRecoveryAttempts: number
   caFingerprint: string | null
+}
+
+export type MitmStoreMatch = 'present' | 'absent' | 'unknown' | 'unsupported'
+
+export type MitmTrustAssessment =
+  | 'no_certificate'
+  | 'not_found_in_checked_stores'
+  | 'present_unverified'
+  | 'explicitly_distrusted'
+  | 'root_policy_accepted'
+  | 'root_policy_rejected'
+  | 'unknown'
+  | 'unsupported'
+
+export type MitmTrustStatus =
+  | MitmTrustStatus_Serialize
+  | MitmTrustStatus_Deserialize
+
+export type MitmTrustStatus_Deserialize = {
+  fingerprint?: string | null
+  userStore: MitmStoreMatch
+  systemStore: MitmStoreMatch
+  assessment: MitmTrustAssessment
+}
+
+export type MitmTrustStatus_Serialize = {
+  fingerprint: string | null
+  userStore: MitmStoreMatch
+  systemStore: MitmStoreMatch
+  assessment: MitmTrustAssessment
 }
 
 export type NetworkInterfaceView =
