@@ -5,9 +5,10 @@ import {
 import { useLockFn } from 'ahooks'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import useSWR from 'swr'
+import useSWR, { useSWRConfig } from 'swr'
 
 import { BasePage } from '@/components/base'
+import { MitmConfigEditor, MITM_CONFIG_KEY } from '@/components/mitm/mitm-config-editor'
 import {
   canManageMitmCertificate,
   hasMitmIdentityMismatch,
@@ -30,6 +31,7 @@ async function readSnapshot(): Promise<MitmSnapshot> {
 const MitmPage = () => {
   const { t } = useTranslation()
   const [busy, setBusy] = useState(false)
+  const { mutate: revalidate } = useSWRConfig()
   // The route is mounted only while visiting MITM. Never poll native stores.
   const { data, error, isValidating, mutate } = useSWR(
     'netverge-mitm-certificate-status',
@@ -70,7 +72,7 @@ const MitmPage = () => {
       title={t('settings.mitm.title')}
       header={
         <Button size="small" variant="outlined" startIcon={<RefreshRounded />}
-          disabled={busy || isValidating} onClick={() => void mutate()}>
+          disabled={busy || isValidating} onClick={() => { void mutate(); void revalidate(MITM_CONFIG_KEY) }}>
           {t('settings.mitm.refresh')}
         </Button>
       }
@@ -78,6 +80,7 @@ const MitmPage = () => {
       <Stack spacing={1.5}>
         <Typography variant="body2" color="text.secondary">{t('settings.mitm.summary')}</Typography>
         <Alert severity="info">{t('settings.mitm.experimental')}</Alert>
+        <MitmConfigEditor />
         {error && <Alert severity="error">{t('settings.mitm.error')}</Alert>}
         {isValidating && <Typography variant="caption" role="status">{t('settings.mitm.loading')}</Typography>}
         {status && !error && (

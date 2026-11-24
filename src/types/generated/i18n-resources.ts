@@ -916,6 +916,40 @@ export interface TranslationResources {
         }
         certificate: string
         close: string
+        config: {
+          active: string
+          conflict: string
+          currentNotProof: string
+          dirty: string
+          disabled: string
+          discard: string
+          duplicateHost: string
+          enable: string
+          enabled: string
+          hostname: string
+          hostnameHint: string
+          hostnamePlaceholder: string
+          invalidHost: string
+          loading: string
+          missingPolicy: string
+          noHosts: string
+          none: string
+          notAvailable: string
+          pending: string
+          pendingDescription: string
+          policy: string
+          policyHint: string
+          readError: string
+          requiresHost: string
+          requiresPolicy: string
+          restartNote: string
+          save: string
+          saved: string
+          savedNotice: string
+          selectPolicy: string
+          title: string
+          tooManyHosts: string
+        }
         error: string
         experimental: string
         export: string

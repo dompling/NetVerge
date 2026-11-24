@@ -125,7 +125,7 @@ jobs:
           pnpm typecheck
           pnpm i18n:types
           git diff --exit-code -- src/types/generated/i18n-keys.ts src/types/generated/i18n-resources.ts
-          pnpm test src/components/mitm/mitm-view-model.test.ts src/pages/navigation-meta.test.ts
+          pnpm test src/components/mitm/mitm-view-model.test.ts src/components/mitm/mitm-config-model.test.ts src/pages/navigation-meta.test.ts
           pnpm arch:check
 
       - name: Upload generated frontend contract

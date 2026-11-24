@@ -509,3 +509,6 @@ export const getMitmStatus = commands.getMitmStatus
 export const getMitmTrustStatus = commands.getMitmTrustStatus
 export const exportMitmPublicCa = commands.exportMitmPublicCa
 export const openMitmCertificateManager = commands.openMitmCertificateManager
+
+export const getMitmConfig = commands.getMitmConfig
+export const saveMitmConfig = commands.saveMitmConfig
