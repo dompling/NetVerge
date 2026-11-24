@@ -250,11 +250,13 @@ func nvWhistleRequestProof(c net.Conn, root *x509.CertPool, proof string) ([]byt
 	if err != nil { return nil, err }
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil || resp.StatusCode != 200 || string(body) != proof {
 		kind := "unclassified"
 		for _, code := range []string{"CERT_SIGNATURE_FAILURE", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "SELF_SIGNED_CERT_IN_CHAIN", "ERR_TLS_CERT_ALTNAME_INVALID", "certificate signature failure", "unable to verify the first certificate", "unable to get local issuer certificate", "self-signed certificate", "ECONNRESET", "ECONNREFUSED", "socket hang up", "tunneling socket could not be established", "statusCode=407", "statusCode=403"} {
 			if strings.Contains(string(body), code) { kind = code; break }
 		}
 		return nil, fmt.Errorf("unexpected origin response: status=%d category=%s err=%v", resp.StatusCode, kind, err)
+	}
 	return peer,nil
 }
 
