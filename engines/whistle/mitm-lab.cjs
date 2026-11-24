@@ -115,6 +115,19 @@ async function stop(child) {
   await timeout(closed, 5000, 'child exit').catch(() => child.kill('SIGKILL'));
 }
 
+function rawIngressStatus(port, host, originPort, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const authority = host + ':' + originPort;
+    const request = http.request({
+      host: '127.0.0.1', port, path: 'https://' + authority + '/netverge-proof',
+      headers: { Host: authority, ...headers }, agent: false,
+    }, res => { res.resume(); res.once('end', () => resolve(res.statusCode)); });
+    request.setTimeout(3000, () => request.destroy(new Error('Raw ingress check timed out')));
+    request.once('error', reject);
+    request.end();
+  });
+}
+
 function dial(port, host, originPort, ca, password = '') {
   return new Promise((resolve, reject) => {
     const authority = host + ':' + originPort;
@@ -234,7 +247,7 @@ async function main() {
     const fingerprint = new X509Certificate(certs.cert).fingerprint256;
     const received = [];
     origin = https.createServer({ key: certs.key, cert: certs.cert }, (req, res) => {
-      received.push({ host: req.headers.host, url: req.url });
+      received.push({ host: req.headers.host, url: req.url, internalData: req.headers['x-whistle-tunnel-data'], proxyAuth: req.headers['proxy-authorization'] });
       res.end('netverge-origin-proof');
     });
     const originPort = await listen(origin);
@@ -292,7 +305,10 @@ async function main() {
     await assert.rejects(dial(proxy, TARGET, originPort, whistleCa), /CONNECT status 407/);
     await assert.rejects(dial(proxy, BYPASS, originPort, certs.ca, forwardPassword), /CONNECT status 403/);
     await assert.rejects(dial(back, TARGET, originPort, certs.ca), /CONNECT status (407|403)/);
-    console.log('PASS: unauthorized ingress and return denied; authenticated non-target ingress denied');
+    assert.equal(await rawIngressStatus(proxy, TARGET, originPort), 403);
+    assert.equal(await rawIngressStatus(proxy, TARGET, originPort, { 'x-whistle-tunnel-data': 'forged' }), 403);
+    assert.equal(await rawIngressStatus(proxy, TARGET, originPort, { 'Proxy-Authorization': 'Basic ' + Buffer.from('netverge:' + forwardPassword).toString('base64') }), 403);
+    console.log('PASS: unauthorized ingress and return denied; authenticated non-target ingress and direct HTTP denied');
 
     // Verify the real Mihomo return path before the MITM route.
     const direct = await dial(back, TARGET, originPort, certs.ca, password);
@@ -314,6 +330,7 @@ async function main() {
     assert.match(intercepted.response, /^HTTP\/1\.[01] 200 /);
     assert.match(intercepted.response, /netverge-origin-proof/);
     assert.ok(received.some(r => r.host === TARGET + ':' + originPort && r.url === '/netverge-proof'));
+    assert.ok(received.every(r => !r.internalData && !r.proxyAuth), 'internal authentication data reached origin');
     const expectedUrl = 'https://' + TARGET + ':' + originPort + '/netverge-proof';
     const deadline = Date.now() + 3000;
     while (!observations.some(x => x.url === expectedUrl && x.method === 'GET') && Date.now() < deadline) {
