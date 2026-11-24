@@ -2,7 +2,7 @@
 
 const path = require('node:path');
 const http = require('node:http');
-const { timingSafeEqual } = require('node:crypto');
+const { timingSafeEqual, randomBytes } = require('node:crypto');
 const whistle = require('whistle');
 const [legacyDataDir, portText, returnPortText] = process.argv.slice(2);
 const desktop = !process.send;
@@ -32,18 +32,38 @@ delete process.env.NETVERGE_MITM_WORKER_CONFIG;
 delete process.env.NETVERGE_LAB_FORWARD_PASSWORD;
 delete process.env.NETVERGE_LAB_RETURN_PASSWORD;
 const auth = password ? 'netverge:' + password + '@' : '';
-// Supply Whistle's documented custom server instead of creating another proxy port.
-// Guard external HTTP events before Whistle's listeners can process them.
-// Whistle's internal HTTPS server may emit decrypted request events on this server.
+// Whistle carries tunnel data from the authenticated CONNECT socket to its
+// internal HTTPS-to-HTTP bridge. A per-tunnel capability binds that bridge
+// to the admitted authority; socket identity alone does not survive it.
+const TUNNEL_DATA = 'x-whistle-tunnel-data';
 const server = http.createServer();
-const external = new WeakSet();
-const authorized = new WeakSet();
+const capabilities = new Map();
 const allowed = new Set(hosts.map(host => host + ':' + targetPort));
 const expected = Buffer.from('Basic ' + Buffer.from('netverge:' + forwardPassword).toString('base64'));
 let ready = false;
+function stripHeader(req, name) {
+  delete req.headers[name];
+  if (!Array.isArray(req.rawHeaders)) return;
+  for (let i = req.rawHeaders.length - 2; i >= 0; i -= 2) {
+    if (req.rawHeaders[i].toLowerCase() === name) req.rawHeaders.splice(i, 2);
+  }
+}
+function matchesAuthority(req, authority) {
+  if (!authority || typeof req.headers.host !== 'string') return false;
+  try {
+    const expectedUrl = new URL('https://' + authority);
+    const hostUrl = new URL('https://' + req.headers.host);
+    const target = new URL(req.url, expectedUrl);
+    return hostUrl.origin === expectedUrl.origin &&
+      target.origin === expectedUrl.origin &&
+      !hostUrl.username && !hostUrl.password && hostUrl.pathname === '/' &&
+      !target.username && !target.password;
+  } catch {
+    return false;
+  }
+}
 const originalEmit = server.emit;
 server.emit = function(event, ...args) {
-  if (event === 'connection') external.add(args[0]);
   if (event === 'connect') {
     const [req, socket] = args;
     const header = Buffer.from(req.headers['proxy-authorization'] || '');
@@ -53,23 +73,32 @@ server.emit = function(event, ...args) {
         '\r\nConnection: close\r\nContent-Length: 0\r\nProxy-Authenticate: Basic realm="NetVerge"\r\n\r\n');
       return true;
     }
-    authorized.add(socket);
-    delete req.headers['proxy-authorization'];
-    for (let i = req.rawHeaders.length - 2; i >= 0; i -= 2) {
-      if (req.rawHeaders[i].toLowerCase() === 'proxy-authorization') req.rawHeaders.splice(i, 2);
-    }
-  }
-  if (event === 'request' || event === 'upgrade') {
-    const [req, res] = args;
-    if (external.has(req.socket) && !authorized.has(req.socket)) {
-      if (event === 'request') {
-        res.writeHead(403, { Connection: 'close', 'Content-Length': '0' });
-        res.end();
-      } else {
-        res.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
-      }
+    if (capabilities.size >= 4096) {
+      socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       return true;
     }
+    stripHeader(req, 'proxy-authorization');
+    stripHeader(req, TUNNEL_DATA);
+    const capability = randomBytes(32).toString('hex');
+    capabilities.set(capability, req.url);
+    socket.once('close', () => capabilities.delete(capability));
+    req.headers[TUNNEL_DATA] = capability;
+  }
+  if (event === 'request') {
+    const [req, res] = args;
+    const capability = req.headers[TUNNEL_DATA];
+    const authority = capabilities.get(capability);
+    stripHeader(req, TUNNEL_DATA);
+    stripHeader(req, 'proxy-authorization');
+    if (!ready || !matchesAuthority(req, authority)) {
+      res.writeHead(403, { Connection: 'close', 'Content-Length': '0' });
+      res.end();
+      return true;
+    }
+  }
+  if (event === 'upgrade') {
+    args[1].end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return true;
   }
   return originalEmit.call(this, event, ...args);
 };
