@@ -30,3 +30,7 @@ Windows run 45361054821 passed prior DIRECT, typed dynamic-group and simulated l
 ## Review 21: real Trojan TCP+TLS
 
 Windows run 45362776257 passed both real Shadowsocks AEAD ciphers. Verify actual upstream Trojan client with two controlled local TLS listeners, using the upstream key and SOCKS destination parser. Each proxy has a distinct generated CA independent of both origin CAs; native TLS pinning checks the root and hostname. Change native Selector between original dials, require distinct authenticated target and origin proofs, one accepted connection per positive route and denied lease replay. An incorrect proxy CA pin must fail before lease handoff. Keep the conservative admission gate unchanged. Test only TCP+TLS; Trojan WS/gRPC/UDP and real lazy variants remain unverified. Windows CI required, macOS deferred.
+
+## Review 22: real VMess AEAD
+
+Windows run 45363709524 passed the real Trojan TCP+TLS and wrong-pin rejection tests. Verify upstream VMess TCP AEAD (alterId 0) using the pinned sing-vmess service, independent random UUIDs, AES-128-GCM and ChaCha20-Poly1305. Verify authenticated identity and fixed destination, original group stream preservation, exact counts, distinct origin proofs and lease replay denial. Keep production admission unchanged; plain TCP AEAD is not proof of lazy WS/gRPC transports. Windows CI required.
