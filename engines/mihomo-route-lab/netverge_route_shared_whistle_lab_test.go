@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"net"
 	"os"
+	"os/exec"
+	"strings"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -60,6 +62,22 @@ func TestNetVergeRouteLeaseSharedWhistle(t *testing.T) {
 	caB,err := os.ReadFile(originB.caPath)
 	if err!=nil { t.Fatal(err) }
 	if err=os.WriteFile(roots,append(caA,caB...),0600); err!=nil { t.Fatal(err) }
+	// Verify the exact combined roots with the same Node TLS implementation
+	// before involving Whistle. Both connections are direct local fixture
+	// handshakes, not application traffic or extra proxy dials.
+	const nodeVerify = "const tls=require('node:tls'),fs=require('node:fs');const s=tls.connect({host:'127.0.0.1',port:Number(process.argv[2]),servername:'route.netverge.test',ca:fs.readFileSync(process.argv[1]),rejectUnauthorized:true},()=>{if(!s.authorized){process.exitCode=1;}s.end();});s.setTimeout(5000,()=>{s.destroy();process.exitCode=1;});s.on('error',e=>{console.error(e.code||'TLS_ERROR');process.exitCode=1;});"
+	for _, origin := range []*nvWhistleOrigin{originA, originB} {
+		ctx,cancel := context.WithTimeout(context.Background(),nvLabTimeout)
+		cmd := exec.CommandContext(ctx,"node","-e",nodeVerify,roots,func() string { _,port,err:=net.SplitHostPort(origin.server.Listener.Addr().String()); if err!=nil { t.Fatal(err) }; return port }())
+		cmd.Env = append(os.Environ(),"NODE_OPTIONS=","NODE_TLS_REJECT_UNAUTHORIZED=1")
+		out,err := cmd.CombinedOutput()
+		cancel()
+		if err!=nil {
+			// Child emits only a fixed TLS error code.
+			t.Fatalf("combined origin CA preflight failed: %s (%v)",strings.TrimSpace(string(out)),err)
+		}
+	}
+	t.Log("PASS: both origin certificates verified by Node with combined roots")
 	worker := nvWhistleLaunch(t,roots,routes,nil)
 	authenticate := func(key string) string { return "Basic "+base64.StdEncoding.EncodeToString([]byte("netverge:"+key)) }
 

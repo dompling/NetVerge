@@ -168,6 +168,7 @@ denied.listen(0, '127.0.0.1', () => {
       '/.*/ proxy://127.0.0.1:' + denied.address().port,
     ].join('\n'),
   }, proxy => {
+    if (config.rejectUnauthorized !== true) return die();
     let caDer;
     try { ({caDer} = readVerifiedCa(dataDir, proxy.httpsUtil.getRootCAFile())); }
     catch { return die(); }

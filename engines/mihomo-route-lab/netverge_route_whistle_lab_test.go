@@ -61,8 +61,17 @@ func nvWhistleNewOriginWithProof(t *testing.T, proof string) *nvWhistleOrigin {
 	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil { t.Fatal(err) }
 	now := time.Now()
-	ca := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "NetVerge route lab origin CA"}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	// Distinct issuers are essential when both local roots are loaded into
+	// one OpenSSL trust store. Reusing issuer DN and serial for different
+	// keys makes chain construction ambiguous.
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
+	if err != nil { t.Fatal(err) }
+	serial.Add(serial, big.NewInt(1))
+	ca := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "NetVerge route lab origin CA " + proof}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
 	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
+	if err != nil { t.Fatal(err) }
+	// Parse the signed CA so the leaf receives its actual SubjectKeyId as AKI.
+	ca, err = x509.ParseCertificate(caDER)
 	if err != nil { t.Fatal(err) }
 	leaf := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: nvWhistleHost}, DNSNames: []string{nvWhistleHost}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	leafDER, err := x509.CreateCertificate(rand.Reader, leaf, ca, &leafKey.PublicKey, caKey)
@@ -241,7 +250,11 @@ func nvWhistleRequestProof(c net.Conn, root *x509.CertPool, proof string) ([]byt
 	if err != nil { return nil, err }
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if err != nil || resp.StatusCode != 200 || string(body) != proof { return nil, fmt.Errorf("unexpected origin response: status=%d err=%v", resp.StatusCode, err) }
+		kind := "unclassified"
+		for _, code := range []string{"CERT_SIGNATURE_FAILURE", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "SELF_SIGNED_CERT_IN_CHAIN", "ERR_TLS_CERT_ALTNAME_INVALID", "certificate signature failure", "unable to verify the first certificate", "unable to get local issuer certificate", "self-signed certificate", "ECONNRESET", "ECONNREFUSED", "socket hang up", "tunneling socket could not be established", "statusCode=407", "statusCode=403"} {
+			if strings.Contains(string(body), code) { kind = code; break }
+		}
+		return nil, fmt.Errorf("unexpected origin response: status=%d category=%s err=%v", resp.StatusCode, kind, err)
 	return peer,nil
 }
 
