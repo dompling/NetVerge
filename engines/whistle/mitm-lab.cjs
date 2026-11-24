@@ -286,18 +286,21 @@ async function main() {
 
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(WHISTLE_|PFORK_|NODE_OPTIONS$|NODE_PATH$|NODE_TLS_REJECT_UNAUTHORIZED$|(?:HTTP|HTTPS|ALL|NO)_PROXY$)/i.test(k)));
     Object.assign(env, { HOME: dir, USERPROFILE: dir, NODE_EXTRA_CA_CERTS: originCa, NETVERGE_LAB_RETURN_PASSWORD: password, NETVERGE_LAB_FORWARD_PASSWORD: forwardPassword, NETVERGE_LAB_TARGET_PORT: String(originPort) });
-    worker = fork(path.join(__dirname, 'mitm-worker.cjs'), [dir, String(proxy), String(back)], { env, execArgv: [], stdio: ['ignore', 'inherit', 'inherit', 'ipc'], windowsHide: true });
     const observations = [];
     const tunnels = [];
-    const ready = await timeout(new Promise((resolve, reject) => {
-      worker.on('message', m => {
-        if (m.event === 'ready') resolve(m);
-        if (m.event === 'observed') observations.push(m);
-        if (m.event === 'tunnel') { tunnels.push(m.url); console.log('Whistle CONNECT:', m.url); }
-      });
-      worker.once('error', reject);
-      worker.once('exit', code => reject(new Error('Whistle exited: ' + code)));
-    }), 20000, 'Whistle readiness');
+    async function launchWorker() {
+      worker = fork(path.join(__dirname, 'mitm-worker.cjs'), [dir, String(proxy), String(back)], { env, execArgv: [], stdio: ['ignore', 'inherit', 'inherit', 'ipc'], windowsHide: true });
+      return timeout(new Promise((resolve, reject) => {
+        worker.on('message', m => {
+          if (m.event === 'ready') resolve(m);
+          if (m.event === 'observed') observations.push(m);
+          if (m.event === 'tunnel') { tunnels.push(m.url); console.log('Whistle CONNECT:', m.url); }
+        });
+        worker.once('error', reject);
+        worker.once('exit', code => reject(new Error('Whistle exited: ' + code)));
+      }), 20000, 'Whistle readiness');
+    }
+    const ready = await launchWorker();
     const whistleCa = await fs.readFile(ready.caPath, 'utf8');
     assert.notEqual(new X509Certificate(whistleCa).fingerprint256, new X509Certificate(certs.ca).fingerprint256);
 
@@ -341,6 +344,36 @@ async function main() {
     assert.ok(tunnels.includes('tunnel://' + TARGET + ':' + originPort), 'CONNECT authority lost its hostname');
     assert.ok(!tunnels.some(x => x.includes(BYPASS)), 'Bypass unexpectedly entered Whistle');
     console.log('PASS: real Mihomo ' + (TUN ? 'TUN' : 'CONNECT') + ' -> selective Whistle MITM -> named Mihomo return; original TLS for bypass');
+
+    // Simulate abrupt worker loss while the same Mihomo runtime stays loaded.
+    // Trust both CAs for the down-state probe: direct fallback must not be
+    // accidentally concealed by a certificate verification error.
+    const exited = once(worker, 'exit');
+    assert.ok(worker.kill('SIGKILL'), 'could not terminate Whistle');
+    await timeout(exited, 5000, 'Whistle forced exit');
+    const beforeLoss = received.length;
+    const selected = async ca => TUN
+      ? dialTun(await fakeAddress(dnsListen, TARGET), TARGET, originPort, ca)
+      : dial(entry, TARGET, originPort, ca);
+    await assert.rejects(selected([certs.ca, whistleCa]));
+    assert.equal(received.length, beforeLoss, 'selected request reached origin while MITM was down');
+    const unaffected = TUN
+      ? await dialTun(await fakeAddress(dnsListen, BYPASS), BYPASS, originPort, certs.ca)
+      : await dial(entry, BYPASS, originPort, certs.ca);
+    assert.equal(unaffected.fingerprint, fingerprint);
+    assert.match(unaffected.response, /netverge-origin-proof/);
+    console.log('PASS: worker loss fails selected traffic without bypass; ordinary traffic survives');
+
+    const recovered = await launchWorker();
+    const recoveredCa = await fs.readFile(recovered.caPath, 'utf8');
+    assert.equal(new X509Certificate(recoveredCa).fingerprint256, new X509Certificate(whistleCa).fingerprint256, 'worker restart changed the session CA');
+    await assert.rejects(dial(proxy, TARGET, originPort, whistleCa), /CONNECT status 407/);
+    const recoveredResponse = await selected(whistleCa);
+    assert.notEqual(recoveredResponse.fingerprint, fingerprint);
+    assert.match(recoveredResponse.response, /^HTTP\/1\.[01] 200 /);
+    assert.match(recoveredResponse.response, /netverge-origin-proof/);
+    assert.ok(received.every(r => !r.internalData && !r.proxyAuth), 'internal authentication data reached origin after restart');
+    console.log('PASS: Whistle restarted with unchanged CA and credentials; selected traffic recovered without core reload');
   } finally {
     await stop(worker);
     await stop(mihomo);

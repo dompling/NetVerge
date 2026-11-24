@@ -23,3 +23,5 @@ Recovery reuses the same session credentials and selected-domain rules; it does 
 The remaining full-chain health probe, runtime secret storage/ACL and backup redaction, private listener boundary, actual desktop TUN verification, and explicit user-visible degraded state are still open. After budget exhaustion the selected traffic may fail; the UI does not yet surface the state.
 
 **Gate:** all dimensions remain blocked for production. Do not start UI or CA management, merge, or release based on this change alone.
+
+Re-review adds a real network-lab fault injection: forcibly terminate the Whistle worker with Mihomo left running, accept both test CAs to detect unintended direct fallback, assert no selected request reached the origin, verify ordinary traffic, restart using the same credentials and isolated data, check CA continuity and renewed authentication/interception. This tests actual network consequences in CONNECT and Linux TUN; the restart is initiated by the lab, not by the Rust desktop monitor. The generation-scoped Rust supervisor still needs its own integration test. Results pending.
