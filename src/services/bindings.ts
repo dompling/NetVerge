@@ -49,6 +49,11 @@ export const commands = {
     __TAURI_INVOKE<MitmTrustStatus_Serialize>('get_mitm_trust_status'),
   /**  Save the verified public CA using an explicit native save dialog. */
   exportMitmPublicCa: () => __TAURI_INVOKE<boolean>('export_mitm_public_ca'),
+  /**  Open the native certificate manager after explicit confirmation; never changes trust. */
+  openMitmCertificateManager: (expectedFingerprint: string) =>
+    __TAURI_INVOKE<boolean>('open_mitm_certificate_manager', {
+      expectedFingerprint,
+    }),
   getPendingFailures: () =>
     __TAURI_INVOKE<PendingFailure[]>('get_pending_failures'),
   getSidecarFailure: () =>
