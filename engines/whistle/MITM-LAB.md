@@ -20,3 +20,7 @@ npm run test:mitm
 A pass requires the origin response on both routes, the original TLS certificate on the bypass route, a different verified certificate issued by Whistle on the selected route, and an observed decrypted URL/method. The named return listener is separately probed. Test subprocesses and temporary certificate/config files are cleaned up.
 
 This remains a hypothesis until the experiment actually passes. TUN capture, original process rule semantics, arbitrary proxy groups, QUIC, invalid upstream certificate rejection, and failure recovery are separate tests. The fixture uses a dedicated local Mihomo configuration and does not touch the user's existing configuration.
+
+## First CI failure and next experiment
+
+Windows and Linux both reached the named return listener but received an IP-based CONNECT and REJECT. Mihomo v1.19.34's tunnel/tunnel.go uses Metadata.Pure() for static hosts, stripping the hostname before the outbound handshake. Replace the static hosts fixture with an isolated UDP DNS server, preserve strict domain-based return routing, and log the actual Whistle CONNECT authority. This is a fixture correction, not a production DNS policy or proof of TUN compatibility.

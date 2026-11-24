@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
+const dgram = require('node:dgram');
 const http = require('node:http');
 const https = require('node:https');
 const tls = require('node:tls');
@@ -52,6 +53,42 @@ async function listen(server) {
     server.listen(0, '127.0.0.1', resolve);
   });
   return server.address().port;
+}
+
+// Answer only the two lab names; never forward DNS to an external resolver.
+async function startLabDns() {
+  const server = dgram.createSocket('udp4');
+  server.on('message', (query, peer) => {
+    if (query.length < 17 || query.readUInt16BE(4) !== 1) return;
+    let offset = 12;
+    const labels = [];
+    while (offset < query.length && query[offset]) {
+      const size = query[offset++];
+      if (size > 63 || offset + size >= query.length) return;
+      labels.push(query.toString('ascii', offset, offset + size));
+      offset += size;
+    }
+    if (offset + 5 > query.length) return;
+    offset++;
+    const type = query.readUInt16BE(offset);
+    const qclass = query.readUInt16BE(offset + 2);
+    const name = labels.join('.').toLowerCase();
+    const known = [TARGET, BYPASS].includes(name);
+    const hasAnswer = known && type === 1 && qclass === 1;
+    const header = Buffer.alloc(12);
+    query.copy(header, 0, 0, 2);
+    header.writeUInt16BE(known ? 0x8180 : 0x8183, 2);
+    header.writeUInt16BE(1, 4);
+    header.writeUInt16BE(hasAnswer ? 1 : 0, 6);
+    const answer = Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, 127, 0, 0, 1]);
+    const response = Buffer.concat([header, query.subarray(12, offset + 4), ...(hasAnswer ? [answer] : [])]);
+    server.send(response, peer.port, peer.address);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.bind(0, '127.0.0.1', resolve);
+  });
+  return server;
 }
 
 async function reservePorts(count) {
@@ -127,7 +164,7 @@ async function main() {
   const binary = process.env.NETVERGE_MIHOMO_BIN;
   if (!binary || !path.isAbsolute(binary)) throw new Error('Set NETVERGE_MIHOMO_BIN to an absolute path to a trusted Mihomo executable');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'netverge-mitm-'));
-  let origin, mihomo, worker;
+  let origin, mihomo, worker, dns;
   try {
     const certs = makeCertificates();
     const originCa = path.join(dir, 'origin-ca.pem');
@@ -140,6 +177,8 @@ async function main() {
     });
     const originPort = await listen(origin);
     const [entry, back, proxy] = await reservePorts(3);
+    dns = await startLabDns();
+    const dnsServer = '127.0.0.1:' + dns.address().port;
     const config = {
       'mixed-port': entry,
       'allow-lan': false,
@@ -148,8 +187,7 @@ async function main() {
       'log-level': 'info',
       'find-process-mode': 'off',
       'ipv6': false,
-      'dns': { enable: false },
-      'hosts': { [TARGET]: '127.0.0.1', [BYPASS]: '127.0.0.1' },
+      'dns': { enable: true, 'enhanced-mode': 'redir-host', 'use-hosts': false, 'use-system-hosts': false, nameserver: [dnsServer], 'default-nameserver': [dnsServer] },
       'listeners': [{ name: 'netverge-return', type: 'http', listen: '127.0.0.1', port: back }],
       'proxies': [{ name: 'NETVERGE-MITM', type: 'http', server: '127.0.0.1', port: proxy }],
       'rules': [
@@ -171,10 +209,12 @@ async function main() {
     Object.assign(env, { HOME: dir, USERPROFILE: dir, NODE_EXTRA_CA_CERTS: originCa });
     worker = fork(path.join(__dirname, 'mitm-worker.cjs'), [dir, String(proxy), String(back)], { env, execArgv: [], stdio: ['ignore', 'inherit', 'inherit', 'ipc'], windowsHide: true });
     const observations = [];
+    const tunnels = [];
     const ready = await timeout(new Promise((resolve, reject) => {
       worker.on('message', m => {
         if (m.event === 'ready') resolve(m);
         if (m.event === 'observed') observations.push(m);
+        if (m.event === 'tunnel') { tunnels.push(m.url); console.log('Whistle CONNECT:', m.url); }
       });
       worker.once('error', reject);
       worker.once('exit', code => reject(new Error('Whistle exited: ' + code)));
@@ -205,10 +245,13 @@ async function main() {
     }
     assert.ok(observations.some(x => x.url === expectedUrl && x.method === 'GET'), 'Whistle did not observe decrypted URL');
     assert.ok(!observations.some(x => x.url.includes(BYPASS)), 'Unexpected bypass observation');
+    assert.ok(tunnels.includes('tunnel://' + TARGET + ':' + originPort), 'CONNECT authority lost its hostname');
+    assert.ok(!tunnels.some(x => x.includes(BYPASS)), 'Bypass unexpectedly entered Whistle');
     console.log('PASS: real Mihomo CONNECT -> selective Whistle MITM -> named Mihomo return; original TLS for bypass');
   } finally {
     await stop(worker);
     await stop(mihomo);
+    if (dns) await new Promise(r => dns.close(r));
     if (origin) {
       origin.closeAllConnections();
       await new Promise(r => origin.close(r));

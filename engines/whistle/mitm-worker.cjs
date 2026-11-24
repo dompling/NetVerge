@@ -23,8 +23,11 @@ whistle({
     '/.*/ proxy://127.0.0.1:' + returnPort,
   ].join('\n'),
 }, (proxy) => {
+  proxy.on('_request', url => {
+    if (typeof url === 'string' && url.startsWith('tunnel://')) process.send({ event: 'tunnel', url });
+  });
   proxy.on('request', (emitter, data) => {
-    if (data.url && data.url.startsWith('https://mitm.netverge.test:')) {
+    if (data.url && ['https://mitm.netverge.test:', 'https://bypass.netverge.test:'].some(prefix => data.url.startsWith(prefix))) {
       process.send({ event: 'observed', url: data.url, method: data.req.method });
     }
   });
