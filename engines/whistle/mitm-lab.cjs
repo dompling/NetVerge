@@ -1,6 +1,6 @@
 'use strict';
 
-// Isolated experiment. Never changes the OS proxy, TUN, or certificate store.
+// Isolated experiment. TUN mode is Linux network-namespace-only; no host proxy or trust changes.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -11,13 +11,17 @@ const http = require('node:http');
 const https = require('node:https');
 const tls = require('node:tls');
 const { X509Certificate } = require('node:crypto');
-const { fork, spawn } = require('node:child_process');
+const { fork, spawn, execFileSync } = require('node:child_process');
+const { Resolver } = require('node:dns/promises');
 const { once } = require('node:events');
 const forge = require('node-forge');
 
 const TARGET = 'mitm.netverge.test';
 const BYPASS = 'bypass.netverge.test';
 const pki = forge.pki;
+const TUN = process.argv.includes('--tun');
+const TUN_DEVICE = 'nvmitm0';
+const FAKE_RANGE = '198.18.0.0/16';
 
 function makeCertificates() {
   const caKeys = pki.rsa.generateKeyPair(2048);
@@ -160,7 +164,65 @@ async function waitPort(child, port) {
   throw new Error('Mihomo listener not ready');
 }
 
+async function prepareTun(child) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error('Mihomo exited before TUN ready');
+    try {
+      const link = execFileSync('ip', ['-o', 'link', 'show', 'dev', TUN_DEVICE], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      if (link.includes('UP')) {
+        execFileSync('ip', ['route', 'replace', FAKE_RANGE, 'dev', TUN_DEVICE]);
+        console.log('TUN ready:', link.trim());
+        return;
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, 100));
+  }
+  throw new Error('Mihomo TUN interface not ready');
+}
+
+async function fakeAddress(port, host) {
+  const resolver = new Resolver({ timeout: 1000, tries: 5 });
+  resolver.setServers(['127.0.0.1:' + port]);
+  const [ip] = await resolver.resolve4(host);
+  assert.match(ip, /^198\.18\./, 'DNS must return a lab fake IP');
+  const route = execFileSync('ip', ['route', 'get', ip], { encoding: 'utf8' });
+  assert.ok(route.includes('dev ' + TUN_DEVICE), 'fake IP route must use the TUN device: ' + route);
+  console.log('TUN DNS:', host, ip, route.trim());
+  return ip;
+}
+
+function dialTun(ip, host, originPort, ca) {
+  return new Promise((resolve, reject) => {
+    // Native TLS socket to the fake IP; no HTTP proxy or CONNECT at the client.
+    const secured = tls.connect({ host: ip, port: originPort, servername: host, ca, rejectUnauthorized: true, ALPNProtocols: ['http/1.1'] });
+    const timer = setTimeout(() => {
+      secured.destroy();
+      reject(new Error('TUN/TLS timeout: ' + host));
+    }, 15000);
+    const fail = err => { clearTimeout(timer); secured.destroy(); reject(err); };
+    secured.once('error', fail);
+    secured.once('secureConnect', () => {
+      const fingerprint = secured.getPeerCertificate().fingerprint256;
+      let response = '';
+      secured.setEncoding('utf8');
+      secured.on('data', chunk => { response += chunk; });
+      secured.once('end', () => { clearTimeout(timer); resolve({ fingerprint, response }); });
+      secured.once('close', () => { if (!response) fail(new Error('TUN closed without response')); });
+      secured.write('GET /netverge-proof HTTP/1.1\r\nHost: ' + host + ':' + originPort + '\r\nConnection: close\r\n\r\n');
+    });
+  });
+}
+
 async function main() {
+  if (TUN) {
+    assert.equal(process.platform, 'linux', 'TUN lab requires Linux');
+    const hostNs = process.env.NETVERGE_TUN_LAB_HOST_NS;
+    assert.ok(hostNs && /^net:\[\d+\]$/.test(hostNs), 'Start TUN lab through the namespace wrapper');
+    assert.notEqual(await fs.readlink('/proc/self/ns/net'), hostNs, 'Refusing to touch routes in the host network namespace');
+    assert.equal(execFileSync('ip', ['route', 'show', 'default'], { encoding: 'utf8' }).trim(), '', 'TUN lab requires no default route');
+    await fs.access('/dev/net/tun');
+  }
   const binary = process.env.NETVERGE_MIHOMO_BIN;
   if (!binary || !path.isAbsolute(binary)) throw new Error('Set NETVERGE_MIHOMO_BIN to an absolute path to a trusted Mihomo executable');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'netverge-mitm-'));
@@ -176,7 +238,7 @@ async function main() {
       res.end('netverge-origin-proof');
     });
     const originPort = await listen(origin);
-    const [entry, back, proxy] = await reservePorts(3);
+    const [entry, back, proxy, dnsListen] = await reservePorts(4);
     dns = await startLabDns();
     const dnsServer = '127.0.0.1:' + dns.address().port;
     const config = {
@@ -187,7 +249,8 @@ async function main() {
       'log-level': 'info',
       'find-process-mode': 'off',
       'ipv6': false,
-      'dns': { enable: true, 'enhanced-mode': 'redir-host', 'use-hosts': false, 'use-system-hosts': false, nameserver: [dnsServer], 'default-nameserver': [dnsServer] },
+      'dns': { enable: true, 'enhanced-mode': TUN ? 'fake-ip' : 'redir-host', 'use-hosts': false, 'use-system-hosts': false, nameserver: [dnsServer], 'default-nameserver': [dnsServer], ...(TUN ? { listen: '127.0.0.1:' + dnsListen, 'fake-ip-range': '198.18.0.1/16', 'fake-ip-filter': [] } : {}) },
+      ...(TUN ? { tun: { enable: true, device: TUN_DEVICE, stack: 'gvisor', 'auto-route': false, 'auto-detect-interface': false, 'auto-redirect': false, 'dns-hijack': [], 'strict-route': false } } : {}),
       'listeners': [{ name: 'netverge-return', type: 'http', listen: '127.0.0.1', port: back }],
       'proxies': [{ name: 'NETVERGE-MITM', type: 'http', server: '127.0.0.1', port: proxy }],
       'rules': [
@@ -204,6 +267,7 @@ async function main() {
     mihomo.on('error', err => console.error('Mihomo process error:', err.message));
     await waitPort(mihomo, entry);
     await waitPort(mihomo, back);
+    if (TUN) await prepareTun(mihomo);
 
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(WHISTLE_|PFORK_|NODE_OPTIONS$|NODE_PATH$|NODE_TLS_REJECT_UNAUTHORIZED$|(?:HTTP|HTTPS|ALL|NO)_PROXY$)/i.test(k)));
     Object.assign(env, { HOME: dir, USERPROFILE: dir, NODE_EXTRA_CA_CERTS: originCa });
@@ -228,12 +292,16 @@ async function main() {
     assert.match(direct.response, /netverge-origin-proof/);
 
     // Non-target traffic must keep the original TLS peer.
-    const bypass = await dial(entry, BYPASS, originPort, certs.ca);
+    const bypass = TUN
+      ? await dialTun(await fakeAddress(dnsListen, BYPASS), BYPASS, originPort, certs.ca)
+      : await dial(entry, BYPASS, originPort, certs.ca);
     assert.equal(bypass.fingerprint, fingerprint);
     assert.match(bypass.response, /netverge-origin-proof/);
 
     // The authorized target must present the Whistle-issued leaf and still reach the origin.
-    const intercepted = await dial(entry, TARGET, originPort, whistleCa);
+    const intercepted = TUN
+      ? await dialTun(await fakeAddress(dnsListen, TARGET), TARGET, originPort, whistleCa)
+      : await dial(entry, TARGET, originPort, whistleCa);
     assert.notEqual(intercepted.fingerprint, fingerprint);
     assert.match(intercepted.response, /^HTTP\/1\.[01] 200 /);
     assert.match(intercepted.response, /netverge-origin-proof/);
@@ -247,7 +315,7 @@ async function main() {
     assert.ok(!observations.some(x => x.url.includes(BYPASS)), 'Unexpected bypass observation');
     assert.ok(tunnels.includes('tunnel://' + TARGET + ':' + originPort), 'CONNECT authority lost its hostname');
     assert.ok(!tunnels.some(x => x.includes(BYPASS)), 'Bypass unexpectedly entered Whistle');
-    console.log('PASS: real Mihomo CONNECT -> selective Whistle MITM -> named Mihomo return; original TLS for bypass');
+    console.log('PASS: real Mihomo ' + (TUN ? 'TUN' : 'CONNECT') + ' -> selective Whistle MITM -> named Mihomo return; original TLS for bypass');
   } finally {
     await stop(worker);
     await stop(mihomo);

@@ -70,3 +70,14 @@ jobs:
       - name: Verify selective HTTPS interception
         working-directory: engines/whistle
         run: npm run test:mitm
+      - name: Verify actual TUN interception in isolated Linux network namespace
+        if: runner.os == 'Linux'
+        working-directory: engines/whistle
+        shell: bash
+        run: |
+          sudo modprobe tun || test -c /dev/net/tun
+          test -c /dev/net/tun
+          sudo env "PATH=$PATH" "NETVERGE_MIHOMO_BIN=$NETVERGE_MIHOMO_BIN" "NETVERGE_TUN_LAB_HOST_NS=$(readlink /proc/self/ns/net)" unshare --net -- bash -euc '
+            ip link set lo up
+            node mitm-lab.cjs --tun
+          '
