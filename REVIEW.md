@@ -95,3 +95,13 @@ prepare agent handoffs or relay findings between agents.
   finding and passes the updated revision and verification results to the reviewer.
 - Escalate missing requirements, unavailable external evidence, or decisions that
   need human input; do not ask humans to reconstruct the implementation.
+
+## NetVerge milestone gate
+
+For each NetVerge implementation increment, complete a three-dimensional review before starting the next increment:
+
+1. **Functional correctness:** trace the requested behavior through its real entry points, boundary conditions, platform-specific paths and regression evidence. Distinguish a compiled binary from a verified runtime behavior.
+2. **Architecture and reuse:** verify ownership, duplicated logic, configuration/side-effect boundaries, upstream reuse and maintenance cost. Prefer extending existing mechanisms over parallel implementations.
+3. **Security and stability:** check authorization, data isolation, traffic routing, TLS trust, process ownership, failure recovery, platform permissions and rollback behavior as applicable.
+
+Record the candidate revision, evidence, concrete findings (with severity and file/function), repairs and remaining gaps. Mark each dimension pass, blocked or not applicable with justification. Re-review repairs and rerun affected checks. A green CI job alone is not approval. Do not expand into the next feature or merge/release while material findings or required evidence are unresolved. Keep this gate proportionate to the change; review dimensions do not require three separate agents. The owner has requested this gate for NetVerge's ongoing development.
