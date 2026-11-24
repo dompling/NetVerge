@@ -70,6 +70,13 @@ func nvLabNewLease(t *testing.T, proxy C.Proxy, upstream C.Conn, authority strin
 	if !nvLabEligible(proxy, upstream) {
 		t.Fatal("route is outside the eager single-adapter lab scope")
 	}
+	return nvLabLeaseVerifiedStream(t, upstream, authority)
+}
+
+// Only test fixtures may call this after checking the actual dial result.
+// Do not generalize chain-name checks into production admission.
+func nvLabLeaseVerifiedStream(t *testing.T, upstream C.Conn, authority string) *nvLabLease {
+	t.Helper()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
