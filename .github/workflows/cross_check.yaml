@@ -2,9 +2,11 @@ name: Cross Platform Cargo Check
 
 on:
   workflow_dispatch:
-#   pull_request:
-#   push:
-# branches: [main, dev]
+  push:
+    branches: [feat/whistle-integration]
+    paths:
+      - 'src-tauri/**'
+      - '.github/workflows/cross_check.yaml'
 
 permissions:
   contents: read

@@ -151,7 +151,7 @@ fn start_worker(settings: &Settings, data: &Path, password: &str) -> Result<Chil
         bail!("MITM worker stdout unavailable");
     };
     let (tx, rx) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
+    let _ = std::thread::spawn(move || {
         let mut ready = false;
         for line in BufReader::new(stdout).lines().map_while(std::result::Result::ok) {
             if !ready && line == "NETVERGE_MITM_READY" {
