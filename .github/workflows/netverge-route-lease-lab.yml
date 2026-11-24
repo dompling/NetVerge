@@ -68,6 +68,8 @@ jobs:
           cp netverge/engines/mihomo-route-lab/netverge_route_trojan_lab_test.go mihomo-source/tunnel/netverge_route_trojan_lab_test.go
           cp netverge/engines/mihomo-route-lab/netverge_route_vmess_lab_test.go mihomo-source/tunnel/netverge_route_vmess_lab_test.go
           cp netverge/engines/mihomo-route-lab/netverge_route_vless_lab_test.go mihomo-source/tunnel/netverge_route_vless_lab_test.go
+          cp netverge/engines/mihomo-route-lab/netverge_route_hysteria2_lab_test.go mihomo-source/tunnel/netverge_route_hysteria2_lab_test.go
+          gofmt -w mihomo-source/tunnel/netverge_route_hysteria2_lab_test.go
           gofmt -w mihomo-source/tunnel/netverge_route_vless_lab_test.go
           gofmt -w mihomo-source/tunnel/netverge_route_vmess_lab_test.go
           gofmt -w mihomo-source/tunnel/netverge_route_trojan_lab_test.go
@@ -129,3 +131,10 @@ jobs:
           NETVERGE_ROUTE_LAB_WORKER: ${{ github.workspace }}/netverge/engines/whistle/mitm-worker.cjs
           NETVERGE_ROUTE_LAB_SHARED_WORKER: ${{ github.workspace }}/netverge/engines/mihomo-route-lab/shared-whistle-worker.cjs
         run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseVless$' -count=1 -timeout=5m -v
+
+      - name: Verify real Hysteria2 QUIC streams through shared Whistle
+        working-directory: mihomo-source
+        env:
+          NETVERGE_ROUTE_LAB_WORKER: ${{ github.workspace }}/netverge/engines/whistle/mitm-worker.cjs
+          NETVERGE_ROUTE_LAB_SHARED_WORKER: ${{ github.workspace }}/netverge/engines/mihomo-route-lab/shared-whistle-worker.cjs
+        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseHysteria2$' -count=1 -timeout=5m -v
