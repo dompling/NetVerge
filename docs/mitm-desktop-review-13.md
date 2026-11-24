@@ -15,3 +15,7 @@ This proves (if CI passes) only the bounded transport handoff in the actual core
 - Functionality: real resolver/adapter and local TLS transport test, route fixtures are differentiated by observed network connections, not just names; actual end-to-end MITM inheritance remains unproved.
 - Architecture/reuse: use existing core resolver and dial implementations; no duplicate rules engine or route policy user setting. Small independent test file and workflow, no runtime fork shipped.
 - Security/stability: test-only loopback listener, random credential, authority-bound single-use admission, bounded header/deadline, cleanup, no arbitrary destination selection or system changes. Production ownership, token transport, admission and resource budgets remain blockers. Static review complete; CI pending.
+
+## Build correction
+
+Run 45350736773: Windows and macOS Intel failed before executing assertions. The in-package test imported adapter/outbound -> dns -> tunnel, creating a Go test import cycle. Move the integration fixtures to external `tunnel_test`; a tiny internal `_test.go` bridge calls the real unexported resolver and snapshots/restores global state. Both files are copied only into the isolated pinned upstream test checkout. No production API, dependency or rule changes, and no removal of assertions. macOS ARM was still queued when the failure was diagnosed. Static review complete; replacement CI required.

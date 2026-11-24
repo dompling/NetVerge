@@ -1,6 +1,6 @@
 // Copied into the pinned upstream tunnel package ONLY by the laboratory CI.
 // This is not linked into a distributed Mihomo or NetVerge binary.
-package tunnel
+package tunnel_test
 
 import (
 	"bufio"
@@ -26,6 +26,7 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/process"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/tunnel"
 	R "github.com/metacubex/mihomo/rules/common"
 )
 
@@ -272,17 +273,9 @@ func TestNetVergeRouteLeaseOriginalDecision(t *testing.T) {
 	// These are real upstream resolver/rule/adapter calls. OS process lookup
 	// is disabled only in this fixture; the original process fields are seeded
 	// as test metadata. Actual TUN and OS process identification remain open.
-	oldRules, oldSubRules, oldRuleProviders := rules, subRules, ruleProviders
-	oldProxies, oldProviders := proxies, providers
-	oldMode, oldFindProcess := Mode(), FindProcessMode()
-	t.Cleanup(func() {
-		UpdateRules(oldRules, oldSubRules, oldRuleProviders)
-		UpdateProxies(oldProxies, oldProviders)
-		SetMode(oldMode)
-		SetFindProcessMode(oldFindProcess)
-	})
-	SetMode(Rule)
-	SetFindProcessMode(process.FindProcessOff)
+	t.Cleanup(tunnel.NetVergeLabRestoreState())
+	tunnel.SetMode(tunnel.Rule)
+	tunnel.SetFindProcessMode(process.FindProcessOff)
 
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/route-proof" {
@@ -304,14 +297,14 @@ func TestNetVergeRouteLeaseOriginalDecision(t *testing.T) {
 	reject := adapter.NewProxy(outbound.NewReject())
 	rejectDrop := adapter.NewProxy(outbound.NewRejectDrop())
 	t.Cleanup(func() { _ = direct.Close() })
-	UpdateProxies(map[string]C.Proxy{"DIRECT": direct, "REJECT": reject, "REJECT-DROP": rejectDrop, "route-a": a, "route-b": b}, nil)
+	tunnel.UpdateProxies(map[string]C.Proxy{"DIRECT": direct, "REJECT": reject, "REJECT-DROP": rejectDrop, "route-a": a, "route-b": b}, nil)
 	processRule, err := R.NewProcess("fixture-process", "route-b", C.ProcessName)
 	if err != nil { t.Fatal(err) }
 	ipRule, err := R.NewIPCIDR("192.0.2.0/24", "route-b", R.WithIPCIDRNoResolve(true))
 	if err != nil { t.Fatal(err) }
 	sourceRule, err := R.NewIPCIDR("198.51.100.0/24", "route-b", R.WithIPCIDRSourceIP(true))
 	if err != nil { t.Fatal(err) }
-	UpdateRules([]C.Rule{
+	tunnel.UpdateRules([]C.Rule{
 		R.NewDomain("blocked.netverge.test", "REJECT"),
 		R.NewDomain("drop.netverge.test", "REJECT-DROP"),
 		processRule, ipRule, sourceRule,
@@ -334,7 +327,7 @@ func TestNetVergeRouteLeaseOriginalDecision(t *testing.T) {
 	for _, f := range fixtures {
 		t.Run(f.name, func(t *testing.T) {
 			metadata := f.metadata.Clone()
-			proxy, rule, err := resolveMetadata(metadata)
+			proxy, rule, err := tunnel.NetVergeLabResolveMetadata(metadata)
 			if err != nil || proxy != f.want {
 				t.Fatalf("original decision changed: proxy=%v rule=%v err=%v", proxy, rule, err)
 			}
@@ -373,7 +366,7 @@ func TestNetVergeRouteLeaseOriginalDecision(t *testing.T) {
 		t.Run(host, func(t *testing.T) {
 			beforeA, beforeB := countA.Load(), countB.Load()
 			metadata := &C.Metadata{Type:C.TUN, NetWork:C.TCP, Host:host, DstPort:443, Process:"fixture-process"}
-			proxy, _, err := resolveMetadata(metadata)
+			proxy, _, err := tunnel.NetVergeLabResolveMetadata(metadata)
 			if err != nil || (proxy != reject && proxy != rejectDrop) {
 				t.Fatalf("reject precedence lost: %v", err)
 			}
