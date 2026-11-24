@@ -248,6 +248,7 @@ impl Config {
     pub(crate) async fn generate_with_profiles(profiles: &IProfiles) -> Result<()> {
         let (mut config, exists_keys, logs, dns_override) = enhance::enhance(profiles).await?;
 
+        config = crate::core::mitm::prepare(config).await?;
         resolve_provider_path_conflicts(&mut config, &dirs::app_home_dir()?)?;
         sanitize_tunnels_proxy(&mut config);
         // Apply only to generated core config so the saved choice survives the next launch.

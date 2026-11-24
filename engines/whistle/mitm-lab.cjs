@@ -10,7 +10,7 @@ const dgram = require('node:dgram');
 const http = require('node:http');
 const https = require('node:https');
 const tls = require('node:tls');
-const { X509Certificate } = require('node:crypto');
+const { X509Certificate, randomBytes } = require('node:crypto');
 const { fork, spawn, execFileSync } = require('node:child_process');
 const { Resolver } = require('node:dns/promises');
 const { once } = require('node:events');
@@ -115,10 +115,10 @@ async function stop(child) {
   await timeout(closed, 5000, 'child exit').catch(() => child.kill('SIGKILL'));
 }
 
-function dial(port, host, originPort, ca) {
+function dial(port, host, originPort, ca, password = '') {
   return new Promise((resolve, reject) => {
     const authority = host + ':' + originPort;
-    const req = http.request({ host: '127.0.0.1', port, method: 'CONNECT', path: authority, headers: { Host: authority }, agent: false });
+    const req = http.request({ host: '127.0.0.1', port, method: 'CONNECT', path: authority, headers: { Host: authority, ...(password ? { 'Proxy-Authorization': 'Basic ' + Buffer.from('netverge:' + password).toString('base64') } : {}) }, agent: false });
     let socket;
     const timer = setTimeout(() => {
       req.destroy();
@@ -241,6 +241,7 @@ async function main() {
     const [entry, back, proxy, dnsListen] = await reservePorts(4);
     dns = await startLabDns();
     const dnsServer = '127.0.0.1:' + dns.address().port;
+    const password = randomBytes(24).toString('base64url');
     const config = {
       'mixed-port': entry,
       'allow-lan': false,
@@ -251,12 +252,12 @@ async function main() {
       'ipv6': false,
       'dns': { enable: true, 'enhanced-mode': TUN ? 'fake-ip' : 'redir-host', 'use-hosts': false, 'use-system-hosts': false, nameserver: [dnsServer], 'default-nameserver': [dnsServer], ...(TUN ? { listen: '127.0.0.1:' + dnsListen, 'fake-ip-range': '198.18.0.1/16', 'fake-ip-filter': [] } : {}) },
       ...(TUN ? { tun: { enable: true, device: TUN_DEVICE, stack: 'gvisor', 'auto-route': false, 'auto-detect-interface': false, 'auto-redirect': false, 'dns-hijack': [], 'strict-route': false } } : {}),
-      'listeners': [{ name: 'netverge-return', type: 'http', listen: '127.0.0.1', port: back }],
+      'listeners': [{ name: 'netverge-return', type: 'http', listen: '127.0.0.1', port: back, users: [{ username: 'netverge', password }] }],
       'proxies': [{ name: 'NETVERGE-MITM', type: 'http', server: '127.0.0.1', port: proxy }],
       'rules': [
-        'AND,((IN-NAME,netverge-return),(DOMAIN,' + TARGET + ')),DIRECT',
+        'AND,((IN-NAME,netverge-return),(DOMAIN,' + TARGET + '),(NETWORK,TCP),(DST-PORT,' + originPort + ')),DIRECT',
         'IN-NAME,netverge-return,REJECT',
-        'DOMAIN,' + TARGET + ',NETVERGE-MITM',
+        TUN ? 'AND,((IN-TYPE,TUN),(DOMAIN,' + TARGET + '),(NETWORK,TCP),(DST-PORT,' + originPort + ')),NETVERGE-MITM' : 'DOMAIN,' + TARGET + ',NETVERGE-MITM',
         'DOMAIN,' + BYPASS + ',DIRECT',
         'MATCH,REJECT',
       ],
@@ -270,7 +271,7 @@ async function main() {
     if (TUN) await prepareTun(mihomo);
 
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(WHISTLE_|PFORK_|NODE_OPTIONS$|NODE_PATH$|NODE_TLS_REJECT_UNAUTHORIZED$|(?:HTTP|HTTPS|ALL|NO)_PROXY$)/i.test(k)));
-    Object.assign(env, { HOME: dir, USERPROFILE: dir, NODE_EXTRA_CA_CERTS: originCa });
+    Object.assign(env, { HOME: dir, USERPROFILE: dir, NODE_EXTRA_CA_CERTS: originCa, NETVERGE_LAB_RETURN_PASSWORD: password });
     worker = fork(path.join(__dirname, 'mitm-worker.cjs'), [dir, String(proxy), String(back)], { env, execArgv: [], stdio: ['ignore', 'inherit', 'inherit', 'ipc'], windowsHide: true });
     const observations = [];
     const tunnels = [];
@@ -287,7 +288,7 @@ async function main() {
     assert.notEqual(new X509Certificate(whistleCa).fingerprint256, new X509Certificate(certs.ca).fingerprint256);
 
     // Verify the real Mihomo return path before the MITM route.
-    const direct = await dial(back, TARGET, originPort, certs.ca);
+    const direct = await dial(back, TARGET, originPort, certs.ca, password);
     assert.equal(direct.fingerprint, fingerprint);
     assert.match(direct.response, /netverge-origin-proof/);
 
