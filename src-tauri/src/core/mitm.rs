@@ -1,16 +1,19 @@
 //! Opt-in desktop MITM integration. The normal runtime path is unchanged without the dev flag.
 
 use anyhow::{Context, Result, bail, ensure};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use sha2::{Digest, Sha256};
 use clash_verge_logging::{Type, logging};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_yaml_ng::{Mapping, Value};
 use std::{
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Write},
+    net::{Ipv4Addr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{atomic::{AtomicBool, Ordering}, mpsc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const PROXY: &str = "NETVERGE-MITM";
@@ -80,6 +83,27 @@ struct Session {
     password: String,
     forward_password: String,
     recovery: RecoveryBudget,
+    health_secret: String,
+    health: Health,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Health {
+    Inactive,
+    Checking,
+    LocalLinkHealthy,
+    Degraded,
+    Recovering,
+    Failed,
+}
+
+impl Session {
+    fn set_health(&mut self, next: Health) {
+        if self.health != next {
+            self.health = next;
+            logging!(info, Type::Core, "MITM local health: {next:?}");
+        }
+    }
 }
 
 #[derive(Default)]
@@ -172,6 +196,8 @@ fn overlay(config: &mut Mapping, settings: &Settings, password: &str, forward_pa
     for host in &settings.hosts {
         rules.push(Value::from(format!("AND,((IN-NAME,{RETURN}),(DOMAIN,{host}),(NETWORK,TCP),(DST-PORT,443)),{}", settings.policy)));
     }
+    // Only the fixed local diagnostic listener may be reached through this exception.
+    rules.push(Value::from(format!("AND,((IN-NAME,{RETURN}),(IP-CIDR,127.0.0.1/32),(NETWORK,TCP),(DST-PORT,{})),DIRECT", settings.port)));
     rules.push(Value::from(format!("IN-NAME,{RETURN},REJECT")));
     for host in &settings.hosts {
         rules.push(Value::from(format!("AND,((IN-TYPE,TUN),(DOMAIN,{host}),(NETWORK,TCP),(DST-PORT,443)),{PROXY}")));
@@ -188,7 +214,7 @@ fn stop(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn start_worker(settings: &Settings, data: &Path, password: &str, forward_password: &str) -> Result<Child> {
+fn start_worker(settings: &Settings, data: &Path, password: &str, forward_password: &str, health_secret: &str) -> Result<Child> {
     std::fs::create_dir_all(data)?;
     #[cfg(unix)]
     {
@@ -197,7 +223,7 @@ fn start_worker(settings: &Settings, data: &Path, password: &str, forward_passwo
     }
     let payload = serde_json::json!({
         "dataDir": data, "port": settings.port, "returnPort": settings.return_port,
-        "hosts": settings.hosts, "password": password, "forwardPassword": forward_password, "targetPort": 443
+        "hosts": settings.hosts, "password": password, "forwardPassword": forward_password, "targetPort": 443, "healthSecret": health_secret
     });
     let mut command = Command::new(&settings.node);
     command.arg(&settings.worker).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -257,7 +283,7 @@ fn plan_overlay(mut config: Mapping, settings: Option<Settings>, state: &mut Opt
     let password = nanoid::nanoid!(32);
     let forward_password = nanoid::nanoid!(32);
     overlay(&mut config, &settings, &password, &forward_password)?;
-    *state = Some(Session { settings, child: None, password, forward_password, recovery: RecoveryBudget::default() });
+    *state = Some(Session { settings, child: None, password, forward_password, recovery: RecoveryBudget::default(), health_secret: nanoid::nanoid!(32), health: Health::Inactive });
     Ok(config)
 }
 
@@ -302,7 +328,7 @@ fn validate_runtime(config: &Mapping, session: &Session) -> Result<()> {
         expected.insert(key.into(), Value::Sequence(items));
     }
     let mut rules = sequence(&mut expected, "rules")?;
-    let prefix_len = session.settings.hosts.len() * 2 + 1;
+    let prefix_len = session.settings.hosts.len() * 2 + 2;
     ensure!(rules.len() >= prefix_len, "MITM rule prefix is missing");
     drop(rules.drain(..prefix_len));
     expected.insert("rules".into(), Value::Sequence(rules));
@@ -333,8 +359,9 @@ pub(crate) async fn ensure_runtime_worker() -> Result<()> {
             }
             session.child = None;
         }
-        let child = start_worker(&session.settings, &data, &session.password, &session.forward_password)?;
+        let child = start_worker(&session.settings, &data, &session.password, &session.forward_password, &session.health_secret)?;
         session.child = Some(child);
+        session.set_health(Health::Checking);
         Ok(())
     }).await?
 }
@@ -358,6 +385,7 @@ pub(crate) async fn record_applied_runtime(generation: Option<u64>) {
             return false;
         };
         session.recovery.activate(generation);
+        session.set_health(Health::Checking);
         true
     }).await.unwrap_or(false);
     if activated && !MONITOR_STARTED.swap(true, Ordering::AcqRel) {
@@ -391,38 +419,87 @@ async fn monitor_worker() {
     }
 }
 
+fn health_proof(secret: &str, kind: &str, nonce: &str) -> String {
+    let digest = Sha256::digest(format!("netverge-health-v1:{kind}:{nonce}:{secret}").as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+// The local synthetic challenge checks both authenticated listeners and a
+// round trip through the real return rule. It is not an external TLS/TUN probe.
+fn probe_local_link(session: &Session) -> Result<()> {
+    let nonce = nanoid::nanoid!(32);
+    let authority = format!("127.0.0.1:{}", session.settings.port);
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, session.settings.port));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500))?;
+    stream.set_write_timeout(Some(Duration::from_millis(500)))?;
+    let auth = STANDARD.encode(format!("netverge:{}", session.forward_password));
+    let proof = health_proof(&session.health_secret, "forward-request", &nonce);
+    write!(stream, "GET /__netverge_health/{nonce} HTTP/1.1\r\nHost: {authority}\r\nProxy-Authorization: Basic {auth}\r\nX-NetVerge-Proof: {proof}\r\nConnection: close\r\n\r\n")?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut received = Vec::new();
+    let mut buf = [0u8; 512];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        ensure!(!remaining.is_zero(), "MITM diagnostic timed out");
+        stream.set_read_timeout(Some(remaining))?;
+        let count = stream.read(&mut buf)?;
+        if count == 0 {
+            break;
+        }
+        received.extend_from_slice(&buf[..count]);
+        ensure!(received.len() <= 1024, "MITM diagnostic response too large");
+    }
+    let response = std::str::from_utf8(&received)?;
+    let (headers, body) = response.split_once("\r\n\r\n").context("invalid MITM diagnostic response")?;
+    ensure!(headers.starts_with("HTTP/1.1 200 ") || headers.starts_with("HTTP/1.0 200 "), "MITM diagnostic rejected");
+    ensure!(body == health_proof(&session.health_secret, "forward-response", &nonce), "MITM diagnostic proof mismatch");
+    Ok(())
+}
+
 fn recover_worker(generation: u64, data: &Path) {
     let mut state = SESSION.lock();
     let Some(session) = state.as_mut() else {
         return;
     };
+    recover_session(session, generation, data);
+}
+
+fn recover_session(session: &mut Session, generation: u64, data: &Path) {
     if session.recovery.generation != Some(generation) {
         return;
     }
     if let Some(child) = session.child.as_mut() {
         match child.try_wait() {
-            Ok(None) => return,
+            Ok(None) => {
+                let health = if probe_local_link(session).is_ok() { Health::LocalLinkHealthy } else { Health::Degraded };
+                session.set_health(health);
+                // A failed round trip does not identify which engine is at fault.
+                // Do not terminate a running child or silently change routing.
+                return;
+            }
             Ok(Some(_)) => session.child = None,
-            // Do not replace a child whose exit status cannot be established.
-            Err(_) => return,
+            Err(_) => {
+                session.set_health(Health::Degraded);
+                return;
+            }
         }
     }
     if !session.recovery.claim(generation) {
+        session.set_health(Health::Failed);
         return;
     }
+    session.set_health(Health::Recovering);
     let attempt = session.recovery.attempts;
     logging!(warn, Type::Core, "MITM worker exited; recovery attempt {attempt}/{MAX_RECOVERY_ATTEMPTS}");
-    match start_worker(&session.settings, data, &session.password, &session.forward_password) {
+    match start_worker(&session.settings, data, &session.password, &session.forward_password, &session.health_secret) {
         Ok(child) => {
             session.child = Some(child);
-            logging!(info, Type::Core, "MITM worker restarted; end-to-end health has not been verified");
+            session.set_health(Health::Checking);
         }
         Err(_) => {
+            session.set_health(if attempt == MAX_RECOVERY_ATTEMPTS { Health::Failed } else { Health::Degraded });
             logging!(warn, Type::Core, "MITM worker recovery failed ({attempt}/{MAX_RECOVERY_ATTEMPTS})");
         }
-    }
-    if attempt == MAX_RECOVERY_ATTEMPTS {
-        logging!(warn, Type::Core, "MITM automatic recovery budget exhausted; further worker loss requires an explicit core restart or config apply");
     }
 }
 
@@ -434,6 +511,7 @@ pub(crate) async fn stop_worker() {
     let _ = tokio::task::spawn_blocking(|| {
         if let Some(session) = SESSION.lock().as_mut() {
             session.recovery = RecoveryBudget::default();
+            session.set_health(Health::Inactive);
             if let Some(mut child) = session.child.take() {
                 stop(&mut child);
             }
@@ -456,11 +534,12 @@ mod tests {
         let proxy = config.get("proxies").and_then(Value::as_sequence).and_then(|items| items.last()).context("proxy missing")?;
         assert_eq!(proxy.get("password").and_then(Value::as_str), Some("forward-password"));
         let rules = config.get("rules").and_then(Value::as_sequence).context("rules missing")?;
-        assert_eq!(rules.len(), 4);
+        assert_eq!(rules.len(), 5);
         assert_eq!(rules[0].as_str(), Some("AND,((IN-NAME,netverge-return),(DOMAIN,example.test),(NETWORK,TCP),(DST-PORT,443)),Work"));
-        assert_eq!(rules[1].as_str(), Some("IN-NAME,netverge-return,REJECT"));
-        assert_eq!(rules[2].as_str(), Some("AND,((IN-TYPE,TUN),(DOMAIN,example.test),(NETWORK,TCP),(DST-PORT,443)),NETVERGE-MITM"));
-        assert_eq!(rules[3].as_str(), Some("MATCH,Work"));
+        assert_eq!(rules[1].as_str(), Some("AND,((IN-NAME,netverge-return),(IP-CIDR,127.0.0.1/32),(NETWORK,TCP),(DST-PORT,18899)),DIRECT"));
+        assert_eq!(rules[2].as_str(), Some("IN-NAME,netverge-return,REJECT"));
+        assert_eq!(rules[3].as_str(), Some("AND,((IN-TYPE,TUN),(DOMAIN,example.test),(NETWORK,TCP),(DST-PORT,443)),NETVERGE-MITM"));
+        assert_eq!(rules[4].as_str(), Some("MATCH,Work"));
         Ok(())
     }
 

@@ -10,7 +10,7 @@ const dgram = require('node:dgram');
 const http = require('node:http');
 const https = require('node:https');
 const tls = require('node:tls');
-const { X509Certificate, randomBytes } = require('node:crypto');
+const { X509Certificate, randomBytes, createHash } = require('node:crypto');
 const { fork, spawn, execFileSync } = require('node:child_process');
 const { Resolver } = require('node:dns/promises');
 const { once } = require('node:events');
@@ -256,6 +256,7 @@ async function main() {
     const dnsServer = '127.0.0.1:' + dns.address().port;
     const password = randomBytes(24).toString('base64url');
     const forwardPassword = randomBytes(24).toString('base64url');
+    const healthSecret = randomBytes(24).toString('base64url');
     const config = {
       'mixed-port': entry,
       'allow-lan': false,
@@ -270,6 +271,7 @@ async function main() {
       'proxies': [{ name: 'NETVERGE-MITM', type: 'http', server: '127.0.0.1', port: proxy, username: 'netverge', password: forwardPassword }],
       'rules': [
         'AND,((IN-NAME,netverge-return),(DOMAIN,' + TARGET + '),(NETWORK,TCP),(DST-PORT,' + originPort + ')),DIRECT',
+        'AND,((IN-NAME,netverge-return),(IP-CIDR,127.0.0.1/32),(NETWORK,TCP),(DST-PORT,' + proxy + ')),DIRECT',
         'IN-NAME,netverge-return,REJECT',
         TUN ? 'AND,((IN-TYPE,TUN),(DOMAIN,' + TARGET + '),(NETWORK,TCP),(DST-PORT,' + originPort + ')),NETVERGE-MITM' : 'DOMAIN,' + TARGET + ',NETVERGE-MITM',
         'DOMAIN,' + BYPASS + ',DIRECT',
@@ -285,7 +287,7 @@ async function main() {
     if (TUN) await prepareTun(mihomo);
 
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(WHISTLE_|PFORK_|NODE_OPTIONS$|NODE_PATH$|NODE_TLS_REJECT_UNAUTHORIZED$|(?:HTTP|HTTPS|ALL|NO)_PROXY$)/i.test(k)));
-    Object.assign(env, { HOME: dir, USERPROFILE: dir, NODE_EXTRA_CA_CERTS: originCa, NETVERGE_LAB_RETURN_PASSWORD: password, NETVERGE_LAB_FORWARD_PASSWORD: forwardPassword, NETVERGE_LAB_TARGET_PORT: String(originPort) });
+    Object.assign(env, { HOME: dir, USERPROFILE: dir, NODE_EXTRA_CA_CERTS: originCa, NETVERGE_LAB_RETURN_PASSWORD: password, NETVERGE_LAB_FORWARD_PASSWORD: forwardPassword, NETVERGE_LAB_HEALTH_SECRET: healthSecret, NETVERGE_LAB_TARGET_PORT: String(originPort) });
     const observations = [];
     const tunnels = [];
     async function launchWorker() {
@@ -302,6 +304,34 @@ async function main() {
     }
     const ready = await launchWorker();
     const whistleCa = await fs.readFile(ready.caPath, 'utf8');
+
+    const proof = (kind, nonce) => createHash('sha256').update('netverge-health-v1:' + kind + ':' + nonce + ':' + healthSecret).digest('hex');
+    function healthRequest(kind, nonce, headers = {}) {
+      return new Promise((resolve, reject) => {
+        const req = http.request({ host: '127.0.0.1', port: proxy, path: '/__netverge_health' + (kind === 'return' ? '_return' : '') + '/' + nonce,
+          headers: { Host: '127.0.0.1:' + proxy, ...headers }, agent: false }, res => {
+          let body = '';
+          res.setEncoding('utf8');
+          res.on('data', chunk => { body += chunk; });
+          res.once('end', () => resolve({ status: res.statusCode, body }));
+        });
+        req.setTimeout(3000, () => req.destroy(new Error('health request timed out')));
+        req.once('error', reject);
+        req.end();
+      });
+    }
+    async function verifyHealth() {
+      const nonce = randomBytes(24).toString('base64url');
+      const auth = 'Basic ' + Buffer.from('netverge:' + forwardPassword).toString('base64');
+      assert.equal((await healthRequest('forward', nonce)).status, 403);
+      assert.equal((await healthRequest('forward', nonce, { 'Proxy-Authorization': auth })).status, 403);
+      assert.equal((await healthRequest('return', nonce, { 'X-NetVerge-Proof': 'forged' })).status, 403);
+      const result = await healthRequest('forward', nonce, { 'Proxy-Authorization': auth, 'X-NetVerge-Proof': proof('forward-request', nonce) });
+      assert.equal(result.status, 200);
+      assert.equal(result.body, proof('forward-response', nonce));
+      console.log('PASS: authenticated local round trip through Mihomo return listener; forged diagnostics rejected');
+    }
+    await verifyHealth();
     assert.notEqual(new X509Certificate(whistleCa).fingerprint256, new X509Certificate(certs.ca).fingerprint256);
 
     // Exercise the actual public worker listener, not a simulated auth check.
@@ -366,6 +396,7 @@ async function main() {
 
     const recovered = await launchWorker();
     const recoveredCa = await fs.readFile(recovered.caPath, 'utf8');
+    await verifyHealth();
     assert.equal(new X509Certificate(recoveredCa).fingerprint256, new X509Certificate(whistleCa).fingerprint256, 'worker restart changed the session CA');
     await assert.rejects(dial(proxy, TARGET, originPort, whistleCa), /CONNECT status 407/);
     const recoveredResponse = await selected(whistleCa);

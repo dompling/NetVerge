@@ -2,22 +2,23 @@
 
 const path = require('node:path');
 const http = require('node:http');
-const { timingSafeEqual, randomBytes } = require('node:crypto');
+const { timingSafeEqual, randomBytes, createHash } = require('node:crypto');
 const whistle = require('whistle');
 const [legacyDataDir, portText, returnPortText] = process.argv.slice(2);
 const desktop = !process.send;
 const settings = desktop ? JSON.parse(process.env.NETVERGE_MITM_WORKER_CONFIG || '{}') : {
   dataDir: legacyDataDir, port: Number(portText), returnPort: Number(returnPortText),
   hosts: ['mitm.netverge.test'], password: process.env.NETVERGE_LAB_RETURN_PASSWORD || '',
+  healthSecret: process.env.NETVERGE_LAB_HEALTH_SECRET,
   forwardPassword: process.env.NETVERGE_LAB_FORWARD_PASSWORD, targetPort: Number(process.env.NETVERGE_LAB_TARGET_PORT),
 };
-const { dataDir, port, returnPort, hosts, password, forwardPassword, targetPort } = settings;
+const { dataDir, port, returnPort, hosts, password, forwardPassword, targetPort, healthSecret } = settings;
 const validHost = host => typeof host === 'string' && host.length <= 253 &&
   host.includes('.') && host.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
 if (!dataDir || !path.isAbsolute(dataDir) || ![port, returnPort].every(p => Number.isInteger(p) && p > 0 && p < 65536) || port === returnPort ||
     !Array.isArray(hosts) || !hosts.length || !hosts.every(validHost) || typeof password !== 'string' ||
     !Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535 ||
-    !/^[A-Za-z0-9_-]{32}$/.test(forwardPassword || '') || !/^[A-Za-z0-9_-]{32}$/.test(password) || forwardPassword === password) {
+    !/^[A-Za-z0-9_-]{32}$/.test(forwardPassword || '') || !/^[A-Za-z0-9_-]{32}$/.test(password) || forwardPassword === password || !/^[A-Za-z0-9_-]{32}$/.test(healthSecret || '') || healthSecret === password || healthSecret === forwardPassword) {
   throw new Error('Invalid MITM worker configuration');
 }
 if (desktop) {
@@ -31,6 +32,7 @@ if (desktop) {
 delete process.env.NETVERGE_MITM_WORKER_CONFIG;
 delete process.env.NETVERGE_LAB_FORWARD_PASSWORD;
 delete process.env.NETVERGE_LAB_RETURN_PASSWORD;
+delete process.env.NETVERGE_LAB_HEALTH_SECRET;
 const auth = password ? 'netverge:' + password + '@' : '';
 // Whistle carries tunnel data from the authenticated CONNECT socket to its
 // internal HTTPS-to-HTTP bridge. A per-tunnel capability binds that bridge
@@ -62,6 +64,96 @@ function matchesAuthority(req, authority) {
     return false;
   }
 }
+// The diagnostic route is fixed to this listener and the named authenticated
+// Mihomo return inbound. No user hostname, external URL or TLS bypass is involved.
+const HEALTH_PREFIX = '/__netverge_health/';
+const RETURN_PREFIX = '/__netverge_health_return/';
+const healthAuthority = '127.0.0.1:' + port;
+const healthProof = (kind, nonce) => createHash('sha256')
+  .update('netverge-health-v1:' + kind + ':' + nonce + ':' + healthSecret).digest('hex');
+function constantEqual(value, expectedValue) {
+  const a = Buffer.from(typeof value === 'string' ? value : '');
+  const b = Buffer.from(expectedValue);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+function writeHealth(res, status, body = '') {
+  if (res.destroyed || res.writableEnded) return;
+  res.writeHead(status, { Connection: 'close', 'Cache-Control': 'no-store', 'Content-Length': Buffer.byteLength(body) });
+  res.end(body);
+}
+function checkReturn(nonce) {
+  return new Promise(resolve => {
+    let socket;
+    let settled = false;
+    let received = '';
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      request.destroy();
+      socket?.destroy();
+      resolve(ok);
+    };
+    const request = http.request({
+      host: '127.0.0.1', port: returnPort, method: 'CONNECT', path: healthAuthority,
+      headers: { Host: healthAuthority, 'Proxy-Authorization': 'Basic ' + Buffer.from('netverge:' + password).toString('base64') },
+      agent: false,
+    });
+    const timer = setTimeout(() => finish(false), 1200);
+    request.once('error', () => finish(false));
+    request.once('connect', (res, raw, head) => {
+      socket = raw;
+      socket.once('error', () => finish(false));
+      if (res.statusCode !== 200 || head.length) return finish(false);
+      socket.setEncoding('utf8');
+      socket.on('data', chunk => {
+        received += chunk;
+        if (received.length > 1024) finish(false);
+      });
+      socket.once('end', () => {
+        const boundary = received.indexOf('\r\n\r\n');
+        finish(boundary >= 0 && /^HTTP\/1\.[01] 200 /.test(received) &&
+          constantEqual(received.slice(boundary + 4), healthProof('return-response', nonce)));
+      });
+      socket.once('close', () => finish(false));
+      socket.write('GET ' + RETURN_PREFIX + nonce + ' HTTP/1.1\r\nHost: ' + healthAuthority +
+        '\r\nX-NetVerge-Proof: ' + healthProof('return-request', nonce) + '\r\nConnection: close\r\n\r\n');
+    });
+    request.end();
+  });
+}
+let healthBusy = false;
+function handleHealth(req, res) {
+  const prefix = req.url.startsWith(HEALTH_PREFIX) ? HEALTH_PREFIX :
+    req.url.startsWith(RETURN_PREFIX) ? RETURN_PREFIX : null;
+  if (!prefix) return false;
+  const nonce = req.url.slice(prefix.length);
+  if (!ready || req.method !== 'GET' || req.headers.host !== healthAuthority ||
+      !/^[A-Za-z0-9_-]{32}$/.test(nonce)) {
+    writeHealth(res, 403);
+    return true;
+  }
+  if (prefix === RETURN_PREFIX) {
+    const valid = constantEqual(req.headers['x-netverge-proof'], healthProof('return-request', nonce));
+    writeHealth(res, valid ? 200 : 403, valid ? healthProof('return-response', nonce) : '');
+    return true;
+  }
+  const header = Buffer.from(req.headers['proxy-authorization'] || '');
+  if (header.length !== expected.length || !timingSafeEqual(header, expected) ||
+      !constantEqual(req.headers['x-netverge-proof'], healthProof('forward-request', nonce))) {
+    writeHealth(res, 403);
+    return true;
+  }
+  if (healthBusy) {
+    writeHealth(res, 503);
+    return true;
+  }
+  healthBusy = true;
+  checkReturn(nonce).then(ok => {
+    writeHealth(res, ok ? 200 : 503, ok ? healthProof('forward-response', nonce) : '');
+  }).catch(() => writeHealth(res, 503)).finally(() => { healthBusy = false; });
+  return true;
+}
 const originalEmit = server.emit;
 server.emit = function(event, ...args) {
   if (event === 'connect') {
@@ -86,6 +178,7 @@ server.emit = function(event, ...args) {
   }
   if (event === 'request') {
     const [req, res] = args;
+    if (handleHealth(req, res)) return true;
     const capability = req.headers[TUNNEL_DATA];
     const authority = capabilities.get(capability);
     stripHeader(req, TUNNEL_DATA);
