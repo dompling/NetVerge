@@ -79,6 +79,11 @@ jobs:
           pnpm i
           pnpm run prebuild ${{ matrix.target }}
 
+      - name: Verify MITM frontend model (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pnpm typecheck
+          pnpm test src/components/mitm/mitm-config-model.test.ts src/components/mitm/mitm-view-model.test.ts
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:

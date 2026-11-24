@@ -15,7 +15,7 @@ import { validateMitmCandidate } from './mitm-config-model'
 
 export const MITM_CONFIG_KEY = 'netverge-mitm-local-config'
 
-export function MitmConfigEditor() {
+export function MitmConfigEditor({ live, busy, onChanged }: { live: boolean; busy: boolean; onChanged: () => void }) {
   const { t } = useTranslation()
   const [editing, setEditing] = useState<{ original: string | null; value: string; revision: string } | null>(null)
   const [saving, setSaving] = useState(false)
@@ -24,14 +24,14 @@ export function MitmConfigEditor() {
     { revalidateOnMount: true, revalidateOnFocus: true, shouldRetryOnError: false },
   )
   const hosts = data?.saved?.hostname ?? []
-  const editable = Boolean(data?.available && data.revision && data.saved && !saving && !error && !isValidating)
+  const editable = Boolean(data?.available && data.revision && data.saved && !busy && !saving && !error && !isValidating)
   const persist = useLockFn(async (hostname: string[], expected: string) => {
     if (!editable || !data || data.revision !== expected) {
       showNotice.warning('settings.mitm.config.conflict')
       return
     }
-    // Hostname preparation only; no fixed egress and no activation.
-    const candidate = { enable: false, hostname, policy: null }
+    // Keep the current enable state; host changes never choose an egress.
+    const candidate = { enable: live && Boolean(data.active?.enable), hostname, policy: null }
     const validation = validateMitmCandidate(candidate, [])
     if (validation) {
       showNotice.warning(`settings.mitm.config.${validation}`)
@@ -43,6 +43,7 @@ export function MitmConfigEditor() {
       if (!saved) return
       await mutate(saved, { revalidate: false })
       setEditing(null)
+      onChanged()
     } catch (err) {
       showNotice.error(err)
       await mutate()

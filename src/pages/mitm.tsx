@@ -17,6 +17,8 @@ import {
 import {
   exportMitmPublicCa,
   getMitmStatus,
+  getMitmConfig,
+  saveMitmConfig,
   getMitmTrustStatus,
   openMitmCertificateManager,
 } from '@/services/cmds'
@@ -63,6 +65,22 @@ const MitmPage = () => {
     }
   })
 
+  const { data: config, mutate: mutateConfig, isValidating: configLoading, error: configError } = useSWR(MITM_CONFIG_KEY, getMitmConfig)
+  const live = Boolean(data?.status.developmentRequested && config?.available)
+  const toggle = useLockFn(async (enable: boolean) => {
+    if (!live || !config?.saved || !config.revision) return
+    setBusy(true)
+    try {
+      const saved = await saveMitmConfig(config.revision, { ...config.saved, enable, policy: null })
+      if (saved) await mutateConfig(saved, { revalidate: false })
+    } catch (err) {
+      showNotice.error(err)
+    } finally {
+      await mutateConfig()
+      await mutate()
+      setBusy(false)
+    }
+  })
   const status = data?.status
   const trust = data?.trust
   const disabled = busy || isValidating || Boolean(error) || !canManageMitmCertificate(data)
@@ -71,7 +89,7 @@ const MitmPage = () => {
     <BasePage
       title={<Stack direction="row" sx={{ alignItems: 'center', gap: 1 }}>
         <Typography component="span" variant="h6" sx={{ fontWeight: 700 }}>{t('settings.mitm.title')}</Typography>
-        <Switch checked={false} disabled slotProps={{ input: { 'aria-label': t('settings.mitm.config.enable') } }} />
+        <Switch checked={live && Boolean(config?.active?.enable)} disabled={!live || busy || configLoading || Boolean(configError) || (!config?.active?.enable && !config?.saved?.hostname.length)} onChange={(_, checked) => void toggle(checked)} slotProps={{ input: { 'aria-label': t('settings.mitm.config.enable') } }} />
       </Stack>}
       header={
         <Button size="small" variant="outlined" startIcon={<RefreshRounded />}
@@ -82,7 +100,7 @@ const MitmPage = () => {
     >
       <Stack spacing={1.5}>
         <Typography variant="body2" color="text.secondary">{t('settings.mitm.summary')}</Typography>
-        <Alert severity="info">{t('settings.mitm.routingPaused')}</Alert>
+        {!live && <Alert severity="info">{t('settings.mitm.routingPaused')}</Alert>}
         {error && <Alert severity="error">{t('settings.mitm.error')}</Alert>}
         {isValidating && <Typography variant="caption" role="status">{t('settings.mitm.loading')}</Typography>}
         <Grid container spacing={1.5} columns={12}>
@@ -116,7 +134,7 @@ const MitmPage = () => {
                 </Card>
               </Grid>
           )}
-          <Grid size={{ xs: 12, md: 6 }}><MitmConfigEditor /></Grid>
+          <Grid size={{ xs: 12, md: 6 }}><MitmConfigEditor live={live} busy={busy} onChanged={() => { void mutate() }} /></Grid>
         </Grid>
       </Stack>
     </BasePage>

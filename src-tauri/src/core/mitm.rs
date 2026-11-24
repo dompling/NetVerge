@@ -486,6 +486,7 @@ fn validate_runtime(config: &Mapping, session: &Session) -> Result<()> {
 }
 
 pub(crate) async fn ensure_runtime_worker() -> Result<()> {
+    route_runtime::guard_runtime().await?;
     if !development_requested() {
         // Never start a stale generated fixed-return overlay when the route
         // inheritance gate is closed, even if a previous runtime is reused.

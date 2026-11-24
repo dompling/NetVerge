@@ -380,6 +380,7 @@ impl CoreManager {
 
     #[tracing::instrument(skip_all, level = "info", fields(config_file = %config_file.display()))]
     pub(super) async fn start_core_by_service_with_config(&self, config_file: &Path) -> Result<()> {
+        anyhow::ensure!(!crate::core::mitm::route_runtime::requested(), "original-route development MITM is Sidecar-only; service integration is not ready");
         crate::core::mitm::ensure_runtime_worker().await?;
         // 交接时等待 sidecar 释放 ext-controller 通道。
         #[cfg(target_os = "windows")]

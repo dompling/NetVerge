@@ -1,7 +1,7 @@
 //! Original-route MITM development adapter. Reuses the existing process,
 //! CA verification, health snapshots, and generation-scoped recovery budget.
-//! It does not reopen the legacy YAML overlay or expose a product UI switch.
-use super::{Health, MitmPublicCa, PUBLIC_STATE, PublicState, RecoveryBudget, MAX_RECOVERY_ATTEMPTS, valid_host};
+//! It does not reopen the legacy YAML overlay or ordinary product activation.
+use super::{Health, MitmPublicCa, MitmSettings, PUBLIC_STATE, PublicState, RecoveryBudget, MAX_RECOVERY_ATTEMPTS, valid_host};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}};
 use parking_lot::Mutex;
@@ -41,7 +41,7 @@ impl Launch {
     pub(crate) fn secret(&self) -> &str { &self.core_secret }
 }
 
-pub(super) fn requested() -> bool {
+pub(crate) fn requested() -> bool {
     std::env::var_os(ENV).is_some()
 }
 
@@ -66,7 +66,7 @@ fn read_settings(path: &Path) -> Result<LocalSettings> {
 fn validate(s: &LocalSettings) -> Result<()> {
     ensure!(s.node.is_absolute() && s.worker.is_absolute() && s.node.is_file() && s.worker.is_file(), "MITM Node and worker must be existing absolute files");
     ensure!(s.worker.file_name().is_some_and(|name| name == "route-worker.cjs"), "original-route worker required");
-    ensure!(!s.hosts.is_empty() && s.hosts.len() <= 64 && s.hosts.iter().all(|h| valid_host(h)), "invalid original-route hostnames");
+    ensure!(s.hosts.len() <= 64 && s.hosts.iter().all(|h| valid_host(h)), "invalid original-route hostnames");
     ensure!(s.hosts.iter().collect::<BTreeSet<_>>().len() == s.hosts.len(), "duplicate original-route hostname");
     Ok(())
 }
@@ -172,6 +172,17 @@ impl Launch {
         self.verify()
     }
 
+    fn disable(&self) -> Result<()> {
+        ensure!(self.core("DELETE", &[])?.0 == 204, "custom Mihomo refused MITM disable");
+        self.verify_disabled()
+    }
+
+    fn verify_disabled(&self) -> Result<()> {
+        let state = self.core_state()?;
+        ensure!(!state.enabled && state.hosts.is_empty(), "custom Mihomo disable not confirmed");
+        Ok(())
+    }
+
     fn verify(&self) -> Result<()> {
         self.worker_ready()?;
         let state = self.core_state()?;
@@ -189,9 +200,65 @@ struct RouteSession {
     child: Option<Child>,
     ca: Option<MitmPublicCa>,
     recovery: RecoveryBudget,
+    enabled: bool,
+    revision: String,
 }
 
 impl RouteSession {
+    fn selection(&self) -> MitmSettings {
+        MitmSettings { enable: self.enabled, hostname: self.launch.settings.hosts.clone(), policy: None }
+    }
+
+    fn change(&mut self, candidate: MitmSettings) -> Result<()> {
+        validate_candidate(&candidate)?;
+        if candidate == self.selection() { return Ok(()); }
+        let revision = random_secret()?;
+        if !candidate.enable {
+            // Only stop the worker after verified core disable.
+            if let Err(error) = self.launch.disable() {
+                self.publish(Health::Degraded);
+                return Err(error);
+            }
+            self.stop();
+            self.enabled = false;
+            self.launch.settings.hosts = candidate.hostname;
+            self.revision = revision;
+            self.recovery.attempts = 0;
+            self.publish(Health::Inactive);
+            return Ok(());
+        }
+        let previous = self.selection();
+        self.publish(Health::Checking);
+        // Keep the old core generation configured during worker replacement.
+        // Reuse its local data directory only after the old child has exited.
+        self.stop();
+        self.launch.settings.hosts = candidate.hostname;
+        let result = self.start().and_then(|()| self.launch.apply());
+        if result.is_ok() {
+            self.enabled = true;
+            self.revision = revision;
+            self.recovery.attempts = 0;
+            self.publish(Health::LocalLinkHealthy);
+            return Ok(());
+        }
+        self.stop();
+        self.launch.settings.hosts = previous.hostname;
+        self.enabled = previous.enable;
+        self.recovery.attempts = 0;
+        let restored = if previous.enable {
+            self.start().and_then(|()| self.launch.apply())
+        } else {
+            self.launch.disable()
+        };
+        if restored.is_ok() {
+            self.publish(if self.enabled { Health::LocalLinkHealthy } else { Health::Inactive });
+        } else {
+            self.stop();
+            self.publish(Health::Degraded);
+        }
+        anyhow::bail!("MITM change failed; previous configuration retained or recovery required")
+    }
+
     fn publish(&self, health: Health) {
         *PUBLIC_STATE.lock() = PublicState {
             health, generation: self.recovery.generation, attempts: self.recovery.attempts, ca: self.ca.clone(),
@@ -229,6 +296,11 @@ impl RouteSession {
             self.publish(Health::Degraded);
             return;
         }
+        if !self.enabled {
+            let healthy = self.launch.verify_disabled().or_else(|_| self.launch.disable()).is_ok();
+            self.publish(if healthy { Health::Inactive } else { Health::Degraded });
+            return;
+        }
         if let Some(child) = self.child.as_mut() {
             match child.try_wait() {
                 Ok(None) => {
@@ -246,7 +318,7 @@ impl RouteSession {
         self.publish(Health::Recovering);
         // Same port, same worker secret, same CA: the original core
         // generation stays configured while the child is unavailable.
-        if self.start().is_ok() && self.launch.verify().is_ok() {
+        if self.start().is_ok() && self.launch.apply().is_ok() {
             self.publish(Health::LocalLinkHealthy);
         } else {
             self.stop();
@@ -259,14 +331,13 @@ pub(crate) async fn activate(launch: Launch, generation: u64) -> Result<()> {
     tokio::task::spawn_blocking(move || {
         let mut guard = ROUTE.lock();
         ensure!(guard.is_none(), "original-route session already active");
-        let mut session = RouteSession { launch, child: None, ca: None, recovery: RecoveryBudget::default() };
+        let mut session = RouteSession { launch, child: None, ca: None, recovery: RecoveryBudget::default(), enabled: false, revision: random_secret()? };
         session.recovery.activate(generation);
         session.publish(Health::Checking);
         let result = (|| {
             let state = session.launch.core_state()?;
             ensure!(!state.enabled, "new custom core must start with MITM disabled");
-            session.start()?;
-            session.launch.apply()
+            Ok(())
         })();
         if result.is_err() {
             session.stop();
@@ -275,7 +346,7 @@ pub(crate) async fn activate(launch: Launch, generation: u64) -> Result<()> {
             // ambiguous PUT outcome. No stock-core fallback is introduced.
             return result;
         }
-        session.publish(Health::LocalLinkHealthy);
+        session.publish(Health::Inactive);
         *guard = Some(session);
         Ok(())
     }).await??;
@@ -302,6 +373,72 @@ pub(super) async fn stop_worker() {
     }).await;
 }
 
+// The existing IPC shape is retained, including policy:null for compatibility.
+fn validate_candidate(candidate: &MitmSettings) -> Result<()> {
+    ensure!(candidate.policy.is_none(), "MITM always uses original routing");
+    ensure!(candidate.hostname.len() <= 64 && candidate.hostname.iter().all(|h| valid_host(h)), "invalid MITM hostnames");
+    ensure!(candidate.hostname.iter().collect::<BTreeSet<_>>().len() == candidate.hostname.len(), "duplicate MITM hostname");
+    ensure!(!candidate.enable || !candidate.hostname.is_empty(), "enabled MITM requires a hostname");
+    Ok(())
+}
+
+pub(super) async fn inspect() -> Result<Option<(MitmSettings, String)>> {
+    let current = crate::core::CoreManager::global().current_core_readiness_generation();
+    tokio::task::spawn_blocking(move || {
+        let guard = ROUTE.lock();
+        Ok(guard.as_ref().filter(|s| s.recovery.generation == current && current.is_some()).map(|s| (s.selection(), s.revision.clone())))
+    }).await?
+}
+
+pub(super) async fn save(expected: String, candidate: MitmSettings) -> Result<Option<(MitmSettings, String)>> {
+    validate_candidate(&candidate)?;
+    let (previous, revision) = inspect().await?.context("original-route development core is unavailable")?;
+    ensure!(expected == revision, "MITM configuration changed; refresh first");
+    if candidate.enable && candidate != previous {
+        let answer = rfd::AsyncMessageDialog::new()
+            .set_title("Enable or update NetVerge MITM")
+            .set_description(format!("Decrypt HTTPS for these exact hostnames?\n\n{}\n\nOriginal routing is preserved. Existing selected connections may be interrupted. Certificate trust is not installed automatically.", candidate.hostname.join(", ")))
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::OkCancel)
+            .show().await;
+        if answer != rfd::MessageDialogResult::Ok { return Ok(None); }
+    }
+    let manager = crate::core::CoreManager::global();
+    let _life = manager.lifecycle_lock.lock().await;
+    ensure!(!crate::core::handle::Handle::global().is_exiting(), "application is exiting");
+    let generation = manager.current_core_readiness_generation().context("core is not ready")?;
+    if candidate.enable {
+        let runtime = crate::config::Config::runtime().await.data_arc();
+        let config = runtime.config.as_ref().context("runtime profile is unavailable")?;
+        require_tun_rule(config)?;
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut guard = ROUTE.lock();
+        let s = guard.as_mut().context("original-route development core is unavailable")?;
+        ensure!(s.recovery.generation == Some(generation) && s.revision == expected, "MITM configuration changed; refresh first");
+        s.change(candidate)?;
+        Ok(Some((s.selection(), s.revision.clone())))
+    }).await?
+}
+
+fn require_tun_rule(config: &serde_yaml_ng::Mapping) -> Result<()> {
+    ensure!(super::enabled_block(config, "tun"), "original-route MITM requires TUN");
+    ensure!(config.get("mode").and_then(serde_yaml_ng::Value::as_str).is_none_or(|mode| mode.eq_ignore_ascii_case("rule")), "original-route MITM requires rule mode");
+    Ok(())
+}
+
+// A profile reload must not silently bypass configured interception by
+// changing TUN/mode while a development generation is enabled.
+pub(super) async fn guard_runtime() -> Result<()> {
+    if !requested() { return Ok(()); }
+    let enabled = tokio::task::spawn_blocking(|| ROUTE.lock().as_ref().is_some_and(|s| s.enabled)).await?;
+    if enabled {
+        let runtime = crate::config::Config::runtime().await.latest_arc();
+        require_tun_rule(runtime.config.as_ref().context("MITM runtime profile missing")?)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +449,14 @@ mod tests {
         let path = std::env::current_exe()?;
         let config = serde_json::json!({"node": path, "worker": path, "hosts": ["api.example.test"], "policy": "DIRECT"});
         assert!(serde_json::from_value::<LocalSettings>(config).is_err());
+        let mut candidate = MitmSettings { enable: true, hostname: vec!["a.test".into()], policy: None };
+        validate_candidate(&candidate)?;
+        candidate.hostname.clear();
+        assert!(validate_candidate(&candidate).is_err());
+        candidate.enable = false;
+        validate_candidate(&candidate)?;
+        candidate.policy = Some("DIRECT".into());
+        assert!(validate_candidate(&candidate).is_err());
         assert!(same_hosts(&["a.test".into(), "b.test".into()], &["b.test".into(), "a.test".into()]));
         assert!(!same_hosts(&["a.test".into()], &["b.test".into()]));
         let secret = random_secret()?;

@@ -179,7 +179,21 @@ fn product_view(boot: &Boot, saved: MitmSettings, names: Vec<String>) -> Result<
     Ok(result)
 }
 
+fn route_view(selection: Option<(MitmSettings, String)>) -> MitmConfigView {
+    let (active, revision) = match selection {
+        Some((selection, revision)) => (Some(selection), Some(revision)),
+        None => (None, None),
+    };
+    MitmConfigView {
+        available: active.is_some(), saved: active.clone(), active, revision,
+        restart_required: false, policies: Vec::new(),
+    }
+}
+
 pub(crate) async fn inspect() -> Result<MitmConfigView> {
+    if super::route_runtime::requested() {
+        return Ok(route_view(super::route_runtime::inspect().await?));
+    }
     if !cfg!(any(windows, target_os = "macos")) || !super::bootstrap_requested() {
         return Ok(MitmConfigView {
             available: false, active: None, saved: None, revision: None,
@@ -206,6 +220,10 @@ fn check_candidate(boot: &Boot, candidate: &MitmSettings, names: &[String]) -> R
 }
 
 pub(crate) async fn save(expected_revision: String, candidate: MitmSettings) -> Result<Option<MitmConfigView>> {
+    if super::route_runtime::requested() {
+        let _permit = SAVE.try_acquire().context("MITM settings save already running")?;
+        return Ok(super::route_runtime::save(expected_revision, candidate).await?.map(|selection| route_view(Some(selection))));
+    }
     ensure!(cfg!(any(windows, target_os = "macos")) && super::bootstrap_requested(),
         "MITM developer bootstrap is not configured on this platform");
     ensure!(super::ROUTING_INHERITANCE_READY || (!candidate.enable && candidate.policy.is_none()),

@@ -902,6 +902,10 @@ impl CoreManager {
         use std::sync::atomic::Ordering;
         use std::time::Instant;
 
+        // Do not hand an original-route development generation to a stock service.
+        if crate::core::mitm::route_runtime::requested() {
+            return;
+        }
         // An accepted Sidecar is the user's decision for this session, not a wait for the Service.
         let needs_service = Config::verge().await.latest_arc().enable_tun_mode.unwrap_or(false)
             && !crate::core::runstate::RUN_STATE.state().sidecar_allowed;
@@ -965,6 +969,9 @@ impl CoreManager {
     #[cfg(target_os = "windows")]
     #[tracing::instrument(skip_all, level = "debug", fields(outcome = tracing::field::Empty))]
     async fn try_handoff_sidecar_to_service(&self) -> HandoffOutcome {
+        if crate::core::mitm::route_runtime::requested() {
+            return HandoffOutcome::Done;
+        }
         // Before probing: a probe reply records an observation, which clears sidecar_allowed.
         if crate::core::runstate::RUN_STATE.state().sidecar_allowed {
             return HandoffOutcome::Done;

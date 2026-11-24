@@ -58,6 +58,8 @@ export function validateMitmCandidate(candidate: MitmSettings_Serialize, policie
   if (new Set(candidate.hostname).size !== candidate.hostname.length) return 'duplicateHost'
   if (!candidate.enable) return null
   if (!candidate.hostname.length) return 'requiresHost'
+  // Empty policy choices indicate original-route mode, not a fixed return proxy.
+  if (policies.length === 0 && candidate.policy === null) return null
   if (!candidate.policy) return 'requiresPolicy'
   if (!policies.includes(candidate.policy)) return 'missingPolicy'
   return null
