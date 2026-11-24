@@ -28,7 +28,7 @@ var netVergeRouteState struct {
 }
 
 // SetNetVergeRouteHandler is an internal Go-only seam for a future trusted
-// local controller. Nil disables new handoffs. No external API calls this yet.
+// local controller. Nil disables new handoffs.
 // Existing admitted streams remain owned by the handler until it returns.
 func SetNetVergeRouteHandler(hosts []string, handler NetVergeRouteHandler) error {
 	var next *netVergeRouteConfig

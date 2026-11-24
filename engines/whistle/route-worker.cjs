@@ -64,6 +64,12 @@ function control(req,res) {
   if (!ready || req.headers[TUNNEL] || !matchesAuth(auth,controlAuth)) {
     reply(res,403); return true;
   }
+  if (req.method === 'GET' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
+    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)]});
+    res.writeHead(200, {Connection:'close','Cache-Control':'no-store','Content-Type':'application/json','Content-Length':Buffer.byteLength(body)});
+    res.end(body);
+    return true;
+  }
   if (!['POST','DELETE'].includes(req.method) || req.headers['content-type'] !== 'application/json' ||
       req.headers['transfer-encoding'] || !/^[0-9]{1,4}$/.test(req.headers['content-length'] || '') ||
       Number(req.headers['content-length']) > 1024) {

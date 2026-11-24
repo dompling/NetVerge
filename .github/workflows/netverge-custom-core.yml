@@ -1,0 +1,76 @@
+name: NetVerge custom Mihomo build
+on:
+  push:
+    branches: [feat/mitm-route-integration]
+    paths:
+      - 'engines/mihomo-route/**'
+      - 'engines/mihomo-route-lab/install-adapter-type-lab.cjs'
+      - '.github/workflows/netverge-custom-core.yml'
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Native build platform
+        type: choice
+        default: windows-latest
+        options: [windows-latest, macos-15, macos-15-intel, all]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && 'latest-push' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+permissions:
+  contents: read
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.platform == 'all' && '["windows-latest","macos-15","macos-15-intel"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.platform) || '["windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: netverge
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: MetaCubeX/mihomo
+          ref: 0455d0d28c4526937380505153e65a843d8612e8
+          path: mihomo-source
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+          cache-dependency-path: mihomo-source/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+      - name: Install pinned core source
+        shell: bash
+        run: |
+          test "$(git -C mihomo-source rev-parse HEAD)" = 0455d0d28c4526937380505153e65a843d8612e8
+          mkdir -p mihomo-source/routelease mihomo-source/netvergecontrol
+          cp netverge/engines/mihomo-route/routelease/lease.go mihomo-source/routelease/
+          cp netverge/engines/mihomo-route/control/controller.go mihomo-source/netvergecontrol/
+          cp netverge/engines/mihomo-route/tunnel/netverge_route_hook.go mihomo-source/tunnel/
+          node netverge/engines/mihomo-route-lab/install-adapter-type-lab.cjs mihomo-source
+          node netverge/engines/mihomo-route/install-tunnel-hook.cjs mihomo-source
+          node netverge/engines/mihomo-route/install-core-control.cjs mihomo-source
+          gofmt -w mihomo-source/main.go mihomo-source/adapter/outbound/base.go mihomo-source/tunnel/tunnel.go mihomo-source/tunnel/netverge_route_hook.go mihomo-source/routelease/lease.go mihomo-source/netvergecontrol/controller.go
+      - name: Build custom engine
+        shell: bash
+        working-directory: mihomo-source
+        env:
+          CGO_ENABLED: '0'
+          GOAMD64: v1
+        run: |
+          mkdir -p ../artifact
+          ext=""
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+          version="netverge-${GITHUB_SHA:0:12}"
+          go build -tags with_gvisor -trimpath -ldflags "-s -w -X github.com/metacubex/mihomo/constant.Version=$version" -o "../artifact/mihomo-netverge$ext" .
+          "../artifact/mihomo-netverge$ext" -v
+          node ../netverge/engines/mihomo-route/smoke-core.cjs "../artifact/mihomo-netverge$ext"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mihomo-netverge-${{ matrix.os }}-${{ github.sha }}
+          path: artifact/
+          if-no-files-found: error
