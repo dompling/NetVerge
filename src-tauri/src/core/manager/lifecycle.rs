@@ -781,6 +781,9 @@ impl CoreManager {
             RunningMode::Sidecar => self.stop_core_by_sidecar_unprepared().await,
             RunningMode::NotRunning => Ok(()),
         };
+        if result.is_ok() && matches!(*self.get_running_mode(), RunningMode::NotRunning) {
+            crate::core::mitm::stop_worker().await;
+        }
         // A Sidecar whose exit wait failed is already marked stopped; a core still running keeps its DNS.
         #[cfg(target_os = "macos")]
         if matches!(*self.get_running_mode(), RunningMode::NotRunning) {

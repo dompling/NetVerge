@@ -14,10 +14,54 @@ use std::{
 
 const PROXY: &str = "NETVERGE-MITM";
 const RETURN: &str = "netverge-return";
-static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
+static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct LocalConfig {
+    mitm: MitmSettings,
+    runtime: Option<RuntimeSettings>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MitmSettings {
+    #[serde(default)]
+    enable: bool,
+    #[serde(default)]
+    hostname: Vec<String>,
+    policy: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct RuntimeSettings {
+    node: PathBuf,
+    worker: PathBuf,
+    port: u16,
+    return_port: u16,
+}
+
+impl LocalConfig {
+    fn into_settings(self) -> Result<Option<Settings>> {
+        if !self.mitm.enable {
+            return Ok(None);
+        }
+        let runtime = self.runtime.context("enabled MITM requires local runtime settings")?;
+        let settings = Settings {
+            node: runtime.node,
+            worker: runtime.worker,
+            port: runtime.port,
+            return_port: runtime.return_port,
+            hosts: self.mitm.hostname,
+            policy: self.mitm.policy.context("enabled MITM requires an explicit return policy")?,
+        };
+        settings.validate()?;
+        Ok(Some(settings))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Settings {
     node: PathBuf,
     worker: PathBuf,
@@ -27,9 +71,9 @@ struct Settings {
     policy: String,
 }
 
-struct Worker {
+struct Session {
     settings: Settings,
-    child: Child,
+    child: Option<Child>,
     password: String,
     forward_password: String,
 }
@@ -168,24 +212,27 @@ fn start_worker(settings: &Settings, data: &Path, password: &str, forward_passwo
     Ok(child)
 }
 
-fn prepare_sync(mut config: Mapping, path: PathBuf, data: PathBuf) -> Result<Mapping> {
-    let settings: Settings = serde_json::from_slice(&std::fs::read(path)?).context("invalid MITM development config")?;
-    settings.validate()?;
-    let mut state = WORKER.lock();
-    if let Some(worker) = state.as_mut() {
-        ensure!(worker.settings == settings, "restart NetVerge to change MITM development settings");
-        overlay(&mut config, &settings, &worker.password, &worker.forward_password)?;
-        if worker.child.try_wait()?.is_some() {
-            worker.child = start_worker(&settings, &data, &worker.password, &worker.forward_password)?;
-        }
+// Planning allocates stable session credentials but never spawns a process.
+// The Core's existing validation/application lifecycle owns the external effect.
+fn plan_overlay(mut config: Mapping, settings: Option<Settings>, state: &mut Option<Session>) -> Result<Mapping> {
+    if let Some(session) = state.as_ref() {
+        ensure!(settings.as_ref() == Some(&session.settings), "restart NetVerge to change MITM development settings");
+    }
+    ensure!(!named(&config, "proxies", PROXY) && !named(&config, "proxy-groups", PROXY) && !named(&config, "listeners", RETURN), "reserved MITM name already exists");
+    let Some(settings) = settings else {
+        return Ok(config);
+    };
+    if !enabled_block(&config, "tun") {
         return Ok(config);
     }
-
+    if let Some(session) = state.as_ref() {
+        overlay(&mut config, &settings, &session.password, &session.forward_password)?;
+        return Ok(config);
+    }
     let password = nanoid::nanoid!(32);
     let forward_password = nanoid::nanoid!(32);
     overlay(&mut config, &settings, &password, &forward_password)?;
-    let child = start_worker(&settings, &data, &password, &forward_password)?;
-    *state = Some(Worker { settings, child, password, forward_password });
+    *state = Some(Session { settings, child: None, password, forward_password });
     Ok(config)
 }
 
@@ -193,18 +240,83 @@ pub(crate) fn development_requested() -> bool {
     std::env::var_os("NETVERGE_MITM_DEV_CONFIG").is_some()
 }
 
-pub(crate) async fn prepare(config: Mapping) -> Result<Mapping> {
+pub(crate) async fn prepare(mut config: Mapping) -> Result<Mapping> {
+    // Only the explicitly selected local file may authorize interception.
+    // Never interpret a subscription or merge/script extension as consent.
+    config.remove("mitm");
     let Some(path) = std::env::var_os("NETVERGE_MITM_DEV_CONFIG") else {
         return Ok(config);
     };
-    if !enabled_block(&config, "tun") {
-        // Keep the worker idle until process exit; a failed core reload must not lose its upstream.
-        return Ok(config);
-    }
     let path = PathBuf::from(path);
     ensure!(path.is_absolute(), "NETVERGE_MITM_DEV_CONFIG must be an absolute path");
+    tokio::task::spawn_blocking(move || {
+        let local: LocalConfig = serde_yaml_ng::from_slice(&std::fs::read(path)?).context("invalid local MITM YAML")?;
+        let settings = local.into_settings()?;
+        plan_overlay(config, settings, &mut SESSION.lock())
+    }).await?
+}
+
+fn runtime_has_overlay(config: &Mapping) -> bool {
+    named(config, "proxies", PROXY) || named(config, "listeners", RETURN)
+}
+
+pub(crate) async fn runtime_requests_mitm() -> bool {
+    development_requested()
+        && crate::config::Config::runtime().await.latest_arc().config.as_ref().is_some_and(runtime_has_overlay)
+}
+
+pub(crate) async fn ensure_runtime_worker() -> Result<()> {
+    if !runtime_requests_mitm().await {
+        return Ok(());
+    }
+    let config = crate::config::Config::runtime().await.latest_arc().config.clone().context("missing MITM runtime")?;
+    ensure!(enabled_block(&config, "tun"), "MITM runtime requires TUN");
+    ensure!(config.get("mode").and_then(Value::as_str).is_none_or(|mode| mode.eq_ignore_ascii_case("rule")), "MITM runtime requires rule mode");
     let data = crate::utils::dirs::app_home_dir()?.join("netverge-mitm-dev");
-    tokio::task::spawn_blocking(move || prepare_sync(config, path, data)).await?
+    tokio::task::spawn_blocking(move || {
+        let mut state = SESSION.lock();
+        let session = state.as_mut().context("MITM runtime has no local session")?;
+        // Require the exact generated entries and rule prefix. Direct runtime
+        // patches must not silently change the authenticated worker's route.
+        let mut expected = config.clone();
+        for (key, name) in [("proxies", PROXY), ("listeners", RETURN)] {
+            let mut items = sequence(&mut expected, key)?;
+            items.retain(|item| item.get("name").and_then(Value::as_str) != Some(name));
+            expected.insert(key.into(), Value::Sequence(items));
+        }
+        let mut rules = sequence(&mut expected, "rules")?;
+        let prefix_len = session.settings.hosts.len() * 2 + 1;
+        ensure!(rules.len() >= prefix_len, "MITM rule prefix is missing");
+        rules.drain(..prefix_len);
+        expected.insert("rules".into(), Value::Sequence(rules));
+        overlay(&mut expected, &session.settings, &session.password, &session.forward_password)?;
+        for key in ["proxies", "listeners", "rules"] {
+            ensure!(expected.get(key) == config.get(key), "MITM runtime {key} changed after planning");
+        }
+        if let Some(child) = session.child.as_mut() {
+            if child.try_wait()?.is_none() {
+                return Ok(());
+            }
+            session.child = None;
+        }
+        let child = start_worker(&session.settings, &data, &session.password, &session.forward_password)?;
+        session.child = Some(child);
+        Ok(())
+    }).await?
+}
+
+// Call only after confirmed core stop or application of a non-MITM runtime.
+pub(crate) async fn stop_worker() {
+    if !development_requested() {
+        return;
+    }
+    let _ = tokio::task::spawn_blocking(|| {
+        if let Some(session) = SESSION.lock().as_mut() {
+            if let Some(mut child) = session.child.take() {
+                stop(&mut child);
+            }
+        }
+    }).await;
 }
 
 #[cfg(test)]
@@ -227,6 +339,26 @@ mod tests {
         assert_eq!(rules[1].as_str(), Some("IN-NAME,netverge-return,REJECT"));
         assert_eq!(rules[2].as_str(), Some("AND,((IN-TYPE,TUN),(DOMAIN,example.test),(NETWORK,TCP),(DST-PORT,443)),NETVERGE-MITM"));
         assert_eq!(rules[3].as_str(), Some("MATCH,Work"));
+        Ok(())
+    }
+
+    #[test]
+    fn local_yaml_and_planning_do_not_start_a_worker() -> Result<()> {
+        let path = std::env::current_exe()?;
+        let yaml = serde_yaml_ng::to_string(&serde_json::json!({
+            "mitm": {"enable": true, "hostname": ["example.test"], "policy": "DIRECT"},
+            "runtime": {"node": path, "worker": path, "port": 18899, "return-port": 18900}
+        }))?;
+        let settings = serde_yaml_ng::from_str::<LocalConfig>(&yaml)?.into_settings()?;
+        let config: Mapping = serde_yaml_ng::from_str("mode: rule\ntun: {enable: true}\ndns: {enable: true, enhanced-mode: fake-ip}\nrules: ['MATCH,DIRECT']\n")?;
+        let mut state = None;
+        let first = plan_overlay(config.clone(), settings.clone(), &mut state)?;
+        let second = plan_overlay(config, settings, &mut state)?;
+        assert_eq!(first, second);
+        assert!(state.as_ref().is_some_and(|session| session.child.is_none()));
+        let disabled: LocalConfig = serde_yaml_ng::from_str("mitm: {enable: false}")?;
+        assert!(disabled.into_settings()?.is_none());
+        assert!(serde_yaml_ng::from_str::<LocalConfig>("mitm: {enable: true, hostname: [], unexpected: true}").is_err());
         Ok(())
     }
 

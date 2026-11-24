@@ -181,6 +181,11 @@ impl CoreManager {
         };
         #[cfg(not(target_os = "windows"))]
         let config_file = Config::generate_file().await?;
+        #[cfg(target_os = "windows")]
+        if !crate::core::runstate::RUN_STATE.state().is_admin && crate::core::mitm::runtime_requests_mitm().await {
+            anyhow::bail!("MITM requires an elevated TUN-capable core; refusing sidecar fallback");
+        }
+        crate::core::mitm::ensure_runtime_worker().await?;
         let app_handle = handle::Handle::app_handle();
         let clash_core = Config::verge().await.latest_arc().get_valid_clash_core();
         let config_dir = dirs::app_home_dir()?;
@@ -360,6 +365,7 @@ impl CoreManager {
 
     #[tracing::instrument(skip_all, level = "info", fields(config_file = %config_file.display()))]
     pub(super) async fn start_core_by_service_with_config(&self, config_file: &Path) -> Result<()> {
+        crate::core::mitm::ensure_runtime_worker().await?;
         // 交接时等待 sidecar 释放 ext-controller 通道。
         #[cfg(target_os = "windows")]
         {

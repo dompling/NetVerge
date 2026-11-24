@@ -358,10 +358,14 @@ impl CoreManager {
         }
 
         let run_path = Config::write_runtime_file(&yaml).await?;
+        crate::core::mitm::ensure_runtime_worker().await?;
         let previous = self.current_core_readiness_generation();
         let result = self.apply_config(run_path).await;
         self.retain_applied_runtime(&Config::runtime().await, previous, &result);
         result?;
+        if !crate::core::mitm::runtime_requests_mitm().await {
+            crate::core::mitm::stop_worker().await;
+        }
         // Under the lifecycle lock, so a stop for exit waits for this write instead of outrunning it.
         #[cfg(target_os = "macos")]
         {
