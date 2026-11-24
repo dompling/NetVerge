@@ -34,3 +34,7 @@ Windows run 45362776257 passed both real Shadowsocks AEAD ciphers. Verify actual
 ## Review 22: real VMess AEAD
 
 Windows run 45363709524 passed the real Trojan TCP+TLS and wrong-pin rejection tests. Verify upstream VMess TCP AEAD (alterId 0) using the pinned sing-vmess service, independent random UUIDs, AES-128-GCM and ChaCha20-Poly1305. Verify authenticated identity and fixed destination, original group stream preservation, exact counts, distinct origin proofs and lease replay denial. Keep production admission unchanged; plain TCP AEAD is not proof of lazy WS/gRPC transports. Windows CI required.
+
+## Review 23: real VLESS TCP+TLS and first-write handshake
+
+Windows run 45364270736 passed both VMess AEAD variants. Use actual upstream VLESS client and Mihomo sing_vless service with two independent loopback TLS proxies, random UUIDs and pinned independent CA certificates. Require native NeedHandshake true before handoff, zero decoded requests before first payload, then exact authenticated destination and distinct origin proof after Whistle TLS exchange. Preserve native callback wrappers and original selection; deny lease replay. This is real plain VLESS TCP+TLS with no flow or extra encryption; REALITY, Vision, WS/gRPC, UDP and production admission remain separate. Windows CI required.
