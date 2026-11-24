@@ -15,6 +15,9 @@ on:
       - 'src/services/bindings.ts'
       - 'src/services/cmds.ts'
       - 'src/components/setting/**'
+      - 'src/components/mitm/**'
+      - 'src/pages/**'
+      - 'src/assets/image/itemicon/mitm.svg'
       - 'src/locales/**/settings.json'
       - 'src/types/generated/i18n-*.ts'
       - 'crates/**'
@@ -122,7 +125,7 @@ jobs:
           pnpm typecheck
           pnpm i18n:types
           git diff --exit-code -- src/types/generated/i18n-keys.ts src/types/generated/i18n-resources.ts
-          pnpm test src/components/setting/mods/mitm-view-model.test.ts
+          pnpm test src/components/mitm/mitm-view-model.test.ts src/pages/navigation-meta.test.ts
           pnpm arch:check
 
       - name: Upload generated frontend contract

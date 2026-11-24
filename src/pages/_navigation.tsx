@@ -3,6 +3,7 @@ import ForkRightOutlinedIcon from '@mui/icons-material/ForkRightOutlined'
 import HomeOutlinedIcon from '@mui/icons-material/HomeOutlined'
 import LanguageOutlinedIcon from '@mui/icons-material/LanguageOutlined'
 import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined'
+import SecurityOutlinedIcon from '@mui/icons-material/SecurityOutlined'
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
 import SubjectOutlinedIcon from '@mui/icons-material/SubjectOutlined'
 import WifiOutlinedIcon from '@mui/icons-material/WifiOutlined'
@@ -10,6 +11,7 @@ import { type ComponentType, type ReactNode } from 'react'
 
 import ConnectionsSvg from '@/assets/image/itemicon/connections.svg?react'
 import HomeSvg from '@/assets/image/itemicon/home.svg?react'
+import MitmSvg from '@/assets/image/itemicon/mitm.svg?react'
 import LogsSvg from '@/assets/image/itemicon/logs.svg?react'
 import ProfilesSvg from '@/assets/image/itemicon/profiles.svg?react'
 import ProxiesSvg from '@/assets/image/itemicon/proxies.svg?react'
@@ -17,10 +19,13 @@ import RulesSvg from '@/assets/image/itemicon/rules.svg?react'
 import SettingsSvg from '@/assets/image/itemicon/settings.svg?react'
 import UnlockSvg from '@/assets/image/itemicon/unlock.svg?react'
 
-import { navigationItems } from './_navigation-meta'
+import getSystem from '@/utils/get-system'
+
+import { isNavigationItemAvailable, navigationItems } from './_navigation-meta'
 import ConnectionsPage from './connections'
 import HomePage from './home'
 import LogsPage from './logs'
+import MitmPage from './mitm'
 import ProfilePage from './profiles'
 import ProxyPage from './proxies'
 import RulesPage from './rules'
@@ -34,7 +39,7 @@ type NavigationItem = {
   Component: ComponentType
 }
 
-export const navItems: NavigationItem[] = [
+const allNavItems: NavigationItem[] = [
   {
     ...navigationItems.home,
     icon: [<HomeOutlinedIcon key="mui" />, <HomeSvg key="svg" />],
@@ -61,6 +66,11 @@ export const navItems: NavigationItem[] = [
     Component: RulesPage,
   },
   {
+    ...navigationItems.mitm,
+    icon: [<SecurityOutlinedIcon key="mui" />, <MitmSvg key="svg" />],
+    Component: MitmPage,
+  },
+  {
     ...navigationItems.logs,
     icon: [<SubjectOutlinedIcon key="mui" />, <LogsSvg key="svg" />],
     Component: LogsPage,
@@ -76,3 +86,7 @@ export const navItems: NavigationItem[] = [
     Component: SettingPage,
   },
 ]
+
+export const navItems = allNavItems.filter((item) =>
+  isNavigationItemAvailable(item.path, getSystem()),
+)

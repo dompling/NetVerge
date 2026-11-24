@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next'
 
 import { DialogRef, TooltipIcon } from '@/components/base'
 import { useVerge } from '@/hooks/use-verge'
-import { navigationItems } from '@/pages/_navigation-meta'
+import { isNavigationItemAvailable, navigationItems } from '@/pages/_navigation-meta'
 import { copyClashEnv } from '@/services/cmds'
 import { supportedLanguages } from '@/services/i18n'
 import { mutate } from '@/services/mutate'
@@ -199,14 +199,14 @@ const SettingVergeBasic = ({ onError }: Props) => {
         label={t('settings.components.verge.basic.fields.startPage')}
       >
         <GuardState
-          value={start_page ?? '/'}
+          value={start_page && isNavigationItemAvailable(start_page, OS) ? start_page : '/'}
           onCatch={onError}
           onFormat={(e: any) => e.target.value}
           onChange={(e) => onChangeData({ start_page: e })}
           onGuard={(e) => patchVerge({ start_page: e })}
         >
           <Select size="small" sx={{ width: 140, '> div': { py: '7.5px' } }}>
-            {Object.values(navigationItems).map((page) => {
+            {Object.values(navigationItems).filter((page) => isNavigationItemAvailable(page.path, OS)).map((page) => {
               return (
                 <MenuItem key={page.path} value={page.path}>
                   {t(page.label)}

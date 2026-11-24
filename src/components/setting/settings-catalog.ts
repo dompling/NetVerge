@@ -267,10 +267,6 @@ const settingsCatalog: readonly SettingEntry[] = [
   }),
   ...group(clash, {
     'settings.sections.clash.form.fields.dnsOverwrite': 'dns overwrite ',
-    'settings.mitm.title': {
-      aliases: 'MITM HTTPS CA certificate 证书 解密',
-      platforms: ['windows', 'macos'],
-    },
   }),
   ...group(dns, {
     'settings.modals.dns.fields.enable': 'enable',

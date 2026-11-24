@@ -1,12 +1,14 @@
-# MITM desktop review 09: settings and certificate management UI
+# MITM desktop review 09 revision: standalone main navigation
 
-Baseline: 9376b39 Rust CI 45343759645 and f4b522b network CI 45344893593 passed. Synchronized exact generated native management IPC at c05d518.
+User requested a Surge-like dedicated MITM page, not an entry inside Settings. Replace the pending settings dialog increment before acceptance; do not keep two UI surfaces.
 
 ## Functional correctness
-Add Windows/macOS MITM entry within existing Clash settings, searchable by MITM/HTTPS/CA. Reuse dialog, status and trust IPC, show development configuration, local link health, core generation, retry budget, fingerprint, per-store membership and trust assessment. Query only while dialog is open; manual refresh and focus revalidation, no polling native trust stores. No fake activation switch, no claim of end-to-end health. Refresh before actions, disable while validating, on error, when no certificate or mismatched fingerprint. Native management still rechecks fingerprint and requires confirmation; export uses existing native dialog. Chinese, Traditional Chinese and English strings with existing fallback for other locales. UI model tests for missing/mismatched/disabled status, actual generated IPC and i18n metadata checks and architecture validation in CI.
+- Register /mitm in shared navigation metadata and existing router and sidebar; new default item between Rules and Logs, supports existing collapsed and reordered sidebar. Existing saved custom order is preserved by the existing order resolver, which appends newly available paths. Windows/macOS only, startup-page selector respects the same platform gate. No duplicate setting search result or Clash settings entry. 
+- Use BasePage and responsive existing MUI cards for local engine status and CA information/actions; no modal wrapper or close button. Explicit refresh, focus refresh and route-lifetime fetch. Reuse previously implemented certificate validation and management guards; before an action fetch a fresh snapshot and reject changed fingerprint rather than relying on cached data.
+- Keep actual enable/disable and hostname editing pending the local configuration stage; no fake switches. Unit tests cover unique route and platform gating in addition to certificate model tests. Generated locale and IPC checks unchanged.
 
-## Architecture and reuse
-Use existing MUI, BaseDialog, SettingItem, setting catalog, SWR, existing notice service and command wrappers around Specta bindings. No additional dependency or duplicate settings subsystem. Do not change remote profiles, Clash/TUN settings, or CA trust in frontend. Linux entry hidden pending final platform work.
+## Architecture/reuse
+One route and one view model. Remove the old dialog and move its model/tests to feature directory. Reuse shared navigation metadata, router, sidebar persistence, BasePage, MUI, existing generated bindings and translations. Existing locale namespace is retained to avoid unnecessary churn in this revision. No new backend API or dependency. 
 
-## Security and stability
-Trust membership is not proof of TLS trust; local link health is not proof of real TUN. No private key, arbitrary certificate bytes, file paths or trust mutation from UI. Native CA manager returns launch success only. Export is independently guarded on backend; stale snapshots cannot authorize management of another CA. Actual native dialog and visual desktop acceptance, Windows ACL, automatic trust mutation and production packaging remain open. Gate: static review only; CI, UI model tests and manual visual verification pending.
+## Security/stability
+No trust mutation, arbitrary file input, or network routing changes. Certificate actions still use the verified public snapshot and native confirmation. Local link health and trust assessment remain distinct. Linux nav hidden until its milestone. Real UI visual inspection, desktop TUN, private ACL and full production trust mutation remain pending. No claim of completed CI until the replacement build passes. Old integration CI push is superseded by concurrency.
