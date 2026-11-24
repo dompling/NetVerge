@@ -4,6 +4,7 @@ package tunnel_test
 import (
 	"context"
 	"encoding/base64"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -82,9 +83,19 @@ func TestNetVergeRouteLeaseDynamicGroups(t *testing.T) {
 		"fallback":adapter.NewProxy(fallback),"load-balance":adapter.NewProxy(balance),
 		"outer-reject":adapter.NewProxy(outer),
 	}
+	for _, spec := range []struct{ name, strategy, hashKey string }{
+		{"hash", "consistent-hashing", ""},
+		{"hash-user", "consistent-hashing", "in-user"},
+		{"sticky", "sticky-sessions", ""},
+		{"sticky-user", "sticky-sessions", "in-user"},
+	} {
+		lb, err := G.NewLoadBalance(opt(spec.name), G.LoadBalanceOption{Strategy: spec.strategy, HashKey: spec.hashKey}, reject, pd)
+		if err != nil { t.Fatal(err) }
+		groups[spec.name] = adapter.NewProxy(lb)
+	}
 	proxies := map[string]C.Proxy{a.Name():a,b.Name():b,reject.Name():reject,rejectDrop.Name():rejectDrop,inner.Name():innerProxy}
 	var rules []C.Rule
-	for _,name := range []string{"select","url-test","fallback","load-balance","outer-reject"} {
+	for _,name := range []string{"select","url-test","fallback","load-balance","outer-reject","hash","hash-user","sticky","sticky-user"} {
 		proxies[name]=groups[name]
 		r,err := R.NewProcess(name,name,C.ProcessName)
 		if err!=nil { t.Fatal(err) }
@@ -96,7 +107,7 @@ func TestNetVergeRouteLeaseDynamicGroups(t *testing.T) {
 	// Resolve once and invoke the returned group. Never preselect the leaf
 	// or redial after the user changes the group or health changes.
 	dial := func(name string) C.Conn {
-		metadata := &C.Metadata{Type:C.TUN,NetWork:C.TCP,Host:nvWhistleHost,DstPort:443,Process:name}
+		metadata := &C.Metadata{Type:C.TUN,NetWork:C.TCP,Host:nvWhistleHost,DstPort:443,Process:name,SrcIP:netip.MustParseAddr("192.0.2.25"),InUser:"fixture-user"}
 		p,_,err := tunnel.NetVergeLabResolveMetadata(metadata)
 		if err!=nil || p!=groups[name] { t.Fatalf("%s original group decision failed: %v",name,err) }
 		ctx,cancel := context.WithTimeout(context.Background(),nvLabTimeout)
@@ -108,11 +119,22 @@ func TestNetVergeRouteLeaseDynamicGroups(t *testing.T) {
 	type fixture struct { name,key string; lease *nvLabLease; origin *nvWhistleOrigin; proof string }
 	var fixtures []fixture
 	routes := make(map[string]*nvLabLease)
-	prepare := func(group string, want *nvGroupMember) {
+	prepare := func(group string, want *nvGroupMember) *nvGroupMember {
 		t.Helper()
 		beforeA,beforeB := countA.Load(),countB.Load()
 		conn := dial(group)
 		t.Cleanup(func(){_=conn.Close()})
+		// For hashing, observe the first actual dial rather than unwrapping
+		// or predicting a native algorithm's selected leaf.
+		if want == nil {
+			chain := conn.Chains()
+			if len(chain) != 2 { t.Fatalf("%s invalid original chain: %v", group, chain) }
+			switch chain[0] {
+			case a.Name(): want = a
+			case b.Name(): want = b
+			default: t.Fatalf("%s unexpected member: %v", group, chain)
+			}
+		}
 		// This test knows the exact fixture adapter instances and expected
 		// topology. It does not authorize unknown production chain names.
 		if N.NeedHandshake(conn) || !slices.Equal([]string(conn.Chains()),[]string{want.Name(),group}) {
@@ -129,6 +151,7 @@ func TestNetVergeRouteLeaseDynamicGroups(t *testing.T) {
 		f.lease=nvLabLeaseVerifiedStream(t,conn,nvWhistleAuthority)
 		routes[f.key]=f.lease
 		fixtures=append(fixtures,f)
+		return want
 	}
 	prepare("select",a)
 	if err=selector.Set(b.Name()); err!=nil { t.Fatal(err) }
@@ -151,6 +174,29 @@ func TestNetVergeRouteLeaseDynamicGroups(t *testing.T) {
 	prepare("load-balance",b)
 	if countA.Load()!=4 || countB.Load()!=4 { t.Fatal("unexpected group dial count") }
 
+	// Preserve native hashing and session affinity without reproducing
+	// the hash algorithm. Only consistent hashing has deterministic
+	// healthy-member fallback; sticky retry is intentionally not forced.
+	for _, group := range []string{"hash","hash-user","sticky","sticky-user"} {
+		first := prepare(group,nil)
+		prepare(group,first)
+		if group == "hash" || group == "hash-user" {
+			other := a
+			if first == a { other = b }
+			nvGroupSet(first,false,100)
+			prepare(group,other)
+			nvGroupSet(a,true,10)
+			nvGroupSet(b,true,100)
+		}
+	}
+	wantA,wantB := int32(0),int32(0)
+	for _, f := range fixtures {
+		if f.origin == originA { wantA++ } else { wantB++ }
+	}
+	if countA.Load()!=wantA || countB.Load()!=wantB || wantA+wantB!=18 {
+		t.Fatal("unexpected native group dial totals")
+	}
+
 	// Both rejected nested routes can return nil dial errors. A successful
 	// group dial is insufficient to authorize MITM. No listener is created.
 	for _,denied := range []C.Proxy{reject,rejectDrop} {
@@ -163,9 +209,9 @@ func TestNetVergeRouteLeaseDynamicGroups(t *testing.T) {
 		if nvLabEligible(groups["outer-reject"],c) { c.Close(); t.Fatal("rejected group admitted") }
 		c.Close()
 	}
-	if countA.Load()!=4 || countB.Load()!=4 { t.Fatal("reject reached real outbound") }
+	if countA.Load()!=wantA || countB.Load()!=wantB { t.Fatal("reject reached real outbound") }
 
-	// All eight leases were established before the shared worker starts.
+	// All eighteen leases were established before the shared worker starts.
 	// A subsequent selection change must not change an existing stream.
 	if err=selector.Set(a.Name()); err!=nil { t.Fatal(err) }
 	roots := filepath.Join(t.TempDir(),"group-roots.pem")
@@ -186,11 +232,11 @@ func TestNetVergeRouteLeaseDynamicGroups(t *testing.T) {
 			if !f.lease.used.Load() || f.origin.requests.Load()!=before+1 {
 				t.Fatal("original connection not consumed exactly once")
 			}
-			if countA.Load()!=4 || countB.Load()!=4 { t.Fatal("Whistle redialed group") }
+			if countA.Load()!=wantA || countB.Load()!=wantB { t.Fatal("Whistle redialed group") }
 		})
 	}
-	if originA.requests.Load()!=4 || originB.requests.Load()!=4 || originA.leaked.Load() || originB.leaked.Load() {
+	if originA.requests.Load()!=wantA || originB.requests.Load()!=wantB || originA.leaked.Load() || originB.leaked.Load() {
 		t.Fatal("cross-route response or internal credential leak")
 	}
-	t.Log("PASS: native select, URL-Test, fallback and round-robin group dials preserved in one Whistle process; nested rejects excluded")
+	t.Log("PASS: native select, URL-Test, fallback, round-robin, consistent hashing and sticky session group dials preserved in one Whistle process; nested rejects excluded")
 }
