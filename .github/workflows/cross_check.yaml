@@ -6,6 +6,11 @@ on:
     branches: [feat/whistle-integration]
     paths:
       - 'src-tauri/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
       - '.github/workflows/cross_check.yaml'
 
 permissions:
@@ -19,6 +24,10 @@ jobs:
     # Treat all Rust compiler warnings as errors
     env:
       RUSTFLAGS: '-D warnings'
+      # CI checks and tests do not need full debug symbols; release profiles are unaffected.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
     strategy:
       fail-fast: false
       matrix:
@@ -60,8 +69,13 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
-          save-if: false
+          prefix-key: 'netverge-ci-rust-v2'
+          key: '${{ matrix.os }}-${{ matrix.target }}'
+          workspaces: |
+            . -> target
+          save-if: ${{ github.ref == 'refs/heads/feat/whistle-integration' }}
+          cache-all-crates: true
+          cache-workspace-crates: false
 
       - name: Install Linux native build dependencies
         if: runner.os == 'Linux'
