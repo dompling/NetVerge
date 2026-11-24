@@ -26,3 +26,7 @@ Branch independently from review 18 while its Windows CI is running, so no earli
 ## Review 20: real Shadowsocks AEAD transport
 
 Windows run 45361054821 passed prior DIRECT, typed dynamic-group and simulated lazy checks. Use upstream actual Shadowsocks client and compatible upstream server cipher/destination parser over two loopback fixtures (AES-128-GCM and ChaCha20-IETF-Poly1305). Resolve native Selector once per connection, change selection before Whistle handoff, verify both encrypted destinations, origin TLS proof, exact dial/lease counts and denied replay. Log actual NeedHandshake without assuming plain AEAD is lazy. Keep previous eager gate unchanged and scope new admission to test fixtures only; plugin transports, real lazy protocol variants, production integration and macOS remain separate.
+
+## Review 21: real Trojan TCP+TLS
+
+Windows run 45362776257 passed both real Shadowsocks AEAD ciphers. Verify actual upstream Trojan client with two controlled local TLS listeners, using the upstream key and SOCKS destination parser. Each proxy has a distinct generated CA independent of both origin CAs; native TLS pinning checks the root and hostname. Change native Selector between original dials, require distinct authenticated target and origin proofs, one accepted connection per positive route and denied lease replay. An incorrect proxy CA pin must fail before lease handoff. Keep the conservative admission gate unchanged. Test only TCP+TLS; Trojan WS/gRPC/UDP and real lazy variants remain unverified. Windows CI required, macOS deferred.
