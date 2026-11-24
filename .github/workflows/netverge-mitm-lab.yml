@@ -13,6 +13,7 @@ on:
     paths:
       - 'engines/whistle/**'
       - 'src-tauri/src/core/mitm.rs'
+      - 'src-tauri/src/core/mitm/**'
       - 'src-tauri/src/core/manager/**'
       - '.github/workflows/netverge-mitm-lab.yml'
 

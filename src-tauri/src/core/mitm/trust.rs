@@ -245,21 +245,47 @@ mod tests {
         assert_eq!(membership_assessment(Absent, Absent, false, false), MitmTrustAssessment::NotFoundInCheckedStores);
     }
 
+    // Public-only test fixture, generated for this test; its key was discarded.
+    fn fixture() -> Result<MitmPublicCa> {
+        super::super::public_ca_from_der(include_str!("test-ca.der.b64").trim())
+    }
+
     #[tokio::test]
-    async fn export_rejects_tampered_ca_and_existing_destination() -> Result<()> {
-        // The export path accepts only the Rust-owned snapshot and verifies its
-        // fingerprint. Invalid data cannot create a file, even with a .crt name.
+    async fn export_writes_only_verified_public_ca_and_never_overwrites() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("netverge-ca-export-{}", nanoid::nanoid!(12)));
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join("existing.crt");
-        std::fs::write(&path, "preserve")?;
-        let ca = MitmPublicCa { sha256_fingerprint: "invalid".into(), pem: "invalid".into() };
-        let result = write_new_public_ca(&path, &ca).await;
-        let saved = std::fs::read_to_string(&path)?;
+        let path = dir.join("new.crt");
+        let invalid = dir.join("invalid.crt");
+        let wrong_extension = dir.join("new.txt");
+        let ca = fixture()?;
+        let result = async {
+            write_new_public_ca(&path, &ca).await?;
+            assert_eq!(std::fs::read_to_string(&path)?, ca.pem);
+            assert!(write_new_public_ca(&path, &ca).await.is_err());
+            assert_eq!(std::fs::read_to_string(&path)?, ca.pem);
+            assert!(write_new_public_ca(&wrong_extension, &ca).await.is_err());
+            assert!(!wrong_extension.exists());
+            let tampered = MitmPublicCa { sha256_fingerprint: "invalid".into(), pem: ca.pem.clone() };
+            assert!(write_new_public_ca(&invalid, &tampered).await.is_err());
+            assert!(!invalid.exists());
+            Ok::<(), anyhow::Error>(())
+        }.await;
         let cleanup = std::fs::remove_dir_all(&dir);
-        assert!(result.is_err());
-        assert_eq!(saved, "preserve");
+        result?;
         cleanup?;
+        Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn isolated_test_ca_is_not_reported_as_trusted() -> Result<()> {
+        let ca = fixture()?;
+        let der = ca_der(&ca)?;
+        let status = inspect_native(&der, ca.sha256_fingerprint.clone());
+        assert_eq!(status.fingerprint.as_deref(), Some(ca.sha256_fingerprint.as_str()));
+        assert_ne!(status.user_store, MitmStoreMatch::Present);
+        assert_ne!(status.system_store, MitmStoreMatch::Present);
+        assert_ne!(status.assessment, MitmTrustAssessment::RootPolicyAccepted);
         Ok(())
     }
 }
