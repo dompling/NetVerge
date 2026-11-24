@@ -54,6 +54,18 @@ export const commands = {
     __TAURI_INVOKE<boolean>('open_mitm_certificate_manager', {
       expectedFingerprint,
     }),
+  /**  Read restart-scoped local MITM settings and applied-profile policy choices. */
+  getMitmConfig: () =>
+    __TAURI_INVOKE<MitmConfigView_Serialize>('get_mitm_config'),
+  /**  Stage local MITM configuration after native confirmation; no live activation. */
+  saveMitmConfig: (
+    expectedRevision: string,
+    candidate: MitmSettings_Deserialize,
+  ) =>
+    __TAURI_INVOKE<MitmConfigView_Serialize | null>('save_mitm_config', {
+      expectedRevision,
+      candidate,
+    }),
   getPendingFailures: () =>
     __TAURI_INVOKE<PendingFailure[]>('get_pending_failures'),
   getSidecarFailure: () =>
@@ -616,9 +628,45 @@ export type LocalBackupFile = {
   content_length: number
 }
 
+export type MitmConfigView =
+  | MitmConfigView_Serialize
+  | MitmConfigView_Deserialize
+
+export type MitmConfigView_Deserialize = {
+  available: boolean
+  active?: MitmSettings_Deserialize | null
+  saved?: MitmSettings_Deserialize | null
+  revision?: string | null
+  restartRequired: boolean
+  policies: string[]
+}
+
+export type MitmConfigView_Serialize = {
+  available: boolean
+  active: MitmSettings_Serialize | null
+  saved: MitmSettings_Serialize | null
+  revision: string | null
+  restartRequired: boolean
+  policies: string[]
+}
+
 export type MitmPublicCa = {
   sha256Fingerprint: string
   pem: string
+}
+
+export type MitmSettings = MitmSettings_Serialize | MitmSettings_Deserialize
+
+export type MitmSettings_Deserialize = {
+  enable?: boolean
+  hostname?: string[]
+  policy?: string | null
+}
+
+export type MitmSettings_Serialize = {
+  enable: boolean
+  hostname: string[]
+  policy: string | null
 }
 
 export type MitmStatus = MitmStatus_Serialize | MitmStatus_Deserialize
