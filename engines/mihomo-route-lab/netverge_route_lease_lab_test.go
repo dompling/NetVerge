@@ -186,8 +186,9 @@ func nvLabProxy(t *testing.T, name, authority, destination string, count *atomic
 		}
 		defer client.Close()
 		count.Add(1)
-		client.SetDeadline(time.Now().Add(nvLabTimeout))
-		upstream.SetDeadline(time.Now().Add(nvLabTimeout))
+		// Allow the already-dialed origin stream to wait while isolated workers start.
+		client.SetDeadline(time.Now().Add(75 * time.Second))
+		upstream.SetDeadline(time.Now().Add(75 * time.Second))
 		_, err = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 		if err == nil {
 			err = rw.Flush()

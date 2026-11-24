@@ -56,11 +56,9 @@ jobs:
           gofmt -w mihomo-source/tunnel/netverge_route_lease_lab_test.go mihomo-source/tunnel/netverge_route_lease_export_test.go mihomo-source/tunnel/netverge_route_whistle_lab_test.go
       - name: Verify original route and single-use CONNECT lease
         working-directory: mihomo-source
-        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseOriginalDecision
- -count=1 -timeout=5m -v
+        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseOriginalDecision$' -count=1 -timeout=5m -v
       - name: Verify real Whistle decryption on original connection leases
         working-directory: mihomo-source
         env:
           NETVERGE_ROUTE_LAB_WORKER: ${{ github.workspace }}/netverge/engines/whistle/mitm-worker.cjs
-        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseWhistle
- -count=1 -timeout=5m -v
+        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseWhistle$' -count=1 -timeout=5m -v

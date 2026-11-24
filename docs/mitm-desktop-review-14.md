@@ -12,3 +12,5 @@ Reuse existing worker, CA integrity checks, real upstream core and existing sing
 
 ## Security and stability
 Loopback fixtures only; credentials supplied through child environment, never printed; distinct ingress and return credentials, no arbitrary caller egress selection. Strict client CA and origin TLS configuration, ephemeral private files, bounded timeouts, child cleanup and fail-closed tests. A successful HTTP CONNECT from worker is not sufficient: require actual TLS response and original lease counter. Existing desktop activation gate remains closed. Static three-dimensional review complete; new CI pending. Do not claim routing equivalence beyond covered fixtures.
+
+CI setup correction: run 45352800187 did not create jobs because the end-of-regex dollar/quote was truncated in the workflow. Correct both filters and allow the local upstream fixture to remain idle during bounded child startup. All assertions and production code unchanged.
