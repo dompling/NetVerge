@@ -14,9 +14,13 @@ static EXPORT: Semaphore = Semaphore::const_new(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum MitmStoreMatch {
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     Present,
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     Absent,
     Unknown,
+    // Keep the same serialized contract on all platforms.
+    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
     Unsupported,
 }
 
@@ -24,12 +28,20 @@ pub enum MitmStoreMatch {
 #[serde(rename_all = "snake_case")]
 pub enum MitmTrustAssessment {
     NoCertificate,
+    // Windows membership and macOS policy evaluation have different semantics.
+    // Preserve all wire variants; only suppress platform-specific dead-code lint.
+    #[cfg_attr(not(windows), allow(dead_code))]
     NotFoundInCheckedStores,
+    #[cfg_attr(not(windows), allow(dead_code))]
     PresentUnverified,
+    #[cfg_attr(not(windows), allow(dead_code))]
     ExplicitlyDistrusted,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     RootPolicyAccepted,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     RootPolicyRejected,
     Unknown,
+    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
     Unsupported,
 }
 
