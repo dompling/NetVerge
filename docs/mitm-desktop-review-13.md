@@ -19,3 +19,5 @@ This proves (if CI passes) only the bounded transport handoff in the actual core
 ## Build correction
 
 Run 45350736773: Windows and macOS Intel failed before executing assertions. The in-package test imported adapter/outbound -> dns -> tunnel, creating a Go test import cycle. Move the integration fixtures to external `tunnel_test`; a tiny internal `_test.go` bridge calls the real unexported resolver and snapshots/restores global state. Both files are copied only into the isolated pinned upstream test checkout. No production API, dependency or rule changes, and no removal of assertions. macOS ARM was still queued when the failure was diagnosed. Static review complete; replacement CI required.
+
+Acceptance: 7f35e78 completed run 45351244950 successfully on Windows x64, macOS ARM and Intel. Seven original-decision fixtures passed per platform, including real proxy dial counts, local TLS and capability admission. No Whistle or actual OS TUN acceptance in that run.

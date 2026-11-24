@@ -54,6 +54,7 @@ type nvLabLease struct {
 	listener net.Listener
 	upstream C.Conn
 	token string
+	password string
 	used atomic.Bool
 	mu sync.Mutex
 	client net.Conn
@@ -73,14 +74,15 @@ func nvLabNewLease(t *testing.T, proxy C.Proxy, upstream C.Conn, authority strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	var secret [32]byte
+	var secret [24]byte
 	if _, err = rand.Read(secret[:]); err != nil {
 		listener.Close()
 		t.Fatal(err)
 	}
+	password := base64.RawURLEncoding.EncodeToString(secret[:])
 	lease := &nvLabLease{
-		listener: listener, upstream: upstream,
-		token: "Basic " + base64.StdEncoding.EncodeToString([]byte("netverge:" + base64.RawURLEncoding.EncodeToString(secret[:]))),
+		listener: listener, upstream: upstream, password: password,
+		token: "Basic " + base64.StdEncoding.EncodeToString([]byte("netverge:" + password)),
 		done: make(chan struct{}),
 	}
 	lease.server = &http.Server{

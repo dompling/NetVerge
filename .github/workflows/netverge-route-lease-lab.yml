@@ -6,6 +6,9 @@ on:
     branches: [feat/whistle-integration]
     paths:
       - 'engines/mihomo-route-lab/**'
+      - 'engines/whistle/mitm-worker.cjs'
+      - 'engines/whistle/ca-integrity.cjs'
+      - 'engines/whistle/package.json'
       - '.github/workflows/netverge-route-lease-lab.yml'
 
 concurrency:
@@ -37,13 +40,27 @@ jobs:
         with:
           go-version: '1.26.0'
           cache-dependency-path: mihomo-source/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+      - name: Install real Whistle worker dependencies
+        working-directory: netverge/engines/whistle
+        run: npm install --ignore-scripts --no-audit --no-fund
       - name: Verify upstream pin and install test-only source
         shell: bash
         run: |
           test "$(git -C mihomo-source rev-parse HEAD)" = 0455d0d28c4526937380505153e65a843d8612e8
           cp netverge/engines/mihomo-route-lab/netverge_route_lease_lab_test.go mihomo-source/tunnel/netverge_route_lease_lab_test.go
           cp netverge/engines/mihomo-route-lab/netverge_route_lease_export_test.go mihomo-source/tunnel/netverge_route_lease_export_test.go
-          gofmt -w mihomo-source/tunnel/netverge_route_lease_lab_test.go mihomo-source/tunnel/netverge_route_lease_export_test.go
+          cp netverge/engines/mihomo-route-lab/netverge_route_whistle_lab_test.go mihomo-source/tunnel/netverge_route_whistle_lab_test.go
+          gofmt -w mihomo-source/tunnel/netverge_route_lease_lab_test.go mihomo-source/tunnel/netverge_route_lease_export_test.go mihomo-source/tunnel/netverge_route_whistle_lab_test.go
       - name: Verify original route and single-use CONNECT lease
         working-directory: mihomo-source
-        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLease' -count=1 -timeout=5m -v
+        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseOriginalDecision
+ -count=1 -timeout=5m -v
+      - name: Verify real Whistle decryption on original connection leases
+        working-directory: mihomo-source
+        env:
+          NETVERGE_ROUTE_LAB_WORKER: ${{ github.workspace }}/netverge/engines/whistle/mitm-worker.cjs
+        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseWhistle
+ -count=1 -timeout=5m -v
