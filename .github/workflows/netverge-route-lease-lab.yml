@@ -1,0 +1,48 @@
+name: NetVerge original route lease laboratory
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/whistle-integration]
+    paths:
+      - 'engines/mihomo-route-lab/**'
+      - '.github/workflows/netverge-route-lease-lab.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && 'latest-push' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+permissions:
+  contents: read
+
+jobs:
+  route-lease:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: netverge
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: MetaCubeX/mihomo
+          ref: 0455d0d28c4526937380505153e65a843d8612e8
+          path: mihomo-source
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+          cache-dependency-path: mihomo-source/go.sum
+      - name: Verify upstream pin and install test-only source
+        shell: bash
+        run: |
+          test "$(git -C mihomo-source rev-parse HEAD)" = 0455d0d28c4526937380505153e65a843d8612e8
+          cp netverge/engines/mihomo-route-lab/netverge_route_lease_lab_test.go mihomo-source/tunnel/netverge_route_lease_lab_test.go
+          gofmt -w mihomo-source/tunnel/netverge_route_lease_lab_test.go
+      - name: Verify original route and single-use CONNECT lease
+        working-directory: mihomo-source
+        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLease' -count=1 -timeout=5m -v
