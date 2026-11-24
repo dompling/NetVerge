@@ -1,0 +1,15 @@
+# MITM review 15: one shared Whistle, independent original routes
+
+Baseline 690aab9 passed three platforms (45353538100). The desktop activation gate remains closed.
+
+## Source findings and next experiment
+Whistle 2.10.15 source commit e039fd86bc70928b0de7abc2f71a1612d530b370: lib/inspectors/res.js calls rules.getProxy on the same request object, then uses req.rules.proxy to create proxy options; lib/config.js getCacheKey includes proxyHost, proxyPort, auth and tunnel path. Ordinary proxy:// is not the xproxy fallback variant. These are private APIs, not a supported stable extension API. Test the actual npm version before deciding whether an upstream integration/patch is warranted. Never use a shared mutable shadow rule to switch routes for concurrent requests.
+
+## Functional correctness
+New test-only worker shares one Whistle process and CA across five leases. Each ingress capability admits exactly one original CONNECT and decrypted request; token is bound to authority and mapped to a server-side request identity (WeakMap). Two original rule decisions select independent real adapters and physically separate TLS origins returning distinct proof bodies for the identical hostname. Sequential and overlapping requests must reach their specific origin, not merely produce a successful status. Assert exact dial counts, no header leakage, wrong authority/credential, replay and revoked lease. Probe agent selection identity using pinned getHttpsAgent hook. Existing isolated per-worker and original-decision tests remain independent CI steps.
+
+## Architecture and reuse
+Reuse real Mihomo resolver, existing route-lease test helper, Whistle TLS and HTTP inspectors, native proxy-agent creation, CA verification. Test-only private API adapter; no production code or desktop runtime changes. A bounded one-use request is intentionally restrictive. It is not a proof of HTTP keep-alive with multiple requests on one tunnel, general connection pooling, retries, dynamic groups, lazy handshakes, live TUN or reload behavior. Do not expose this worker as a product feature. Dynamic groups and safe multi-request lifetime are subsequent gates.
+
+## Security and stability
+Loopback-only test fixtures; each route has independent random ingress/return secrets and port; admitted capability removed from HTTP headers; request identity is internal; unassociated routing goes to bound deny-only local proxy in fixture. No arbitrary user rules or remote hosts are allowed. CA trust is limited to test process; no OS certificate changes. Test timeout and subprocess cleanup retained. Private hook behavior and all assertions must be verified by CI before progressing. Static review complete; runtime pending.

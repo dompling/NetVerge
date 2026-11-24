@@ -51,6 +51,11 @@ type nvWhistleOrigin struct {
 
 func nvWhistleNewOrigin(t *testing.T) *nvWhistleOrigin {
 	t.Helper()
+	return nvWhistleNewOriginWithProof(t, "original-route")
+}
+
+func nvWhistleNewOriginWithProof(t *testing.T, proof string) *nvWhistleOrigin {
+	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil { t.Fatal(err) }
 	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -78,7 +83,7 @@ func nvWhistleNewOrigin(t *testing.T) *nvWhistleOrigin {
 			return
 		}
 		origin.requests.Add(1)
-		_, _ = io.WriteString(w, "original-route")
+		_, _ = io.WriteString(w, proof)
 	}))
 	origin.server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER, caDER}, PrivateKey: leafKey}}}
 	origin.server.StartTLS()
@@ -102,8 +107,13 @@ type nvWhistleWorker struct {
 }
 
 func nvWhistleStart(t *testing.T, lease *nvLabLease, caPath string) *nvWhistleWorker {
+	return nvWhistleLaunch(t, caPath, nil, lease)
+}
+
+func nvWhistleLaunch(t *testing.T, caPath string, routes map[string]*nvLabLease, lease *nvLabLease) *nvWhistleWorker {
 	t.Helper()
 	worker := os.Getenv("NETVERGE_ROUTE_LAB_WORKER")
+	if routes != nil { worker = os.Getenv("NETVERGE_ROUTE_LAB_SHARED_WORKER") }
 	if !filepath.IsAbs(worker) { t.Fatal("NETVERGE_ROUTE_LAB_WORKER must point to the actual worker") }
 	if _, err := os.Stat(worker); err != nil { t.Fatal(err) }
 	// Existing worker requires an explicit nonzero port. The test binds and
@@ -125,11 +135,20 @@ func nvWhistleStart(t *testing.T, lease *nvLabLease, caPath string) *nvWhistleWo
 		t.Fatal("worker CA directory is not private")
 	}
 	password := nvWhistlePassword(t)
-	settings, err := json.Marshal(map[string]any{
-		"dataDir": dir, "port": port, "returnPort": lease.listener.Addr().(*net.TCPAddr).Port,
-		"hosts": []string{nvWhistleHost}, "password": lease.password, "forwardPassword": password,
-		"targetPort": 443, "healthSecret": nvWhistlePassword(t),
-	})
+	config := map[string]any{"dataDir":dir,"port":port,"hosts":[]string{nvWhistleHost},"targetPort":443}
+	if routes == nil {
+		config["returnPort"] = lease.listener.Addr().(*net.TCPAddr).Port
+		config["password"] = lease.password
+		config["forwardPassword"] = password
+		config["healthSecret"] = nvWhistlePassword(t)
+	} else {
+		entries := make([]map[string]any,0,len(routes))
+		for ingress, route := range routes {
+			entries = append(entries,map[string]any{"ingress":ingress,"port":route.listener.Addr().(*net.TCPAddr).Port,"password":route.password})
+		}
+		config["routes"] = entries
+	}
+	settings, err := json.Marshal(config)
 	if err != nil { t.Fatal(err) }
 	cmd := exec.Command("node", worker)
 	env := make([]string, 0, len(os.Environ()) + 4)
@@ -208,6 +227,10 @@ func nvWhistleConnect(w *nvWhistleWorker, authority, auth string) (net.Conn, int
 }
 
 func nvWhistleRequest(c net.Conn, root *x509.CertPool) ([]byte, error) {
+	return nvWhistleRequestProof(c, root, "original-route")
+}
+
+func nvWhistleRequestProof(c net.Conn, root *x509.CertPool, proof string) ([]byte, error) {
 	client := tls.Client(c, &tls.Config{RootCAs:root, ServerName:nvWhistleHost, NextProtos:[]string{"http/1.1"}})
 	defer client.Close()
 	_ = client.SetDeadline(time.Now().Add(nvLabTimeout))
@@ -218,7 +241,7 @@ func nvWhistleRequest(c net.Conn, root *x509.CertPool) ([]byte, error) {
 	if err != nil { return nil, err }
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if err != nil || resp.StatusCode != 200 || string(body) != "original-route" { return nil, fmt.Errorf("unexpected origin response: status=%d err=%v", resp.StatusCode, err) }
+	if err != nil || resp.StatusCode != 200 || string(body) != proof { return nil, fmt.Errorf("unexpected origin response: status=%d err=%v", resp.StatusCode, err) }
 	return peer,nil
 }
 
