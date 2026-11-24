@@ -19,6 +19,61 @@ use std::{
 const PROXY: &str = "NETVERGE-MITM";
 const RETURN: &str = "netverge-return";
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+static PUBLIC_STATE: Mutex<PublicState> = Mutex::new(PublicState {
+    health: Health::Inactive,
+    generation: None,
+    attempts: 0,
+    ca: None,
+});
+
+#[derive(Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MitmPublicCa {
+    sha256_fingerprint: String,
+    pem: String,
+}
+
+#[derive(serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MitmStatus {
+    development_requested: bool,
+    state: Health,
+    core_generation_current: bool,
+    recovery_attempts: u8,
+    max_recovery_attempts: u8,
+    ca_fingerprint: Option<String>,
+}
+
+struct PublicState {
+    health: Health,
+    generation: Option<u64>,
+    attempts: u8,
+    ca: Option<MitmPublicCa>,
+}
+
+// The status reader never waits for a worker spawn, process exit or network probe.
+pub(crate) fn status() -> MitmStatus {
+    let snapshot = PUBLIC_STATE.lock();
+    let current = crate::core::CoreManager::global().current_core_readiness_generation();
+    let generation_current = snapshot.generation.is_some() && snapshot.generation == current;
+    let state = if snapshot.generation.is_some() && !generation_current {
+        Health::Degraded
+    } else {
+        snapshot.health
+    };
+    MitmStatus {
+        development_requested: development_requested(),
+        state,
+        core_generation_current: generation_current,
+        recovery_attempts: snapshot.attempts,
+        max_recovery_attempts: MAX_RECOVERY_ATTEMPTS,
+        ca_fingerprint: snapshot.ca.as_ref().map(|ca| ca.sha256_fingerprint.clone()),
+    }
+}
+
+pub(crate) fn public_ca() -> Option<MitmPublicCa> {
+    PUBLIC_STATE.lock().ca.clone()
+}
 static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
 const MAX_RECOVERY_ATTEMPTS: u8 = 3;
 
@@ -85,10 +140,13 @@ struct Session {
     recovery: RecoveryBudget,
     health_secret: String,
     health: Health,
+    ca: Option<MitmPublicCa>,
+    publish: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Health {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum Health {
     Inactive,
     Checking,
     LocalLinkHealthy,
@@ -103,6 +161,26 @@ impl Session {
             self.health = next;
             logging!(info, Type::Core, "MITM local health: {next:?}");
         }
+        if self.publish {
+            *PUBLIC_STATE.lock() = PublicState {
+                health: self.health,
+                generation: self.recovery.generation,
+                attempts: self.recovery.attempts,
+                ca: self.ca.clone(),
+            };
+        }
+    }
+
+    fn start(&mut self, data: &Path) -> Result<()> {
+        let (mut child, ca) = start_worker(&self.settings, data, &self.password, &self.forward_password, &self.health_secret)?;
+        if self.ca.as_ref().is_some_and(|previous| previous.sha256_fingerprint != ca.sha256_fingerprint) {
+            stop(&mut child);
+            bail!("MITM CA changed within the running session; explicit app restart required");
+        }
+        self.ca = Some(ca);
+        self.child = Some(child);
+        self.set_health(Health::Checking);
+        Ok(())
     }
 }
 
@@ -209,12 +287,55 @@ fn overlay(config: &mut Mapping, settings: &Settings, password: &str, forward_pa
     Ok(())
 }
 
+fn public_ca_from_der(encoded: &str) -> Result<MitmPublicCa> {
+    ensure!(encoded.len() <= 22000, "MITM CA payload too large");
+    let der = STANDARD.decode(encoded)?;
+    ensure!(!der.is_empty() && der.len() <= 16384, "invalid MITM CA size");
+    // Parse the certificate without installing it into any system or TLS trust store.
+    let mut parsed = rustls::RootCertStore::empty();
+    parsed.add(rustls::pki_types::CertificateDer::from(der.clone())).context("invalid MITM public CA")?;
+    let sha256_fingerprint: String = Sha256::digest(&der).iter().map(|byte| format!("{byte:02x}")).collect();
+    let encoded = STANDARD.encode(der);
+    let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in encoded.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(chunk)?);
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE-----\n");
+    Ok(MitmPublicCa { sha256_fingerprint, pem })
+}
+
+// Redact only the reserved adapter entries, never modify the applied mapping.
+pub(crate) fn redact_runtime_for_ipc(config: &mut Mapping) {
+    for (key, name) in [("proxies", PROXY), ("listeners", RETURN)] {
+        let Some(Value::Sequence(items)) = config.get_mut(key) else { continue };
+        for item in items {
+            let Some(map) = item.as_mapping_mut() else { continue };
+            if map.get("name").and_then(Value::as_str) != Some(name) { continue; }
+            map.remove("password");
+            if let Some(Value::Sequence(users)) = map.get_mut("users") {
+                for user in users {
+                    if let Some(user) = user.as_mapping_mut() {
+                        user.remove("password");
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn validate_backup_entry(name: &str, unix_mode: Option<u32>) -> Result<()> {
+    ensure!(!name.split(['/', '\\']).any(|part| part.trim_end_matches([' ', '.']).split(':').next().is_some_and(|part| part.eq_ignore_ascii_case("netverge-mitm-dev"))), "backup may not contain MITM private data");
+    ensure!(!unix_mode.is_some_and(|mode| mode & 0o170000 == 0o120000), "backup may not contain symbolic links");
+    Ok(())
+}
+
 fn stop(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
 }
 
-fn start_worker(settings: &Settings, data: &Path, password: &str, forward_password: &str, health_secret: &str) -> Result<Child> {
+fn start_worker(settings: &Settings, data: &Path, password: &str, forward_password: &str, health_secret: &str) -> Result<(Child, MitmPublicCa)> {
     std::fs::create_dir_all(data)?;
     #[cfg(unix)]
     {
@@ -250,17 +371,19 @@ fn start_worker(settings: &Settings, data: &Path, password: &str, forward_passwo
     let _ = std::thread::spawn(move || {
         let mut ready = false;
         for line in BufReader::new(stdout).lines().map_while(std::result::Result::ok) {
-            if !ready && line == "NETVERGE_MITM_READY" {
+            if !ready && let Some(encoded) = line.strip_prefix("NETVERGE_MITM_READY ") {
                 ready = true;
-                let _ = tx.send(());
+                let _ = tx.send(public_ca_from_der(encoded));
             }
         }
     });
-    if rx.recv_timeout(Duration::from_secs(20)).is_err() {
-        stop(&mut child);
-        bail!("MITM worker did not report readiness");
+    match rx.recv_timeout(Duration::from_secs(20)) {
+        Ok(Ok(ca)) => Ok((child, ca)),
+        _ => {
+            stop(&mut child);
+            bail!("MITM worker did not report a valid public CA and readiness");
+        }
     }
-    Ok(child)
 }
 
 // Planning allocates stable session credentials but never spawns a process.
@@ -283,7 +406,7 @@ fn plan_overlay(mut config: Mapping, settings: Option<Settings>, state: &mut Opt
     let password = nanoid::nanoid!(32);
     let forward_password = nanoid::nanoid!(32);
     overlay(&mut config, &settings, &password, &forward_password)?;
-    *state = Some(Session { settings, child: None, password, forward_password, recovery: RecoveryBudget::default(), health_secret: nanoid::nanoid!(32), health: Health::Inactive });
+    *state = Some(Session { settings, child: None, password, forward_password, recovery: RecoveryBudget::default(), health_secret: nanoid::nanoid!(32), health: Health::Inactive, ca: None, publish: false });
     Ok(config)
 }
 
@@ -303,7 +426,12 @@ pub(crate) async fn prepare(mut config: Mapping) -> Result<Mapping> {
     tokio::task::spawn_blocking(move || {
         let local: LocalConfig = serde_yaml_ng::from_slice(&std::fs::read(path)?).context("invalid local MITM YAML")?;
         let settings = local.into_settings()?;
-        plan_overlay(config, settings, &mut SESSION.lock())
+        let mut state = SESSION.lock();
+        let planned = plan_overlay(config, settings, &mut state)?;
+        if let Some(session) = state.as_mut() {
+            session.publish = true;
+        }
+        Ok(planned)
     }).await?
 }
 
@@ -359,10 +487,7 @@ pub(crate) async fn ensure_runtime_worker() -> Result<()> {
             }
             session.child = None;
         }
-        let child = start_worker(&session.settings, &data, &session.password, &session.forward_password, &session.health_secret)?;
-        session.child = Some(child);
-        session.set_health(Health::Checking);
-        Ok(())
+        session.start(&data)
     }).await?
 }
 
@@ -491,11 +616,8 @@ fn recover_session(session: &mut Session, generation: u64, data: &Path) {
     session.set_health(Health::Recovering);
     let attempt = session.recovery.attempts;
     logging!(warn, Type::Core, "MITM worker exited; recovery attempt {attempt}/{MAX_RECOVERY_ATTEMPTS}");
-    match start_worker(&session.settings, data, &session.password, &session.forward_password, &session.health_secret) {
-        Ok(child) => {
-            session.child = Some(child);
-            session.set_health(Health::Checking);
-        }
+    match session.start(data) {
+        Ok(()) => {}
         Err(_) => {
             session.set_health(if attempt == MAX_RECOVERY_ATTEMPTS { Health::Failed } else { Health::Degraded });
             logging!(warn, Type::Core, "MITM worker recovery failed ({attempt}/{MAX_RECOVERY_ATTEMPTS})");
@@ -611,7 +733,14 @@ mod tests {
         let data = std::env::temp_dir().join(format!("netverge-supervisor-{}", nanoid::nanoid!(12)));
         std::fs::create_dir_all(&data)?;
         let script = data.join("worker.cjs");
-        std::fs::write(&script, "process.stdin.resume(); process.stdout.write('NETVERGE_MITM_READY\\n');")?;
+        let cert_path = data.join("fixture.der");
+        let key_path = data.join("fixture.key");
+        let output = Command::new("openssl")
+            .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=NetVerge test CA", "-addext", "basicConstraints=critical,CA:TRUE", "-outform", "DER", "-out"])
+            .arg(&cert_path).arg("-keyout").arg(&key_path).output()?;
+        ensure!(output.status.success(), "OpenSSL test certificate generation failed");
+        let encoded = STANDARD.encode(std::fs::read(&cert_path)?);
+        std::fs::write(&script, format!("process.stdin.resume(); process.stdout.write('NETVERGE_MITM_READY {encoded}\\n');"))?;
         let mut session = Session {
             settings: Settings {
                 node, worker: script, hosts: vec!["example.test".into()],
@@ -623,9 +752,15 @@ mod tests {
             health_secret: nanoid::nanoid!(32),
             recovery: RecoveryBudget::default(),
             health: Health::Inactive,
+            ca: None,
+            publish: false,
         };
         let result = (|| -> Result<()> {
-            session.child = Some(start_worker(&session.settings, &data, &session.password, &session.forward_password, &session.health_secret)?);
+            session.start(&data)?;
+            let ca = session.ca.as_ref().context("public certificate missing")?;
+            assert!(ca.pem.starts_with("-----BEGIN CERTIFICATE-----"));
+            assert!(!ca.pem.contains("PRIVATE KEY"));
+            assert_eq!(ca.sha256_fingerprint.len(), 64);
             let child = session.child.as_mut().context("fixture did not start")?;
             child.kill()?;
             child.wait()?;
@@ -645,6 +780,25 @@ mod tests {
         let cleanup = std::fs::remove_dir_all(&data);
         result?;
         cleanup?;
+        Ok(())
+    }
+
+    #[test]
+    fn public_ca_and_runtime_redaction_reject_private_material() -> Result<()> {
+        assert!(public_ca_from_der("not-base64").is_err());
+        assert!(public_ca_from_der(&STANDARD.encode(b"not a certificate")).is_err());
+        let mut config: Mapping = serde_yaml_ng::from_str("proxies: [{name: NETVERGE-MITM, password: internal-secret}, {name: Work, password: user-secret}]\nlisteners: [{name: netverge-return, users: [{username: netverge, password: return-secret}]}]\n")?;
+        let original = config.clone();
+        redact_runtime_for_ipc(&mut config);
+        let redacted = serde_yaml_ng::to_string(&config)?;
+        assert!(!redacted.contains("internal-secret"));
+        assert!(!redacted.contains("return-secret"));
+        assert!(redacted.contains("user-secret"));
+        assert!(serde_yaml_ng::to_string(&original)?.contains("internal-secret"));
+        assert!(validate_backup_entry("NETVERGE-MITM-DEV/root.key", None).is_err());
+        assert!(validate_backup_entry("netverge-mitm-dev\\root.key", None).is_err());
+        assert!(validate_backup_entry("profiles/link", Some(0o120777)).is_err());
+        validate_backup_entry("profiles/ordinary.yaml", Some(0o100644))?;
         Ok(())
     }
 

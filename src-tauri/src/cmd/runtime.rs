@@ -12,7 +12,12 @@ pub async fn get_runtime_config() -> CmdResult<Option<crate::ipc::YamlMapping>> 
         .latest_arc()
         .config
         .clone()
-        .map(crate::ipc::YamlMapping))
+        .map(|mut config| {
+            if crate::core::mitm::development_requested() {
+                crate::core::mitm::redact_runtime_for_ipc(&mut config);
+            }
+            crate::ipc::YamlMapping(config)
+        }))
 }
 
 #[tauri::command]
@@ -21,10 +26,15 @@ pub async fn get_runtime_yaml() -> CmdResult<std::string::String> {
     let runtime = Config::runtime().await;
     let runtime = runtime.latest_arc();
 
-    let config = runtime.config.as_ref();
+    let config = runtime.config.clone();
     config
         .ok_or_else(|| anyhow!("failed to parse config to yaml file"))
-        .and_then(|config| yaml_emitter::to_mihomo_config_string(config).context("failed to convert config to yaml"))
+        .and_then(|mut config| {
+            if crate::core::mitm::development_requested() {
+                crate::core::mitm::redact_runtime_for_ipc(&mut config);
+            }
+            yaml_emitter::to_mihomo_config_string(&config).context("failed to convert config to yaml")
+        })
         .stringify_err()
 }
 
@@ -52,11 +62,14 @@ pub async fn get_runtime_proxy_chain_config(
     let runtime = Config::runtime().await;
     let runtime = runtime.latest_arc();
 
-    let config = runtime
+    let mut config = runtime
         .config
-        .as_ref()
+        .clone()
         .ok_or_else(|| anyhow!("failed to parse config to yaml file"))
         .stringify_err()?;
+    if crate::core::mitm::development_requested() {
+        crate::core::mitm::redact_runtime_for_ipc(&mut config);
+    }
 
     if let Some(serde_yaml_ng::Value::Sequence(proxies)) = config.get("proxies") {
         let mut proxy_name = Some(Some(proxy_chain_exit_node.as_str()));

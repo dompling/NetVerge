@@ -304,6 +304,9 @@ async function main() {
     }
     const ready = await launchWorker();
     const whistleCa = await fs.readFile(ready.caPath, 'utf8');
+    assert.equal(ready.caDer, new X509Certificate(whistleCa).raw.toString('base64'));
+    assert.ok(new X509Certificate(whistleCa).ca);
+    assert.ok(!ready.caDer.includes('PRIVATE KEY'));
 
     const proof = (kind, nonce) => createHash('sha256').update('netverge-health-v1:' + kind + ':' + nonce + ':' + healthSecret).digest('hex');
     function healthRequest(kind, nonce, headers = {}) {
@@ -399,6 +402,7 @@ async function main() {
 
     const recovered = await launchWorker();
     const recoveredCa = await fs.readFile(recovered.caPath, 'utf8');
+    assert.equal(recovered.caDer, ready.caDer);
     await verifyHealth();
     assert.equal(new X509Certificate(recoveredCa).fingerprint256, new X509Certificate(whistleCa).fingerprint256, 'worker restart changed the session CA');
     await assert.rejects(dial(proxy, TARGET, originPort, whistleCa), /CONNECT status 407/);

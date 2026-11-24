@@ -147,6 +147,10 @@ async fn restore_backup_archive(path: PathBuf) -> Result<()> {
     AsyncHandler::spawn_blocking(move || -> Result<()> {
         let file = std::fs::File::open(&path)?;
         let mut zip = zip::ZipArchive::new(file)?;
+        for index in 0..zip.len() {
+            let entry = zip.by_index(index)?;
+            crate::core::mitm::validate_backup_entry(entry.name(), entry.unix_mode())?;
+        }
         zip.extract(&home_dir)?;
         Ok(())
     })

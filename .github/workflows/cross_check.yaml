@@ -93,3 +93,20 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: src-tauri
         run: cargo test -p clash-verge --lib --features clippy --target ${{ matrix.target }} core::mitm::tests
+
+      - name: Generate frontend contract for review
+        if: runner.os == 'Linux'
+        env:
+          CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+        run: |
+          pnpm gen:contract
+          git diff -- src/services/bindings.ts
+          pnpm typecheck
+
+      - name: Upload generated frontend contract
+        if: runner.os == 'Linux' && success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: netverge-frontend-contract
+          path: src/services/bindings.ts
+          if-no-files-found: error
