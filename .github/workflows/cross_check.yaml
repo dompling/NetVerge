@@ -12,6 +12,7 @@ on:
     branches: [feat/whistle-integration]
     paths:
       - 'src-tauri/**'
+      - 'src/services/bindings.ts'
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'

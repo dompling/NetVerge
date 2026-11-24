@@ -16,6 +16,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) mod trust;
+
 const PROXY: &str = "NETVERGE-MITM";
 const RETURN: &str = "netverge-return";
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -29,8 +31,8 @@ static PUBLIC_STATE: Mutex<PublicState> = Mutex::new(PublicState {
 #[derive(Clone, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MitmPublicCa {
-    sha256_fingerprint: String,
-    pem: String,
+    pub(super) sha256_fingerprint: String,
+    pub(super) pem: String,
 }
 
 #[derive(serde::Serialize, specta::Type)]

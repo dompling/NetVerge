@@ -1124,6 +1124,7 @@ dependencies = [
  "rfd 0.18.0",
  "runas",
  "rustls",
+ "security-framework",
  "serde",
  "serde_json",
  "serde_yaml_ng",

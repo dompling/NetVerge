@@ -25,6 +25,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
             cmd::get_runtime_state,
             cmd::get_mitm_status,
             cmd::get_mitm_public_ca,
+            cmd::get_mitm_trust_status,
+            cmd::export_mitm_public_ca,
             cmd::get_pending_failures,
             cmd::get_sidecar_failure,
             cmd::entry_lightweight_mode,
