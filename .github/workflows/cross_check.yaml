@@ -93,6 +93,14 @@ jobs:
         working-directory: src-tauri
         run: cargo test -p clash-verge --lib --features clippy --target ${{ matrix.target }} core::mitm::tests
 
+      - name: Provision frontend placeholder for contract generator
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist
+          if [ ! -f dist/index.html ]; then
+            printf '<!doctype html><html><head></head><body></body></html>\n' > dist/index.html
+          fi
+
       - name: Generate frontend contract for review
         if: runner.os == 'macOS'
         env:

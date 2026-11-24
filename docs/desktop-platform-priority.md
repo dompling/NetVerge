@@ -29,3 +29,7 @@ Before enabling mutation: verify Windows private directory/key ACLs, macOS priva
 - Security/stability: no CA trust changes, no new privileged operation, no disabled Windows/macOS checks. Linux is explicitly deferred, not reported as verified for this revision.
 
 Gate: pending new CI and generated contract review; next trust code must not advance until priority-platform baseline is accepted. Final Linux verification is a separate milestone.
+
+## Contract generator CI repair
+
+Run 45339668950 passed Windows and macOS Cargo Check and focused MITM tests (macOS: 9 passed). All three Windows/macOS network jobs passed in 45339669029. The macOS contract-generator example failed because Tauri's generate_context! requires ../dist and the CI checkout had no frontend distribution directory. Reuse the placeholder approach already present in contract-parity.yml: create dist/index.html only when missing, immediately before generating the contract. The placeholder is solely for this non-release CI example; no release artifacts are built or published. Keep the actual Specta generator, diff, frontend typecheck and artifact upload. No business code, CA or platform test change. Static three-dimensional review complete; execution and generated contract review pending.
