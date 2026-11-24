@@ -156,6 +156,9 @@ impl CoreManager {
     }
 
     pub async fn use_default_config(&self, status: NoticeStatus, message: &str) -> Result<()> {
+        if crate::core::mitm::development_requested() {
+            anyhow::bail!("MITM development session refuses default-config fallback: {message}");
+        }
         use crate::constants::files::RUNTIME_CONFIG;
 
         let runtime_path = dirs::app_home_dir()?.join(RUNTIME_CONFIG);

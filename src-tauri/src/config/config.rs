@@ -111,7 +111,15 @@ impl Config {
         let validation_result = if fallback_applied {
             None
         } else {
-            Self::generate_and_validate().await?
+            match Self::generate_and_validate().await {
+                Ok(result) => result,
+                Err(error) => {
+                    if crate::core::mitm::development_requested() {
+                        Self::block_startup_core(&error);
+                    }
+                    return Err(error);
+                }
+            }
         };
 
         if let Some((msg_type, msg_content)) = validation_result {

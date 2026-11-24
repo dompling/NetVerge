@@ -31,6 +31,7 @@ struct Worker {
     settings: Settings,
     child: Child,
     password: String,
+    forward_password: String,
 }
 
 fn valid_host(host: &str) -> bool {
@@ -75,7 +76,7 @@ fn enabled_block(config: &Mapping, key: &str) -> bool {
     config.get(key).and_then(Value::as_mapping).and_then(|map| map.get("enable")).and_then(Value::as_bool) == Some(true)
 }
 
-fn overlay(config: &mut Mapping, settings: &Settings, password: &str) -> Result<()> {
+fn overlay(config: &mut Mapping, settings: &Settings, password: &str, forward_password: &str) -> Result<()> {
     ensure!(config.get("mode").and_then(Value::as_str).is_none_or(|mode| mode.eq_ignore_ascii_case("rule")), "MITM requires rule mode");
     let dns = config.get("dns").and_then(Value::as_mapping);
     ensure!(enabled_block(config, "dns") && dns.and_then(|map| map.get("enhanced-mode")).and_then(Value::as_str) == Some("fake-ip"), "MITM requires fake-ip DNS");
@@ -92,7 +93,7 @@ fn overlay(config: &mut Mapping, settings: &Settings, password: &str) -> Result<
     let mut listeners = sequence(config, "listeners")?;
     let original_rules = sequence(config, "rules")?;
     proxies.push(serde_yaml_ng::to_value(serde_json::json!({
-        "name": PROXY, "type": "http", "server": "127.0.0.1", "port": settings.port
+        "name": PROXY, "type": "http", "server": "127.0.0.1", "port": settings.port, "username": "netverge", "password": forward_password
     }))?);
     listeners.push(serde_yaml_ng::to_value(serde_json::json!({
         "name": RETURN, "type": "http", "listen": "127.0.0.1", "port": settings.return_port,
@@ -118,7 +119,7 @@ fn stop(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn start_worker(settings: &Settings, data: &Path, password: &str) -> Result<Child> {
+fn start_worker(settings: &Settings, data: &Path, password: &str, forward_password: &str) -> Result<Child> {
     std::fs::create_dir_all(data)?;
     #[cfg(unix)]
     {
@@ -127,7 +128,7 @@ fn start_worker(settings: &Settings, data: &Path, password: &str) -> Result<Chil
     }
     let payload = serde_json::json!({
         "dataDir": data, "port": settings.port, "returnPort": settings.return_port,
-        "hosts": settings.hosts, "password": password
+        "hosts": settings.hosts, "password": password, "forwardPassword": forward_password, "targetPort": 443
     });
     let mut command = Command::new(&settings.node);
     command.arg(&settings.worker).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -173,18 +174,23 @@ fn prepare_sync(mut config: Mapping, path: PathBuf, data: PathBuf) -> Result<Map
     let mut state = WORKER.lock();
     if let Some(worker) = state.as_mut() {
         ensure!(worker.settings == settings, "restart NetVerge to change MITM development settings");
-        overlay(&mut config, &settings, &worker.password)?;
+        overlay(&mut config, &settings, &worker.password, &worker.forward_password)?;
         if worker.child.try_wait()?.is_some() {
-            worker.child = start_worker(&settings, &data, &worker.password)?;
+            worker.child = start_worker(&settings, &data, &worker.password, &worker.forward_password)?;
         }
         return Ok(config);
     }
 
     let password = nanoid::nanoid!(32);
-    overlay(&mut config, &settings, &password)?;
-    let child = start_worker(&settings, &data, &password)?;
-    *state = Some(Worker { settings, child, password });
+    let forward_password = nanoid::nanoid!(32);
+    overlay(&mut config, &settings, &password, &forward_password)?;
+    let child = start_worker(&settings, &data, &password, &forward_password)?;
+    *state = Some(Worker { settings, child, password, forward_password });
     Ok(config)
+}
+
+pub(crate) fn development_requested() -> bool {
+    std::env::var_os("NETVERGE_MITM_DEV_CONFIG").is_some()
 }
 
 pub(crate) async fn prepare(config: Mapping) -> Result<Mapping> {
@@ -212,7 +218,9 @@ mod tests {
             node: PathBuf::new(), worker: PathBuf::new(), hosts: vec!["example.test".into()],
             port: 18899, return_port: 18900, policy: "Work".into(),
         };
-        overlay(&mut config, &settings, "test-password")?;
+        overlay(&mut config, &settings, "test-password", "forward-password")?;
+        let proxy = config.get("proxies").and_then(Value::as_sequence).and_then(|items| items.last()).context("proxy missing")?;
+        assert_eq!(proxy.get("password").and_then(Value::as_str), Some("forward-password"));
         let rules = config.get("rules").and_then(Value::as_sequence).context("rules missing")?;
         assert_eq!(rules.len(), 4);
         assert_eq!(rules[0].as_str(), Some("AND,((IN-NAME,netverge-return),(DOMAIN,example.test),(NETWORK,TCP),(DST-PORT,443)),Work"));

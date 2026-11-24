@@ -242,6 +242,7 @@ async function main() {
     dns = await startLabDns();
     const dnsServer = '127.0.0.1:' + dns.address().port;
     const password = randomBytes(24).toString('base64url');
+    const forwardPassword = randomBytes(24).toString('base64url');
     const config = {
       'mixed-port': entry,
       'allow-lan': false,
@@ -253,7 +254,7 @@ async function main() {
       'dns': { enable: true, 'enhanced-mode': TUN ? 'fake-ip' : 'redir-host', 'use-hosts': false, 'use-system-hosts': false, nameserver: [dnsServer], 'default-nameserver': [dnsServer], ...(TUN ? { listen: '127.0.0.1:' + dnsListen, 'fake-ip-range': '198.18.0.1/16', 'fake-ip-filter': [] } : {}) },
       ...(TUN ? { tun: { enable: true, device: TUN_DEVICE, stack: 'gvisor', 'auto-route': false, 'auto-detect-interface': false, 'auto-redirect': false, 'dns-hijack': [], 'strict-route': false } } : {}),
       'listeners': [{ name: 'netverge-return', type: 'http', listen: '127.0.0.1', port: back, users: [{ username: 'netverge', password }] }],
-      'proxies': [{ name: 'NETVERGE-MITM', type: 'http', server: '127.0.0.1', port: proxy }],
+      'proxies': [{ name: 'NETVERGE-MITM', type: 'http', server: '127.0.0.1', port: proxy, username: 'netverge', password: forwardPassword }],
       'rules': [
         'AND,((IN-NAME,netverge-return),(DOMAIN,' + TARGET + '),(NETWORK,TCP),(DST-PORT,' + originPort + ')),DIRECT',
         'IN-NAME,netverge-return,REJECT',
@@ -271,7 +272,7 @@ async function main() {
     if (TUN) await prepareTun(mihomo);
 
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(WHISTLE_|PFORK_|NODE_OPTIONS$|NODE_PATH$|NODE_TLS_REJECT_UNAUTHORIZED$|(?:HTTP|HTTPS|ALL|NO)_PROXY$)/i.test(k)));
-    Object.assign(env, { HOME: dir, USERPROFILE: dir, NODE_EXTRA_CA_CERTS: originCa, NETVERGE_LAB_RETURN_PASSWORD: password });
+    Object.assign(env, { HOME: dir, USERPROFILE: dir, NODE_EXTRA_CA_CERTS: originCa, NETVERGE_LAB_RETURN_PASSWORD: password, NETVERGE_LAB_FORWARD_PASSWORD: forwardPassword, NETVERGE_LAB_TARGET_PORT: String(originPort) });
     worker = fork(path.join(__dirname, 'mitm-worker.cjs'), [dir, String(proxy), String(back)], { env, execArgv: [], stdio: ['ignore', 'inherit', 'inherit', 'ipc'], windowsHide: true });
     const observations = [];
     const tunnels = [];
@@ -286,6 +287,12 @@ async function main() {
     }), 20000, 'Whistle readiness');
     const whistleCa = await fs.readFile(ready.caPath, 'utf8');
     assert.notEqual(new X509Certificate(whistleCa).fingerprint256, new X509Certificate(certs.ca).fingerprint256);
+
+    // Exercise the actual public worker listener, not a simulated auth check.
+    await assert.rejects(dial(proxy, TARGET, originPort, whistleCa), /CONNECT status 407/);
+    await assert.rejects(dial(proxy, BYPASS, originPort, certs.ca, forwardPassword), /CONNECT status 403/);
+    await assert.rejects(dial(back, TARGET, originPort, certs.ca), /CONNECT status (407|403)/);
+    console.log('PASS: unauthorized ingress and return denied; authenticated non-target ingress denied');
 
     // Verify the real Mihomo return path before the MITM route.
     const direct = await dial(back, TARGET, originPort, certs.ca, password);
