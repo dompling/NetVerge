@@ -24,3 +24,14 @@ This remains a hypothesis until the experiment actually passes. TUN capture, ori
 ## First CI failure and next experiment
 
 Windows and Linux both reached the named return listener but received an IP-based CONNECT and REJECT. Mihomo v1.19.34's tunnel/tunnel.go uses Metadata.Pure() for static hosts, stripping the hostname before the outbound handshake. Replace the static hosts fixture with an isolated UDP DNS server, preserve strict domain-based return routing, and log the actual Whistle CONNECT authority. This is a fixture correction, not a production DNS policy or proof of TUN compatibility.
+
+## macOS (Intel and Apple Silicon)
+
+The same isolated CONNECT test runs on both macOS architectures without sudo or changes to Keychain, system proxy, or TUN. Use Node.js 22+ and a trusted native Mihomo executable:
+
+```sh
+npm install --ignore-scripts
+NETVERGE_MIHOMO_BIN="/absolute/path/to/mihomo" npm run test:mitm
+```
+
+CI downloads the pinned v1.19.34 binaries, verifies their SHA-256 hashes, and selects the architecture using uname. This is not a test of macOS TUN or installation of a trusted system CA. The user's existing network tooling should be left untouched.

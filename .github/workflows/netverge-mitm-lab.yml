@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -41,6 +41,26 @@ jobs:
         run: |
           curl --fail --location --silent --show-error 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.34/mihomo-linux-amd64-v1.19.34.gz' -o "$RUNNER_TEMP/mihomo.gz"
           echo "223fab877e5795ce780ba39902e5f0b1113c1256ae244a7160f1165e017e9ccc  $RUNNER_TEMP/mihomo.gz" | sha256sum --check
+          gzip -dc "$RUNNER_TEMP/mihomo.gz" > "$RUNNER_TEMP/mihomo"
+          chmod +x "$RUNNER_TEMP/mihomo"
+          echo "NETVERGE_MIHOMO_BIN=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
+      - name: Fetch verified Mihomo (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          case "$(uname -m)" in
+            arm64)
+              asset=mihomo-darwin-arm64-v1.19.34.gz
+              checksum=1a7a20eca63fbbaec90137717465bfde488d0db2a3a79b8fadebf9b2545b6e4c
+              ;;
+            x86_64)
+              asset=mihomo-darwin-amd64-v1.19.34.gz
+              checksum=089b033be801ff365b6558851115238b443b237433aa0841bc3fa41ad75a3927
+              ;;
+            *) echo 'Unsupported macOS architecture'; exit 1 ;;
+          esac
+          curl --fail --location --silent --show-error "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.34/$asset" -o "$RUNNER_TEMP/mihomo.gz"
+          echo "$checksum  $RUNNER_TEMP/mihomo.gz" | shasum -a 256 -c
           gzip -dc "$RUNNER_TEMP/mihomo.gz" > "$RUNNER_TEMP/mihomo"
           chmod +x "$RUNNER_TEMP/mihomo"
           echo "NETVERGE_MIHOMO_BIN=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
