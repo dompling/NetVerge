@@ -61,11 +61,11 @@ pub(super) fn validate_selection(selection: &MitmSettings) -> Result<()> {
     Ok(())
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(super) fn digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn read_bounded(path: &Path) -> Result<Vec<u8>> {
+pub(super) fn read_bounded(path: &Path) -> Result<Vec<u8>> {
     let stat = std::fs::symlink_metadata(path)?;
     ensure!(stat.is_file() && stat.len() <= MAX_YAML, "invalid MITM local configuration file");
     let mut file = std::fs::File::open(path)?.take(MAX_YAML + 1);

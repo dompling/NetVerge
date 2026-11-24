@@ -17,6 +17,7 @@ use std::{
 
 const ENV: &str = "NETVERGE_MITM_ROUTE_DEV_CONFIG";
 const API: &str = "/v1/mitm";
+const SELECTION_FILE: &str = "route-selection.yaml";
 static ROUTE: Mutex<Option<RouteSession>> = Mutex::new(None);
 
 #[derive(Clone, Deserialize)]
@@ -34,6 +35,9 @@ pub(crate) struct Launch {
     core_secret: String,
     worker_secret: String,
     data: PathBuf,
+    bootstrap_sha256: String,
+    restore_enabled: bool,
+    expected_ca: Option<String>,
 }
 
 impl Launch {
@@ -51,16 +55,73 @@ fn random_secret() -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
-fn read_settings(path: &Path) -> Result<LocalSettings> {
+fn read_settings(path: &Path) -> Result<(LocalSettings, String)> {
     ensure!(path.is_absolute(), "original-route MITM development config must be absolute");
-    let metadata = std::fs::symlink_metadata(path)?;
-    ensure!(metadata.is_file() && metadata.len() <= 65536, "invalid original-route local configuration");
-    let mut raw = Vec::new();
-    std::fs::File::open(path)?.take(65537).read_to_end(&mut raw)?;
-    ensure!(raw.len() <= 65536, "original-route configuration too large");
+    let raw = super::settings::read_bounded(path)?;
     let settings: LocalSettings = serde_yaml_ng::from_slice(&raw).context("invalid original-route configuration")?;
     validate(&settings)?;
-    Ok(settings)
+    Ok((settings, super::settings::digest(&raw)))
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct SavedRoute {
+    version: u32,
+    bootstrap_sha256: String,
+    pending: bool,
+    enable: bool,
+    hosts: Vec<String>,
+    ca_fingerprint: Option<String>,
+}
+
+impl SavedRoute {
+    fn selection(&self) -> MitmSettings {
+        MitmSettings { enable: self.enable, hostname: self.hosts.clone(), policy: None }
+    }
+
+    fn validate(&self, bootstrap: &str) -> Result<()> {
+        ensure!(self.version == 1 && self.bootstrap_sha256 == bootstrap, "MITM bootstrap changed; review the saved original-route selection");
+        ensure!(!self.pending, "MITM selection has an incomplete transaction; review the private local selection before restarting");
+        validate_candidate(&self.selection())?;
+        if let Some(fingerprint) = &self.ca_fingerprint {
+            ensure!(fingerprint.len() == 64 && fingerprint.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "invalid saved MITM CA fingerprint");
+        }
+        ensure!(!self.enable || self.ca_fingerprint.is_some(), "enabled MITM selection has no verified CA fingerprint");
+        Ok(())
+    }
+}
+
+fn decode_saved(raw: &[u8], bootstrap: &str) -> Result<SavedRoute> {
+    let saved: SavedRoute = serde_yaml_ng::from_slice(raw).context("invalid saved original-route selection")?;
+    saved.validate(bootstrap)?;
+    Ok(saved)
+}
+
+fn read_saved(data: &Path, bootstrap: &str) -> Result<Option<SavedRoute>> {
+    let path = data.join(SELECTION_FILE);
+    match super::settings::read_bounded(&path) {
+        Ok(raw) => Ok(Some(decode_saved(&raw, bootstrap)?)),
+        Err(err) if err.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+fn private_data(data: &Path) -> Result<()> {
+    std::fs::create_dir_all(data)?;
+    ensure!(std::fs::symlink_metadata(data)?.is_dir(), "MITM private data directory must not be a symbolic link");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(data, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+async fn write_saved(data: &Path, saved: &SavedRoute) -> Result<()> {
+    private_data(data)?;
+    let yaml = serde_yaml_ng::to_string(saved)?;
+    ensure!(yaml.len() <= 65536, "MITM selection exceeds size limit");
+    crate::utils::help::save_yaml_str_private(&data.join(SELECTION_FILE), &yaml, Some("# NetVerge original-route MITM local selection; never imported from a profile")).await
 }
 
 fn validate(s: &LocalSettings) -> Result<()> {
@@ -81,13 +142,21 @@ pub(crate) async fn prepare_sidecar() -> Result<Option<Launch>> {
     ensure!(config.get("mode").and_then(serde_yaml_ng::Value::as_str).is_none_or(|mode| mode.eq_ignore_ascii_case("rule")), "original-route MITM requires rule mode");
     drop(runtime);
     tokio::task::spawn_blocking(move || {
-        let settings = read_settings(&PathBuf::from(path))?;
+        let (mut settings, bootstrap_sha256) = read_settings(&PathBuf::from(path))?;
+        let data = crate::utils::dirs::app_home_dir()?.join("netverge-mitm-dev");
+        private_data(&data)?;
+        let saved = read_saved(&data, &bootstrap_sha256)?;
+        let restore_enabled = saved.as_ref().is_some_and(|s| s.enable);
+        let expected_ca = saved.as_ref().and_then(|s| s.ca_fingerprint.clone());
+        if let Some(saved) = saved {
+            settings.hosts = saved.hosts;
+        }
         let core = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let worker = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let launch = Launch {
             settings, core_port: core.local_addr()?.port(), worker_port: worker.local_addr()?.port(),
             core_secret: random_secret()?, worker_secret: random_secret()?,
-            data: crate::utils::dirs::app_home_dir()?.join("netverge-mitm-dev"),
+            data, bootstrap_sha256, restore_enabled, expected_ca,
         };
         // Release the reservations immediately before the sidecar launch.
         // The subsequent authenticated readiness probes detect port races.
@@ -209,6 +278,17 @@ impl RouteSession {
         MitmSettings { enable: self.enabled, hostname: self.launch.settings.hosts.clone(), policy: None }
     }
 
+    fn saved(&self, selection: &MitmSettings, pending: bool) -> SavedRoute {
+        SavedRoute {
+            version: 1,
+            bootstrap_sha256: self.launch.bootstrap_sha256.clone(),
+            pending,
+            enable: selection.enable,
+            hosts: selection.hostname.clone(),
+            ca_fingerprint: self.ca.as_ref().map(|ca| ca.sha256_fingerprint.clone()).or_else(|| self.launch.expected_ca.clone()),
+        }
+    }
+
     fn change(&mut self, candidate: MitmSettings) -> Result<()> {
         validate_candidate(&candidate)?;
         if candidate == self.selection() { return Ok(()); }
@@ -271,7 +351,8 @@ impl RouteSession {
             "hosts": self.launch.settings.hosts, "targetPort": 443, "controlSecret": self.launch.worker_secret
         });
         let (mut child, ca) = super::start_worker_payload(&self.launch.settings.node, &self.launch.settings.worker, &self.launch.data, &payload)?;
-        if self.ca.as_ref().is_some_and(|old| old.sha256_fingerprint != ca.sha256_fingerprint) {
+        if self.ca.as_ref().is_some_and(|old| old.sha256_fingerprint != ca.sha256_fingerprint)
+            || self.launch.expected_ca.as_ref().is_some_and(|old| old != &ca.sha256_fingerprint) {
             super::stop(&mut child);
             anyhow::bail!("original-route worker CA changed");
         }
@@ -279,6 +360,7 @@ impl RouteSession {
             super::stop(&mut child);
             anyhow::bail!("original-route worker failed authenticated readiness");
         }
+        self.launch.expected_ca = Some(ca.sha256_fingerprint.clone());
         self.ca = Some(ca);
         self.child = Some(child);
         Ok(())
@@ -337,6 +419,10 @@ pub(crate) async fn activate(launch: Launch, generation: u64) -> Result<()> {
         let result = (|| {
             let state = session.launch.core_state()?;
             ensure!(!state.enabled, "new custom core must start with MITM disabled");
+            if session.launch.restore_enabled {
+                let selection = MitmSettings { enable: true, hostname: session.launch.settings.hosts.clone(), policy: None };
+                session.change(selection)?;
+            }
             Ok(())
         })();
         if result.is_err() {
@@ -346,7 +432,7 @@ pub(crate) async fn activate(launch: Launch, generation: u64) -> Result<()> {
             // ambiguous PUT outcome. No stock-core fallback is introduced.
             return result;
         }
-        session.publish(Health::Inactive);
+        session.publish(if session.enabled { Health::LocalLinkHealthy } else { Health::Inactive });
         *guard = Some(session);
         Ok(())
     }).await??;
@@ -412,13 +498,38 @@ pub(super) async fn save(expected: String, candidate: MitmSettings) -> Result<Op
         let config = runtime.config.as_ref().context("runtime profile is unavailable")?;
         require_tun_rule(config)?;
     }
-    tokio::task::spawn_blocking(move || {
+    // The owner lock spans the complete disk/runtime transaction. Persist a
+    // pending intent first; a process crash cannot silently activate an
+    // unconfirmed selection on the next launch.
+    let (data, before, pending) = {
+        let guard = ROUTE.lock();
+        let s = guard.as_ref().context("original-route development core is unavailable")?;
+        ensure!(s.recovery.generation == Some(generation) && s.revision == expected, "MITM configuration changed; refresh first");
+        (s.launch.data.clone(), s.saved(&s.selection(), false), s.saved(&candidate, true))
+    };
+    write_saved(&data, &pending).await.context("failed to stage MITM configuration; runtime unchanged")?;
+    let applied = tokio::task::spawn_blocking(move || -> Result<_> {
         let mut guard = ROUTE.lock();
         let s = guard.as_mut().context("original-route development core is unavailable")?;
         ensure!(s.recovery.generation == Some(generation) && s.revision == expected, "MITM configuration changed; refresh first");
         s.change(candidate)?;
-        Ok(Some((s.selection(), s.revision.clone())))
-    }).await?
+        let selection = s.selection();
+        let saved = s.saved(&selection, false);
+        saved.validate(&s.launch.bootstrap_sha256)?;
+        Ok((selection, s.revision.clone(), saved))
+    }).await?;
+    let (selection, revision, saved) = match applied {
+        Ok(applied) => applied,
+        Err(err) => {
+            write_saved(&data, &before).await.context("MITM change failed and previous selection could not be saved; restart is blocked until reviewed")?;
+            return Err(err);
+        }
+    };
+    // If final persistence fails, do not silently re-enable a disabled
+    // session or change its running scope. Leave the pending marker; the
+    // next startup refuses it until the selection is explicitly reviewed.
+    write_saved(&data, &saved).await.context("MITM runtime changed but persistence failed; review the local selection before restarting")?;
+    Ok(Some((selection, revision)))
 }
 
 fn require_tun_rule(config: &serde_yaml_ng::Mapping) -> Result<()> {
@@ -461,6 +572,29 @@ mod tests {
         assert!(!same_hosts(&["a.test".into()], &["b.test".into()]));
         let secret = random_secret()?;
         assert_eq!(URL_SAFE_NO_PAD.decode(secret)?.len(), 24);
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_selection_is_bootstrap_bound_and_never_contains_runtime_secrets() -> Result<()> {
+        let mut saved = SavedRoute {
+            version: 1, bootstrap_sha256: "bootstrap-a".into(), pending: false,
+            enable: true, hosts: vec!["api.example.test".into()],
+            ca_fingerprint: Some("a".repeat(64)),
+        };
+        let yaml = serde_yaml_ng::to_string(&saved)?;
+        let decoded = decode_saved(yaml.as_bytes(), "bootstrap-a")?;
+        assert_eq!(decoded.selection(), saved.selection());
+        assert!(!yaml.contains("secret") && !yaml.contains("policy") && !yaml.contains("worker"));
+        assert!(decode_saved(yaml.as_bytes(), "bootstrap-b").is_err());
+        assert!(decode_saved(format!("{yaml}\npolicy: DIRECT").as_bytes(), "bootstrap-a").is_err());
+        saved.pending = true;
+        assert!(decode_saved(serde_yaml_ng::to_string(&saved)?.as_bytes(), "bootstrap-a").is_err());
+        saved.pending = false;
+        saved.ca_fingerprint = None;
+        assert!(saved.validate("bootstrap-a").is_err());
+        saved.enable = false;
+        saved.validate("bootstrap-a")?;
         Ok(())
     }
 
