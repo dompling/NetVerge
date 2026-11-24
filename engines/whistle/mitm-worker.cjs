@@ -124,11 +124,12 @@ function checkReturn(nonce) {
 }
 let healthBusy = false;
 function handleHealth(req, res) {
+  if (req.headers.host !== healthAuthority) return false;
   const prefix = req.url.startsWith(HEALTH_PREFIX) ? HEALTH_PREFIX :
     req.url.startsWith(RETURN_PREFIX) ? RETURN_PREFIX : null;
   if (!prefix) return false;
   const nonce = req.url.slice(prefix.length);
-  if (!ready || req.method !== 'GET' || req.headers.host !== healthAuthority ||
+  if (!ready || req.method !== 'GET' ||
       !/^[A-Za-z0-9_-]{32}$/.test(nonce)) {
     writeHealth(res, 403);
     return true;

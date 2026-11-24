@@ -332,6 +332,9 @@ async function main() {
       console.log('PASS: authenticated local round trip through Mihomo return listener; forged diagnostics rejected');
     }
     await verifyHealth();
+    // The diagnostic paths are local only; an ordinary destination with a
+    // similarly named path cannot access the privileged diagnostic handler.
+    assert.equal((await healthRequest('forward', randomBytes(24).toString('base64url'), { Host: TARGET + ':' + originPort })).status, 403);
     assert.notEqual(new X509Certificate(whistleCa).fingerprint256, new X509Certificate(certs.ca).fingerprint256);
 
     // Exercise the actual public worker listener, not a simulated auth check.

@@ -591,6 +591,64 @@ mod tests {
     }
 
     #[test]
+    fn health_proof_is_scoped_to_role_and_nonce() {
+        let nonce = "nonce";
+        let secret = "test-secret";
+        assert_eq!(health_proof(secret, "forward-request", nonce).len(), 64);
+        assert_ne!(health_proof(secret, "forward-request", nonce), health_proof(secret, "return-request", nonce));
+        assert_ne!(health_proof(secret, "forward-response", nonce), health_proof(secret, "forward-response", "another"));
+        assert_ne!(health_proof(secret, "forward-response", nonce), health_proof("another", "forward-response", nonce));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn supervisor_restarts_exited_child_only_for_active_generation() -> Result<()> {
+        // Exercise the real process spawning and recovery path, without TUN or
+        // a real profile. The separate Node lab exercises actual Mihomo/Whistle.
+        let node = Command::new("node").args(["-p", "process.execPath"]).output()?;
+        ensure!(node.status.success(), "Node is required for the supervisor integration test");
+        let node = PathBuf::from(std::str::from_utf8(&node.stdout)?.trim());
+        let data = std::env::temp_dir().join(format!("netverge-supervisor-{}", nanoid::nanoid!(12)));
+        std::fs::create_dir_all(&data)?;
+        let script = data.join("worker.cjs");
+        std::fs::write(&script, "process.stdin.resume(); process.stdout.write('NETVERGE_MITM_READY\\n');")?;
+        let mut session = Session {
+            settings: Settings {
+                node, worker: script, hosts: vec!["example.test".into()],
+                port: 18899, return_port: 18900, policy: "DIRECT".into(),
+            },
+            child: None,
+            password: nanoid::nanoid!(32),
+            forward_password: nanoid::nanoid!(32),
+            health_secret: nanoid::nanoid!(32),
+            recovery: RecoveryBudget::default(),
+            health: Health::Inactive,
+        };
+        let result = (|| -> Result<()> {
+            session.child = Some(start_worker(&session.settings, &data, &session.password, &session.forward_password, &session.health_secret)?);
+            let child = session.child.as_mut().context("fixture did not start")?;
+            child.kill()?;
+            child.wait()?;
+            session.recovery.activate(42);
+            recover_session(&mut session, 41, &data);
+            assert_eq!(session.recovery.attempts, 0);
+            assert!(session.child.as_mut().context("old child missing")?.try_wait()?.is_some());
+            recover_session(&mut session, 42, &data);
+            assert_eq!(session.recovery.attempts, 1);
+            assert_eq!(session.health, Health::Checking);
+            assert!(session.child.as_mut().context("replacement child missing")?.try_wait()?.is_none());
+            Ok(())
+        })();
+        if let Some(mut child) = session.child.take() {
+            stop(&mut child);
+        }
+        let cleanup = std::fs::remove_dir_all(&data);
+        result?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[test]
     fn exact_domains_only() {
         assert!(valid_host("api.example.test"));
         assert!(!valid_host("*.example.test"));
