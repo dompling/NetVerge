@@ -17,6 +17,7 @@ use std::{
 };
 
 pub(crate) mod trust;
+pub(crate) mod settings;
 
 const PROXY: &str = "NETVERGE-MITM";
 const RETURN: &str = "netverge-return";
@@ -82,16 +83,16 @@ pub(crate) fn public_ca() -> Option<MitmPublicCa> {
 static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
 const MAX_RECOVERY_ATTEMPTS: u8 = 3;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LocalConfig {
     mitm: MitmSettings,
     runtime: Option<RuntimeSettings>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq, specta::Type)]
 #[serde(deny_unknown_fields)]
-struct MitmSettings {
+pub struct MitmSettings {
     #[serde(default)]
     enable: bool,
     #[serde(default)]
@@ -99,7 +100,7 @@ struct MitmSettings {
     policy: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RuntimeSettings {
     node: PathBuf,
@@ -110,6 +111,7 @@ struct RuntimeSettings {
 
 impl LocalConfig {
     fn into_settings(self) -> Result<Option<Settings>> {
+        settings::validate_selection(&self.mitm)?;
         if !self.mitm.enable {
             return Ok(None);
         }
@@ -229,7 +231,7 @@ impl Settings {
         ensure!(self.node.is_file() && self.worker.is_file(), "MITM executable or worker is missing");
         ensure!(!self.hosts.is_empty() && self.hosts.len() <= 64 && self.hosts.iter().all(|host| valid_host(host)), "MITM requires exact lowercase DNS hostnames");
         ensure!(self.port >= 1024 && self.return_port >= 1024 && self.port != self.return_port, "invalid MITM ports");
-        ensure!(!self.policy.is_empty() && !self.policy.contains([',', '(', ')', '\n', '\r']) && self.policy != PROXY, "invalid MITM return policy");
+        ensure!(settings::valid_policy(&self.policy), "invalid MITM return policy");
         Ok(())
     }
 }
@@ -330,7 +332,7 @@ pub(crate) fn redact_runtime_for_ipc(config: &mut Mapping) {
 }
 
 pub(crate) fn validate_backup_entry(name: &str, unix_mode: Option<u32>) -> Result<()> {
-    ensure!(!name.split(['/', '\\']).any(|part| part.trim_end_matches([' ', '.']).split(':').next().is_some_and(|part| part.eq_ignore_ascii_case("netverge-mitm-dev"))), "backup may not contain MITM private data");
+    ensure!(!name.split(['/', '\\']).any(|part| part.trim_end_matches([' ', '.']).split(':').next().is_some_and(|part| part.eq_ignore_ascii_case("netverge-mitm-dev") || part.eq_ignore_ascii_case(settings::FILE_NAME))), "backup may not contain MITM private data");
     ensure!(!unix_mode.is_some_and(|mode| mode & 0o170000 == 0o120000), "backup may not contain symbolic links");
     Ok(())
 }
@@ -423,14 +425,11 @@ pub(crate) async fn prepare(mut config: Mapping) -> Result<Mapping> {
     // Only the explicitly selected local file may authorize interception.
     // Never interpret a subscription or merge/script extension as consent.
     config.remove("mitm");
-    let Some(path) = std::env::var_os("NETVERGE_MITM_DEV_CONFIG") else {
+    if !development_requested() {
         return Ok(config);
-    };
-    let path = PathBuf::from(path);
-    ensure!(path.is_absolute(), "NETVERGE_MITM_DEV_CONFIG must be an absolute path");
+    }
     tokio::task::spawn_blocking(move || {
-        let local: LocalConfig = serde_yaml_ng::from_slice(&std::fs::read(path)?).context("invalid local MITM YAML")?;
-        let settings = local.into_settings()?;
+        let settings = settings::boot_settings()?.into_settings()?;
         let mut state = SESSION.lock();
         let planned = plan_overlay(config, settings, &mut state)?;
         if let Some(session) = state.as_mut() {

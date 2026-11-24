@@ -36,3 +36,19 @@ pub async fn open_mitm_certificate_manager(expected_fingerprint: String) -> supe
     use super::StringifyErr as _;
     mitm::trust::open_manager(expected_fingerprint).await.stringify_err()
 }
+
+/// Read restart-scoped local MITM settings and applied-profile policy choices.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_mitm_config() -> super::CmdResult<mitm::settings::MitmConfigView> {
+    use super::StringifyErr as _;
+    mitm::settings::inspect().await.stringify_err()
+}
+
+/// Stage local MITM configuration after native confirmation; no live activation.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_mitm_config(expected_revision: String, candidate: mitm::MitmSettings) -> super::CmdResult<Option<mitm::settings::MitmConfigView>> {
+    use super::StringifyErr as _;
+    mitm::settings::save(expected_revision, candidate).await.stringify_err()
+}
