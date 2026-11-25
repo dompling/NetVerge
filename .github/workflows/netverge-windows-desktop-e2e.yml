@@ -48,6 +48,13 @@ jobs:
         env:
           TEST_PACKAGE_NAME: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-e9129b3.zip' }}
         run: |
-          $package = Join-Path $env:RUNNER_TEMP 'netverge-desktop-package'
-          Expand-Archive -LiteralPath (Join-Path 'desktop-artifact' $env:TEST_PACKAGE_NAME) -DestinationPath $package
+          $package = (Resolve-Path -LiteralPath 'desktop-artifact').Path
+          $archive = Join-Path $package $env:TEST_PACKAGE_NAME
+          if (Test-Path -LiteralPath $archive -PathType Leaf) {
+            $package = Join-Path $env:RUNNER_TEMP 'netverge-desktop-package'
+            Expand-Archive -LiteralPath $archive -DestinationPath $package
+          }
+          if (!(Test-Path -LiteralPath (Join-Path $package 'NetVerge-MITM.exe') -PathType Leaf)) {
+            throw 'The downloaded artifact does not contain the desktop test executable.'
+          }
           node engines/mihomo-route/service/windows-desktop-e2e.cjs $package
