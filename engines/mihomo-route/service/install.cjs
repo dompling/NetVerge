@@ -18,5 +18,5 @@ const main=path.join(process.argv[2],'main.go');
 let m=fs.readFileSync(main,'utf8').replace(/\r\n/g,'\n');
 function once(a,b){if(m.split(a).length!==2)throw Error('Unexpected main startup layout');m=m.replace(a,()=>b);}
 once('"github.com/metacubex/mihomo/hub/executor"','"github.com/metacubex/mihomo/hub/executor"\n\t"github.com/metacubex/mihomo/hub/route"');
-once('\n\tif err := hub.Parse(configBytes, options...); err != nil {','\n\troute.NetVergeServiceLabArm(externalControllerPipe)\n\tif err := hub.Parse(configBytes, options...); err != nil {');
+once('\n\tif err := hub.Parse(configBytes, options...); err != nil {','\n\tvar explicitServicePipe bool\n\tflag.Visit(func(f *flag.Flag) { if f.Name == "ext-ctl-pipe" { explicitServicePipe = true } })\n\tif err := route.NetVergeServiceLabArm(externalControllerPipe, explicitServicePipe); err != nil {\n\t\tfmt.Fprintln(os.Stderr, "NetVerge guarded service startup refused:", err)\n\t\tos.Exit(2)\n\t}\n\tif err := hub.Parse(configBytes, options...); err != nil {');
 fs.writeFileSync(main,m);

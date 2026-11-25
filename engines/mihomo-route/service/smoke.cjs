@@ -60,12 +60,49 @@ async function run(exe,descriptor,fn,envLaunch=false,restart=null){
  }finally{child.kill();await exited;fs.rmSync(dir,{recursive:true,force:true});}
  return {pipe,port,secret};
 }
+// An invalid dedicated launch must EXIT before hub.Parse, rather than
+// exposing a stock proxy or merely hiding its bootstrap endpoint.
+async function refused(descriptor,pipeArg,overrides={},reason){
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'nv-guard-refuse-'));
+ const env={...process.env};
+ for(const k of Object.keys(env))if(['NETVERGE_CORE_CONTROL_PORT','NETVERGE_CORE_CONTROL_SECRET','LISTEN_NAMEDPIPE_SDDL','CLASH_OVERRIDE_EXTERNAL_CONTROLLER_PIPE'].includes(k.toUpperCase()))delete env[k];
+ if(descriptor!==null)env.LISTEN_NAMEDPIPE_SDDL=descriptor;
+ Object.assign(env,overrides);
+ const args=['-d',dir,'-config',config,...(pipeArg===null?[]:['-ext-ctl-pipe',pipeArg])];
+ const child=spawn(lab,args,{env,stdio:['ignore','ignore','pipe'],windowsHide:true});
+ let diagnostic='',timer;
+ child.stderr.setEncoding('utf8');
+ child.stderr.on('data',chunk=>{if(diagnostic.length<8192)diagnostic+=chunk});
+ const exited=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(code,signal)=>resolve({code,signal}));});
+ try{
+  const result=await Promise.race([exited,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('invalid guarded core failed to exit')),5000);})]);
+  assert.equal(result.code,2,'invalid dedicated startup must exit with guard error');
+  assert.equal(result.signal,null);
+  assert.ok(diagnostic.includes('NetVerge guarded service startup refused: '+reason),'expected safe guard reason: '+reason);
+ }finally{
+  clearTimeout(timer);
+  if(child.exitCode===null)child.kill();
+  await exited.catch(()=>{});
+  fs.rmSync(dir,{recursive:true,force:true});
+ }
+}
+
 async function main(){
  await run(normal,acl,async(p,t,i)=>{
   assert.equal((await req(p,'POST',endpoint,i)).status,404);
   assert.equal((await req(t,'POST',endpoint,i)).status,404);
  });
- await run(lab,null,async(p,t,i)=>assert.equal((await req(p,'POST',endpoint,i)).status,404));
+ const localPipe='\\\\.\\pipe\\netverge-guard-test-'+randomBytes(12).toString('hex');
+ await refused(null,localPipe,{},'restricted owner pipe ACL is required');
+ await refused('D:P(A;;GA;;;WD)',localPipe,{},'restricted owner pipe ACL is required');
+ await refused(acl,null,{},'explicit service pipe argument is required');
+ await refused(acl,null,{CLASH_OVERRIDE_EXTERNAL_CONTROLLER_PIPE:localPipe},'explicit service pipe argument is required');
+ await refused(acl,'\\\\remote\\pipe\\not-local',{},'invalid local service pipe');
+ await refused(acl,'\\\\.\\pipe\\',{},'invalid local service pipe');
+ await refused(acl,localPipe,{NETVERGE_CORE_CONTROL_PORT:'12345'},'sidecar controller environment is forbidden');
+ await refused(acl,localPipe,{NETVERGE_CORE_CONTROL_SECRET:randomBytes(24).toString('base64url')},'sidecar controller environment is forbidden');
+ // Non-networking version inspection remains available for installation.
+ assert.ok(execFileSync(lab,['-v'],{encoding:'utf8'}).includes('Mihomo Meta'));
  const previous=await run(lab,acl,async(p,t,i)=>{
   assert.equal((await req(t,'POST',endpoint,i)).status,404);
   assert.equal((await req(p,'POST',endpoint,i,{Origin:'http://example.test'})).status,403);
@@ -89,7 +126,6 @@ async function main(){
   const fresh=await req(target,'GET','/v1/mitm',undefined,headers);
   assert.deepEqual(JSON.parse(fresh.body),{protocol:1,enabled:false,hosts:[],awaitingSelection:true});
  },false,previous);
- await run(lab,acl,async(p,t,i)=>assert.equal((await req(p,'POST',endpoint,i)).status,404),true);
- console.log('PASS: owner-pipe-only service-shaped bootstrap; ordinary core and TCP reject; no env-controller takeover; fresh controller disabled');
+ console.log('PASS: dedicated guarded launch rejects missing/broad ACL, implicit/remote/empty pipe and sidecar environment; ordinary core and TCP reject bootstrap; fresh controller pending');
 }
 main().catch(err=>{console.error(err.message);process.exitCode=1});

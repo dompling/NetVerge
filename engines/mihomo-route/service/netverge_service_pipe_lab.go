@@ -2,12 +2,13 @@
 
 package route
 
-// Isolated laboratory only. The regular build does not install this file
-// or patch server.go. No actual service or watchdog activation is enabled.
+// Dedicated guarded service candidate. The ordinary build never installs
+// this file or patches server.go. Still validated only in the isolated lab.
 import (
  "crypto/subtle"
  "encoding/base64"
  "encoding/json"
+ "errors"
  "io"
  "os"
  "regexp"
@@ -29,11 +30,19 @@ var nvEnvLaunch=func() bool {
 }()
 var nvLabArmed atomic.Bool
 
-// Called only by the isolated lab executable, before hub.Parse.
-func NetVergeServiceLabArm(pipe string){
- if nvEnvLaunch||!nvOwnerACL.MatchString(os.Getenv("LISTEN_NAMEDPIPE_SDDL"))||!strings.HasPrefix(pipe,`\\.\pipe\`){return}
+// The tagged binary is explicitly a guarded service candidate, never an
+// ordinary sidecar. Reject an invalid launch before parsing any live config.
+// Fence first so no error path can accidentally start ordinary forwarding.
+var nvLocalPipeName=regexp.MustCompile("^[A-Za-z0-9_-]{1,200}$")
+func NetVergeServiceLabArm(pipe string, explicit bool) error {
  tunnel.SetNetVergeStartupFence(true)
+ if nvEnvLaunch { return errors.New("sidecar controller environment is forbidden") }
+ if !explicit { return errors.New("explicit service pipe argument is required") }
+ name,local:=strings.CutPrefix(pipe,`\\.\pipe\`)
+ if !local||!nvLocalPipeName.MatchString(name) { return errors.New("invalid local service pipe") }
+ if !nvOwnerACL.MatchString(os.Getenv("LISTEN_NAMEDPIPE_SDDL")) { return errors.New("restricted owner pipe ACL is required") }
  nvLabArmed.Store(true)
+ return nil
 }
 
 var nvBootstrap struct {
