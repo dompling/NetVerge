@@ -17,11 +17,20 @@ pub struct Generation {
     restarts: u32,
 }
 
+impl Generation {
+    pub fn is_restart_of(self, previous: Self) -> bool {
+        self.owner == previous.owner && self.pid != previous.pid
+            && self.restarts > previous.restarts
+            && self.started_at >= previous.started_at
+    }
+}
+
 pub async fn current(credentials: &OwnerCredentials, proof: &OwnerSessionProof) -> Result<Option<Generation>> {
     let reply = get_status(credentials).await?;
     ensure!(reply.code == 0, "service status rejected");
     let state = reply.data.context("service status omitted")?;
     ensure!(state.is_active && state.active_generation == Some(proof.generation), "service owner generation changed");
+    ensure!(state.service_state != ServiceLifecycleState::Fatal, "service reported Fatal: pid_present={} restart_count={}", state.core_pid.is_some(), state.restart_count);
     if !state.desired_core_should_be_running || state.service_state != ServiceLifecycleState::Running {
         return Ok(None);
     }

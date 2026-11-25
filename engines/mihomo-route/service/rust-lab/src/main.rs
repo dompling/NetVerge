@@ -5,10 +5,11 @@ mod transport;
 use anyhow::{Context, Result, ensure};
 use clash_verge_service_ipc::{
     CoreWatchdogTestConfig, OwnerCredentials, OwnerSessionProof, RuntimeBundle, StartClashRequest,
-    connect, run_ipc_server, set_core_watchdog_config_for_tests, start_clash, stop_clash, stop_ipc_server, test_owner_credentials,
+    ServiceLifecycleState, connect, run_ipc_supervisor_until_shutdown, service_lifecycle_state,
+    set_core_watchdog_config_for_tests, start_clash, stop_clash, test_owner_credentials,
 };
 use std::{path::{Path, PathBuf}, process::Stdio, time::Duration};
-use tokio::{io::{AsyncBufReadExt, BufReader}, process::{Child, Command}, time::{sleep, timeout}};
+use tokio::{io::{AsyncBufReadExt, BufReader}, process::{Child, Command}, sync::oneshot, time::{sleep, timeout}};
 use transport::{BoundController, Generation, current, free_port, secret};
 use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess}};
 
@@ -16,9 +17,13 @@ async fn wait_core(credentials: &OwnerCredentials, proof: &OwnerSessionProof, pr
     let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
     loop {
         if let Some(generation) = current(credentials, proof).await? {
-            if previous.is_none_or(|old| generation != old && generation.pid != old.pid) { return Ok(generation); }
+            if previous.is_none_or(|old| generation.is_restart_of(old)) { return Ok(generation); }
         }
-        ensure!(tokio::time::Instant::now() < deadline, "service watchdog did not publish a new generation");
+        ensure!(tokio::time::Instant::now() < deadline, "{}", if previous.is_some() {
+            "service watchdog did not publish a replacement generation"
+        } else {
+            "service did not publish an initial running generation"
+        });
         sleep(Duration::from_millis(150)).await;
     }
 }
@@ -100,6 +105,7 @@ fn terminate_fixture(pid: u32) -> Result<()> {
 
 async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, worker: &Worker) -> Result<()> {
     let first = wait_core(credentials, proof, None).await?;
+    println!("PASS: initial authenticated service core generation {first:?}");
     let port = free_port()?;
     ensure!(port != worker.port, "fixture ports collide");
     let controller = BoundController::connect(credentials, proof, first, port).await?;
@@ -108,6 +114,7 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
     println!("PASS: Rust owner/PID-bound named-pipe bootstrap and real Whistle selection");
     terminate_fixture(first.pid)?;
     let second = wait_core(credentials, proof, Some(first)).await?;
+    println!("PASS: service watchdog published replacement core generation {second:?}");
     ensure!(controller.confirm_current(credentials, proof).await.is_err(), "old generation remained current");
     let fresh = BoundController::connect(credentials, proof, second, port).await?;
     ensure!(fresh.request("DELETE", &controller.secret, &[]).await?.0 == 401, "old controller secret accepted");
@@ -144,11 +151,19 @@ async fn main() -> Result<()> {
     set_core_watchdog_config_for_tests(Some(CoreWatchdogTestConfig {
         max_restarts: 3, restart_window: Duration::from_secs(60), max_backoff: Duration::ZERO,
     }));
-    let server = run_ipc_server().await?;
+    // run_ipc_server() alone leaves the upstream service lifecycle state
+    // at Starting. Use the real supervisor, which owns readiness and cleanup.
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let supervisor = tokio::spawn(run_ipc_supervisor_until_shutdown(async move {
+        let _ = shutdown_rx.await;
+    }));
     let result = async {
         timeout(Duration::from_secs(20), async {
-            while connect().await.is_err() { sleep(Duration::from_millis(100)).await; }
+            while service_lifecycle_state() != ServiceLifecycleState::Running || connect().await.is_err() {
+                sleep(Duration::from_millis(100)).await;
+            }
         }).await.context("service IPC readiness timeout")?;
+        println!("PASS: actual upstream IPC supervisor reports Running");
         let token = "42".repeat(32);
         let response = start_clash(&credentials, &StartClashRequest {
             runtime: RuntimeBundle {
@@ -165,11 +180,15 @@ async fn main() -> Result<()> {
         ensure!(stopped?.code == 0, "service stop rejected");
         Ok::<_, anyhow::Error>(())
     }.await;
-    let _ = stop_ipc_server().await;
-    let _ = server.await;
+    let _ = shutdown_tx.send(());
+    let shutdown = timeout(Duration::from_secs(30), supervisor).await;
+    // Always stop the local fixture worker, even on service failure.
     let _ = worker.child.kill().await;
     let _ = worker.child.wait().await;
     set_core_watchdog_config_for_tests(None);
     let _ = std::fs::remove_dir_all(fixture);
-    result
+    result?;
+    shutdown.context("service supervisor shutdown timed out")?
+        .context("service supervisor task failed")??;
+    Ok(())
 }
