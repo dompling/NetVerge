@@ -1,0 +1,53 @@
+name: NetVerge Windows desktop MITM acceptance
+
+on:
+  push:
+    branches: [feat/mitm-route-integration]
+    paths:
+      - '.github/workflows/netverge-windows-desktop-e2e.yml'
+      - 'engines/mihomo-route/service/windows-desktop-e2e.cjs'
+  workflow_dispatch:
+    inputs:
+      package_run:
+        description: Successful Windows test-package workflow run ID
+        default: '45582361931'
+        required: true
+        type: string
+      package_name:
+        description: Windows x64 ZIP artifact name
+        default: NetVerge-MITM-Test-Windows-x64-e9129b3.zip
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26.13.1'
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.package_run || '45582361931' }}
+          name: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-e9129b3.zip' }}
+          path: desktop-artifact
+      - name: Install TLS fixture dependencies
+        working-directory: engines/whistle
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Click the MITM service switch and verify native TLS after app restart
+        shell: pwsh
+        env:
+          TEST_PACKAGE_NAME: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-e9129b3.zip' }}
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'netverge-desktop-package'
+          Expand-Archive -LiteralPath (Join-Path 'desktop-artifact' $env:TEST_PACKAGE_NAME) -DestinationPath $package
+          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package
