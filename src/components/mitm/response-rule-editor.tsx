@@ -26,6 +26,8 @@ function RuleForm({ initial, changed }: { initial: ResponseHeaderRule | null; ch
   const queue = useRef(Promise.resolve())
   const latest = useRef(0)
   const { data: hits } = useSWR('mitm-response-hits', commands.getResponseHeaderHits, { refreshInterval: 3000 })
+  // Publish the label and count as one accessible status, not separate text nodes.
+  const hitStatus = hits == null ? null : `${t('settings.mitm.rewrite.hits')} · ${hits}`
   const persist = (next: ResponseHeaderRule | null) => {
     const version = ++latest.current
     setPending(true)
@@ -64,7 +66,7 @@ function RuleForm({ initial, changed }: { initial: ResponseHeaderRule | null; ch
           <FormControlLabel label={t('settings.mitm.rewrite.enable')} control={<Switch checked={draft.enabled}
             disabled={!draft.host || !draft.path || !draft.header}
             onChange={(_, enabled) => { const next = { ...draft, enabled }; setDraft(next); commit(next) }} />} />
-          {hits != null && <Typography variant="caption">{t('settings.mitm.rewrite.hits')} · {hits}</Typography>}
+          {hitStatus !== null && <Typography variant="caption" role="status" aria-label={hitStatus}>{hitStatus}</Typography>}
           <Button size="small" onClick={() => { setDraft(null); persist(null) }}>{t('shared.actions.delete')}</Button>
         </Stack>
       </>}

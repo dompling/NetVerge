@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -99,10 +99,22 @@ switch ($Action) {
         $button = Find-Element 'Delete' ([Windows.Automation.ControlType]::Button)
         if ($button) { $button.GetCurrentPattern($invoke).Invoke(); 'OK' }
     }
-    'RuleHits' {
-        $texts = $root.FindAll($scope, [Windows.Automation.PropertyCondition]::new(
-            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Text))
-        if ($texts | Where-Object { $_.Current.Name -match 'Hits this worker session.*[1-9]' }) { 'OK' }
+    { $_ -in 'RuleHits', 'RuleHitsZero' } {
+        # WebView2 may expose an accessible live status as a group rather than
+        # Text. Match its entire localized (English fixture) label and count.
+        # Never match unrelated digits such as a fingerprint or traffic rate.
+        $elements = $root.FindAll($scope, [Windows.Automation.Condition]::TrueCondition)
+        foreach ($element in $elements) {
+            if ($element.Current.IsOffscreen) { continue }
+            if ($element.Current.Name -match '^Hits this worker session\s*\u00b7\s*(0|[1-9][0-9]*)$') {
+                $count = [uint32]$Matches[1]
+                if (($Action -eq 'RuleHits' -and $count -gt 0) -or
+                    ($Action -eq 'RuleHitsZero' -and $count -eq 0)) {
+                    'OK'
+                    break
+                }
+            }
+        }
     }
     'Healthy' {
         if (Find-Element 'Local link healthy') { 'OK'; break }
