@@ -17,11 +17,22 @@ use clash_verge_service_ipc::{
     ServiceLifecycleState, connect, run_ipc_supervisor_until_shutdown, service_lifecycle_state,
     set_core_watchdog_config_for_tests, start_clash, stop_clash, test_owner_credentials,
 };
-use std::{path::{Path, PathBuf}, process::Stdio, time::Duration};
-use tokio::{io::{AsyncBufReadExt, BufReader}, process::{Child, Command}, sync::oneshot, time::{sleep, timeout}};
+use std::{os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle}, path::{Path, PathBuf}, process::Stdio, time::Duration};
+use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, process::{Child, Command}, sync::oneshot, time::{sleep, timeout}};
 use service_generation::{Generation, GenerationWatch, Transition};
 use service_restore::{BoundController, CommittedSelection, WorkerLink, current, free_port, secret};
-use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess}};
+use windows_sys::Win32::{
+    Foundation::CloseHandle,
+    System::{
+        JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+            QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+        },
+        Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE, TerminateProcess},
+    },
+};
 
 async fn wait_core(credentials: &OwnerCredentials, proof: &OwnerSessionProof, previous: Option<Generation>) -> Result<Generation> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
@@ -52,7 +63,9 @@ fn ordinary_directory(path: &Path) -> Result<PathBuf> {
 
 fn isolated_worker_command(script: &Path, data: &Path) -> Command {
     let mut command = Command::new("node");
-    command.arg(script);
+    // Whistle can fork while loading. Hold it behind stdin until the job owns Node.
+    const GATE: &str = "process.stdin.once('data', b => { if (b.length !== 1 || b[0] !== 1) process.exit(1); process.stdin.pause(); require(process.argv[1]); }); process.stdin.resume();";
+    command.args(["-e", GATE, "--"]).arg(script);
     // Whistle's getDataDir() and HTTPS CA module read home-related
     // state at require time, before the baseDir option is applied.
     // Match the existing Go and desktop worker launchers.
@@ -70,7 +83,75 @@ fn isolated_worker_command(script: &Path, data: &Path) -> Command {
     command
 }
 
-struct Worker { child: Child, port: u16, secret: String, ca_fingerprint: String }
+struct WorkerJob(OwnedHandle);
+
+impl WorkerJob {
+    fn new() -> Result<Self> {
+        // SAFETY: null attributes create a non-inheritable handle to an unnamed job.
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error()).context("create Whistle worker job");
+        }
+        let job = Self(unsafe { OwnedHandle::from_raw_handle(handle) });
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                job.0.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        };
+        if configured == 0 {
+            return Err(std::io::Error::last_os_error()).context("configure Whistle worker job");
+        }
+        Ok(job)
+    }
+
+    fn assign(&self, child: &Child) -> Result<()> {
+        let pid = child.id().context("Whistle worker exited before job assignment")?;
+        let process = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+        if process.is_null() {
+            return Err(std::io::Error::last_os_error()).context("open Whistle worker for job assignment");
+        }
+        let process = unsafe { OwnedHandle::from_raw_handle(process) };
+        if unsafe { AssignProcessToJobObject(self.0.as_raw_handle(), process.as_raw_handle()) } == 0 {
+            return Err(std::io::Error::last_os_error()).context("assign Whistle worker to job");
+        }
+        Ok(())
+    }
+
+    async fn stop(self) -> Result<()> {
+        let handle = self.0.as_raw_handle();
+        if unsafe { TerminateJobObject(handle, 1) } == 0 {
+            return Err(std::io::Error::last_os_error()).context("terminate Whistle worker job");
+        }
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let mut counts = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+                let queried = unsafe {
+                    QueryInformationJobObject(
+                        self.0.as_raw_handle(),
+                        JobObjectBasicAccountingInformation,
+                        std::ptr::from_mut(&mut counts).cast(),
+                        std::mem::size_of_val(&counts) as u32,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if queried == 0 {
+                    return Err(std::io::Error::last_os_error()).context("query Whistle worker job");
+                }
+                if counts.ActiveProcesses == 0 {
+                    return Ok(());
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        }).await.context("Whistle worker descendants did not exit")?
+    }
+}
+
+struct Worker { child: Child, job: WorkerJob, port: u16, secret: String, ca_fingerprint: String }
 impl Worker {
     async fn start(script: &Path, data: &Path) -> Result<Self> {
         // Each test uses its own fresh data root; never reuse the runner's CA.
@@ -78,6 +159,7 @@ impl Worker {
         let data = ordinary_directory(data)?;
         let port = free_port()?;
         let secret = secret()?;
+        let job = WorkerJob::new()?;
         let mut child = isolated_worker_command(script, &data)
             .kill_on_drop(true)
             .stdin(Stdio::piped())
@@ -87,6 +169,8 @@ impl Worker {
                 "dataDir": data, "port": port, "hosts": ["api.example.test"], "targetPort":443,"controlSecret":secret
             }))?)
             .spawn()?;
+        job.assign(&child)?;
+        child.stdin.as_mut().context("worker stdin missing")?.write_all(&[1]).await?;
         let mut lines = BufReader::new(child.stdout.take().context("worker stdout missing")?).lines();
         let ca_fingerprint = timeout(Duration::from_secs(30), async {
             loop {
@@ -106,7 +190,15 @@ impl Worker {
         }).await.context("worker readiness timed out")??;
         tokio::spawn(async move { while matches!(lines.next_line().await, Ok(Some(_))) {} });
         println!("PASS: isolated Whistle worker initialized and returned its verified CA");
-        Ok(Self { child, port, secret, ca_fingerprint })
+        Ok(Self { child, job, port, secret, ca_fingerprint })
+    }
+
+    async fn stop(self) -> Result<()> {
+        let Self { mut child, job, .. } = self;
+        job.stop().await?;
+        timeout(Duration::from_secs(5), child.wait()).await.context("Whistle worker did not exit")??;
+        println!("PASS: Whistle worker job has no remaining processes");
+        Ok(())
     }
 }
 
@@ -190,7 +282,7 @@ async fn main() -> Result<()> {
     let core_copy = fixture.join("verge-mihomo.exe");
     std::fs::copy(core, &core_copy)?;
     let credentials = test_owner_credentials(&fixture.join("owner"))?;
-    let mut worker = Worker::start(&script, &fixture.join("whistle")).await?;
+    let worker = Worker::start(&script, &fixture.join("whistle")).await?;
     set_core_watchdog_config_for_tests(Some(CoreWatchdogTestConfig {
         max_restarts: 3, restart_window: Duration::from_secs(60), max_backoff: Duration::ZERO,
     }));
@@ -225,13 +317,14 @@ async fn main() -> Result<()> {
     }.await;
     let _ = shutdown_tx.send(());
     let shutdown = timeout(Duration::from_secs(30), supervisor).await;
-    // Always stop the local fixture worker, even on service failure.
-    let _ = worker.child.kill().await;
-    let _ = worker.child.wait().await;
+    let worker_shutdown = worker.stop().await;
     set_core_watchdog_config_for_tests(None);
-    let _ = std::fs::remove_dir_all(fixture);
+    let cleanup = worker_shutdown.and_then(|()| {
+        std::fs::remove_dir_all(fixture).context("remove service fixture directory after shutdown")
+    });
     result?;
     shutdown.context("service supervisor shutdown timed out")?
         .context("service supervisor task failed")??;
+    cleanup?;
     Ok(())
 }
