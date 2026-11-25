@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'Switch', 'Restart', 'Healthy', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,12 +39,13 @@ switch ($Action) {
             'OK'
         }
     }
-    'Switch' {
+    { $_ -in 'EnableService', 'DisableService' } {
         $element = Find-Element 'Windows MITM service mode' ([Windows.Automation.ControlType]::Button)
         if ($element -and $element.Current.IsEnabled) {
             $toggle = $null
             if ($element.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) {
-                if ($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::Off) { $toggle.Toggle() }
+                $enabled = $toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On
+                if ($enabled -ne ($Action -eq 'EnableService')) { $toggle.Toggle() }
             } else {
                 $element.GetCurrentPattern($invoke).Invoke()
             }
