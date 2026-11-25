@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/netverge-windows-desktop-e2e.yml'
       - 'engines/mihomo-route/service/windows-desktop-e2e.cjs'
+      - 'engines/mihomo-route/service/windows-desktop-uia.ps1'
   workflow_dispatch:
     inputs:
       package_run:

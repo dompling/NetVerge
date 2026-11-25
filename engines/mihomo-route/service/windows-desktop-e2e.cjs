@@ -5,7 +5,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
-const http = require('node:http');
 const { once } = require('node:events');
 const { spawn, execFileSync } = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
@@ -13,7 +12,6 @@ const { setTimeout: sleep } = require('node:timers/promises');
 
 const selected = 'api.example.test';
 const bypass = 'bypass.example.test';
-const serviceSwitch = '[aria-label="Windows MITM service mode"]';
 const sha256 = data => createHash('sha256').update(data).digest('hex');
 const q = value => "'" + value.replaceAll("'", "''") + "'";
 
@@ -72,72 +70,11 @@ function stopTree(child) {
   catch { child.kill(); }
 }
 
-async function cdp(port, oldId) {
-  return until('desktop WebView', async () => {
-    const targets = await new Promise((resolve, reject) => {
-      const request = http.get({ host: '127.0.0.1', port, path: '/json/list', agent: false }, response => {
-        let body = '';
-        response.setEncoding('utf8');
-        response.on('data', chunk => { body += chunk; });
-        response.on('error', reject);
-        response.on('end', () => {
-          try { resolve(JSON.parse(body)); } catch (error) { reject(error); }
-        });
-      });
-      request.on('error', reject);
-      request.setTimeout(1800, () => request.destroy(new Error('WebView HTTP request timed out')));
-    });
-    const page = targets.find(item => item.type === 'page' && item.id !== oldId && /tauri\.localhost|tauri:\/\/localhost/.test(item.url));
-    if (!page) return;
-    const endpoint = new URL(page.webSocketDebuggerUrl);
-    assert.equal(endpoint.hostname, '127.0.0.1');
-    const socket = new WebSocket(endpoint);
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { socket.close(); reject(new Error('CDP open timeout')); }, 4000);
-      socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-      socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('WebView CDP connection failed')); }, { once: true });
-    });
-    let id = 0;
-    return {
-      id: page.id,
-      close: () => socket.close(),
-      eval(expression) {
-        return new Promise((resolve, reject) => {
-          const current = ++id;
-          const timer = setTimeout(() => finish(new Error('WebView evaluation timed out')), 5000);
-          function finish(error, value) {
-            clearTimeout(timer);
-            socket.removeEventListener('message', message);
-            socket.removeEventListener('close', closed);
-            if (error) reject(error); else resolve(value);
-          }
-          function closed() { finish(new Error('WebView closed')); }
-          function message(event) {
-            const reply = JSON.parse(event.data);
-            if (reply.id !== current) return;
-            if (reply.error || reply.result?.exceptionDetails) finish(new Error('WebView evaluation failed'));
-            else finish(null, reply.result?.result?.value);
-          }
-          socket.addEventListener('message', message);
-          socket.addEventListener('close', closed);
-          socket.send(JSON.stringify({ id: current, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
-        });
-      },
-    };
-  }, 70000);
-}
-
-async function openMitm(page) {
-  await until('MITM navigation', () => page.eval(`(() => {
-    if (location.pathname === '/mitm') return true;
-    const link = document.querySelector('a[href="/mitm"]');
-    if (link) { link.click(); return true; }
-    return false;
-  })()`));
-}
-
-function getStatus(page) {
-  return page.eval("window.__TAURI_INTERNALS__?.invoke('get_mitm_status')");
+function automation(app, action) {
+  return execFileSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'RemoteSigned',
+    '-File', path.join(__dirname, 'windows-desktop-uia.ps1'), '-App', app, '-Action', action,
+  ], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true }).trim();
 }
 
 async function main() {
@@ -158,8 +95,7 @@ async function main() {
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'netverge-desktop-e2e-'));
   const bootstrap = path.join(temp, 'bootstrap.json');
-  let origin, seed, desktop, page, debugPort, registryConfigured = false, attemptedInstall = false;
-  const registry = 'HKCU:\\Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments';
+  let origin, seed, desktop, attemptedInstall = false;
   let desktopOutput = '';
   try {
     origin = spawn(process.execPath, [netFixture, 'serve', temp], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
@@ -174,12 +110,6 @@ async function main() {
       `require(${JSON.stringify(worker)});`,
     ].join('\n'));
     const dnsPort = await freePort();
-    debugPort = await freePort();
-    const debugArgs = '--remote-debugging-port=' + debugPort + ' --remote-debugging-address=127.0.0.1';
-    powershell("$key = " + q(registry) + "; New-Item -Path $key -Force | Out-Null;" +
-      "if ((Get-ItemProperty -LiteralPath $key).PSObject.Properties['NetVerge-MITM.exe']) { throw 'Existing WebView debugger policy' };" +
-      "New-ItemProperty -LiteralPath $key -Name 'NetVerge-MITM.exe' -PropertyType String -Value " + q(debugArgs) + ' | Out-Null');
-    registryConfigured = true;
     fs.mkdirSync(path.join(appRoot, 'profiles'), { recursive: true });
     fs.mkdirSync(mitm);
     const bootstrapBytes = JSON.stringify({ node, worker: fixtureWorker, hosts: [selected] });
@@ -234,7 +164,7 @@ async function main() {
         CLASH_VERGE_DEV_SERVICE_DIR: path.join(root, 'service'),
         NETVERGE_MITM_ROUTE_DEV_CONFIG: bootstrap,
         NETVERGE_MITM_SERVICE_CORE_SHA256: coreDigest,
-        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: debugArgs,
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--force-renderer-accessibility',
         WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'WebView2'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -242,31 +172,19 @@ async function main() {
     for (const stream of [desktop.stdout, desktop.stderr]) {
       stream.on('data', chunk => { desktopOutput = (desktopOutput + chunk).slice(-24000); });
     }
-    page = await cdp(debugPort);
-    await openMitm(page);
-    const selector = JSON.stringify(serviceSwitch);
-    const click = `(() => { const input = document.querySelector(${selector}); if (!input || input.disabled) return false; if (!input.checked) input.click(); return true; })()`;
-    await until('enabled service mode switch', () => page.eval(click));
-    await until('service mode checkbox persisted', async () => (await getStatus(page))?.serviceModeNextStart === true);
-    const previousPage = page.id;
-    try {
-      await until('restart button', () => page.eval(`(() => {
-        const button = [...document.querySelectorAll('button')].find(node => node.innerText.trim() === 'Restart');
-        if (!button || button.disabled) return false;
-        setTimeout(() => button.click(), 20);
-        return true;
-      })()`));
-    } catch (error) {
-      if (error.message !== 'WebView closed') throw error;
-    }
-    page.close();
-    page = await cdp(debugPort, previousPage);
-    await openMitm(page);
-    await until('restored desktop MITM state', async () => {
-      const status = await getStatus(page);
-      if (status?.serviceFailure) throw new Error(status.serviceFailure);
-      return status?.serviceModeRequested && status?.coreGenerationCurrent && status?.state === 'local_link_healthy';
-    }, 60000);
+    await until('MITM navigation', () => automation(app, 'Open') === 'OK', 70000);
+    await until('enabled service mode switch', () => automation(app, 'Switch') === 'OK');
+    await until('service mode checkbox persisted', () => {
+      const file = path.join(mitm, 'guarded-service.yaml');
+      return fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes(coreDigest);
+    });
+    await until('restart button', () => automation(app, 'Restart') === 'OK');
+    await until('desktop process restart', () => {
+      const pid = powershell("(Get-Process -Name 'NetVerge-MITM' -ErrorAction SilentlyContinue | Where-Object Path -eq " + q(app) + " | Select-Object -First 1).Id; exit 0");
+      return /^\d+$/.test(pid) && Number(pid) !== desktop.pid;
+    });
+    await until('MITM navigation after restart', () => automation(app, 'Open') === 'OK', 70000);
+    await until('restored desktop MITM state', () => automation(app, 'Healthy') === 'OK', 60000);
     console.log('PASS: clicked desktop MITM service switch and restarted into a protected service generation');
     const processPath = powershell("(Get-Process -Name 'netverge-mihomo-service').Path");
     assert.match(processPath, /\\clash-verge-service-dev\\cores\\netverge-mihomo-service\.exe$/i);
@@ -282,18 +200,15 @@ async function main() {
       }
     }
     console.error(powershell("Get-Process -Name 'NetVerge-MITM','msedgewebview2' -ErrorAction SilentlyContinue | Select-Object ProcessName,Id,SessionId | ConvertTo-Json -Compress; exit 0"));
-    if (debugPort) console.error(powershell(
-      "Get-CimInstance Win32_Process -Filter \"Name = 'msedgewebview2.exe'\" | ForEach-Object { " +
-      "[pscustomobject]@{ProcessId=$_.ProcessId;HasDebugFlag=$_.CommandLine -match 'remote-debugging-port=" + debugPort + "'} } | ConvertTo-Json -Compress;"
-      + ' Get-NetTCPConnection -LocalPort ' + debugPort + ' -State Listen -ErrorAction SilentlyContinue | Select-Object LocalAddress,OwningProcess | ConvertTo-Json -Compress; exit 0'));
+    if (desktop) {
+      try { console.error(automation(app, 'Inspect')); } catch {}
+    }
     throw error;
   } finally {
-    page?.close();
     stopTree(seed);
     stopTree(desktop);
     stopTree(origin);
     if (desktop) powershell("Get-Process -Name 'NetVerge-MITM' -ErrorAction SilentlyContinue | Where-Object Path -eq " + q(app) + ' | Stop-Process -Force; exit 0');
-    if (registryConfigured) powershell('Remove-ItemProperty -LiteralPath ' + q(registry) + " -Name 'NetVerge-MITM.exe'; exit 0");
     if (attemptedInstall) powershell("& " + q(launcher) + ' -Action Uninstall', 'inherit');
     fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
