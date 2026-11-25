@@ -12,9 +12,12 @@ import (
  "os"
  "regexp"
  "sync"
+ "strings"
+ "sync/atomic"
 
  "github.com/metacubex/http"
  "github.com/metacubex/mihomo/netvergecontrol"
+ "github.com/metacubex/mihomo/tunnel"
 )
 
 const nvBootstrapPath="/__netverge_service_lab/bootstrap"
@@ -24,6 +27,15 @@ var nvEnvLaunch=func() bool {
  _,s:=os.LookupEnv("NETVERGE_CORE_CONTROL_SECRET")
  return p||s
 }()
+var nvLabArmed atomic.Bool
+
+// Called only by the isolated lab executable, before hub.Parse.
+func NetVergeServiceLabArm(pipe string){
+ if nvEnvLaunch||!nvOwnerACL.MatchString(os.Getenv("LISTEN_NAMEDPIPE_SDDL"))||!strings.HasPrefix(pipe,`\\.\pipe\`){return}
+ tunnel.SetNetVergeStartupFence(true)
+ nvLabArmed.Store(true)
+}
+
 var nvBootstrap struct {
  sync.Mutex
  controller *netvergecontrol.Controller
@@ -35,7 +47,7 @@ type nvBootstrapInput struct {
  Secret string `json:"secret"`
 }
 func netvergeServicePipeHandler(next http.Handler) http.Handler {
- if nvEnvLaunch||!nvOwnerACL.MatchString(os.Getenv("LISTEN_NAMEDPIPE_SDDL")){return next}
+ if !nvLabArmed.Load()||nvEnvLaunch||!nvOwnerACL.MatchString(os.Getenv("LISTEN_NAMEDPIPE_SDDL")){return next}
  return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
   if r.URL.Path!=nvBootstrapPath{next.ServeHTTP(w,r);return}
   w.Header().Set("Cache-Control","no-store")
@@ -55,7 +67,7 @@ func netvergeServicePipeHandler(next http.Handler) http.Handler {
    if nvBootstrap.port==input.Port&&subtle.ConstantTimeCompare([]byte(nvBootstrap.secret),[]byte(input.Secret))==1{w.WriteHeader(204)}else{w.WriteHeader(409)}
    return
   }
-  controller,err:=netvergecontrol.Start(input.Port,input.Secret)
+  controller,err:=netvergecontrol.StartGuarded(input.Port,input.Secret)
   if err!=nil{w.WriteHeader(503);return}
   nvBootstrap.controller=controller
   nvBootstrap.port=input.Port

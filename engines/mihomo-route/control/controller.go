@@ -43,6 +43,8 @@ type Controller struct {
 	secret string
 	current *session
 	closed bool
+	guarded bool
+	awaitingSelection bool
 }
 
 type session struct {
@@ -80,10 +82,21 @@ func StartFromEnv()(func(),error){
 }
 
 func Start(port int,secret string)(*Controller,error){
+ return start(port,secret,false)
+}
+
+// StartGuarded is reserved for the service laboratory. Its caller also
+// arms the fence before hub.Parse, before the core exposes TUN.
+func StartGuarded(port int,secret string)(*Controller,error){
+ tunnel.SetNetVergeStartupFence(true)
+ return start(port,secret,true)
+}
+
+func start(port int,secret string,guarded bool)(*Controller,error){
 	if !validSecret(secret)||port<0||port>65535||(port!=0&&port<1024){return nil,errors.New("invalid controller settings")}
 	l,err:=net.Listen("tcp4",net.JoinHostPort("127.0.0.1",strconv.Itoa(port)))
 	if err!=nil{return nil,err}
-	c:=&Controller{listener:l,secret:secret}
+	c:=&Controller{listener:l,secret:secret,guarded:guarded,awaitingSelection:guarded}
 	c.server=&http.Server{Handler:http.HandlerFunc(c.serve),ReadHeaderTimeout:2*time.Second,ReadTimeout:5*time.Second,WriteTimeout:6*time.Second,IdleTimeout:2*time.Second,MaxHeaderBytes:4096}
 	c.server.SetKeepAlivesEnabled(false)
 	go func(){_ = c.server.Serve(l);c.Close()}()
@@ -96,6 +109,7 @@ func(c *Controller) Close(){
 	defer c.mu.Unlock()
 	if c.closed{return}
 	c.closed=true
+	if c.guarded { tunnel.SetNetVergeStartupFence(true) }
 	c.disableLocked()
 	_=c.listener.Close()
 	_=c.server.Close()
@@ -103,6 +117,12 @@ func(c *Controller) Close(){
 func(c *Controller) disableLocked(){
 	_=tunnel.SetNetVergeRouteHandler(nil,nil)
 	if c.current!=nil{c.current.close();c.current=nil}
+}
+func(c *Controller) commitSelectionLocked(){
+ if c.guarded {
+  c.awaitingSelection=false
+  tunnel.SetNetVergeStartupFence(false)
+ }
 }
 func(c *Controller) serve(w http.ResponseWriter,r *http.Request){
 	w.Header().Set("Cache-Control","no-store")
@@ -126,9 +146,11 @@ func(c *Controller) serve(w http.ResponseWriter,r *http.Request){
 			Protocol int `json:"protocol"`
 			Enabled bool `json:"enabled"`
 			Hosts []string `json:"hosts"`
-		}{protocol,c.current!=nil,hosts})
+            AwaitingSelection bool `json:"awaitingSelection,omitempty"`
+		}{protocol,c.current!=nil,hosts,c.awaitingSelection})
 	case http.MethodDelete:
 		c.disableLocked()
+        c.commitSelectionLocked()
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodPut:
 		if r.Header.Get("Content-Type")!="application/json"{w.WriteHeader(http.StatusUnsupportedMediaType);return}
@@ -151,6 +173,7 @@ func(c *Controller) serve(w http.ResponseWriter,r *http.Request){
 		old:=c.current
 		c.current=s
 		if old!=nil{old.close()}
+        c.commitSelectionLocked()
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)

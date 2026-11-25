@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	N "github.com/metacubex/mihomo/common/net"
 	C "github.com/metacubex/mihomo/constant"
@@ -25,6 +26,17 @@ type netVergeRouteConfig struct {
 var netVergeRouteState struct {
 	sync.RWMutex
 	config *netVergeRouteConfig
+}
+
+// The service laboratory can hold new TUN TCP/443 flows before the first
+// configuration is authenticated. Ordinary cores never arm this fence.
+// It is intentionally not an OS kill switch or protection for UDP/QUIC.
+var netVergeStartupFence atomic.Bool
+
+func SetNetVergeStartupFence(blocked bool) { netVergeStartupFence.Store(blocked) }
+
+func netVergeStartupBlocked(m *C.Metadata) bool {
+ return netVergeStartupFence.Load() && m.Type==C.TUN && m.NetWork==C.TCP && m.DstPort==443
 }
 
 // SetNetVergeRouteHandler is an internal Go-only seam for a future trusted

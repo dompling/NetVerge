@@ -36,10 +36,10 @@ function req(target,method,route,payload,extra={}){
   r.setTimeout(2500,()=>r.destroy(Error('timeout')));r.on('error',reject);r.end(body);
  });
 }
-async function run(exe,descriptor,fn,envLaunch=false){
+async function run(exe,descriptor,fn,envLaunch=false,restart=null){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'nv-pipe-lab-'));
- const pipe='\\\\.\\pipe\\netverge-service-lab-'+randomBytes(12).toString('hex');
- const [tcpPort,port]=await ports(),secret=randomBytes(24).toString('base64url');
+ const pipe=restart?.pipe??('\\\\.\\pipe\\netverge-service-lab-'+randomBytes(12).toString('hex'));
+ const [a,b]=await ports(),port=restart?.port??b,tcpPort=a===port?b:a,secret=randomBytes(24).toString('base64url');
  const env={...process.env};
  for(const k of ['NETVERGE_CORE_CONTROL_PORT','NETVERGE_CORE_CONTROL_SECRET','LISTEN_NAMEDPIPE_SDDL'])delete env[k];
  if(descriptor)env.LISTEN_NAMEDPIPE_SDDL=descriptor;
@@ -58,6 +58,7 @@ async function run(exe,descriptor,fn,envLaunch=false){
   assert.ok(ready,'pipe and TCP API must be ready');
   await fn(local,tcp,{port,secret});
  }finally{child.kill();await exited;fs.rmSync(dir,{recursive:true,force:true});}
+ return {pipe,port,secret};
 }
 async function main(){
  await run(normal,acl,async(p,t,i)=>{
@@ -65,7 +66,7 @@ async function main(){
   assert.equal((await req(t,'POST',endpoint,i)).status,404);
  });
  await run(lab,null,async(p,t,i)=>assert.equal((await req(p,'POST',endpoint,i)).status,404));
- await run(lab,acl,async(p,t,i)=>{
+ const previous=await run(lab,acl,async(p,t,i)=>{
   assert.equal((await req(t,'POST',endpoint,i)).status,404);
   assert.equal((await req(p,'POST',endpoint,i,{Origin:'http://example.test'})).status,403);
   assert.equal((await req(p,'POST',endpoint,{...i,extra:true})).status,400);
@@ -75,8 +76,19 @@ async function main(){
   const target={hostname:'127.0.0.1',port:i.port};
   assert.equal((await req(target,'GET','/v1/mitm',undefined,{Host:'127.0.0.1:'+i.port})).status,401);
   const r=await req(target,'GET','/v1/mitm',undefined,{Host:'127.0.0.1:'+i.port,Authorization:'Bearer '+i.secret});
-  assert.equal(r.status,200);assert.deepEqual(JSON.parse(r.body),{protocol:1,enabled:false,hosts:[]});
+  assert.equal(r.status,200);assert.deepEqual(JSON.parse(r.body),{protocol:1,enabled:false,hosts:[],awaitingSelection:true});
+  assert.equal((await req(target,'DELETE','/v1/mitm',undefined,{Host:'127.0.0.1:'+i.port,Authorization:'Bearer '+i.secret})).status,204);
+  const released=await req(target,'GET','/v1/mitm',undefined,{Host:'127.0.0.1:'+i.port,Authorization:'Bearer '+i.secret});
+  assert.deepEqual(JSON.parse(released.body),{protocol:1,enabled:false,hosts:[]});
  });
+ await run(lab,acl,async(p,t,i)=>{
+  assert.equal((await req(p,'POST',endpoint,i)).status,204);
+  const target={hostname:'127.0.0.1',port:i.port};
+  const headers={Host:'127.0.0.1:'+i.port,Authorization:'Bearer '+i.secret};
+  assert.equal((await req(target,'DELETE','/v1/mitm',undefined,{...headers,Authorization:'Bearer '+previous.secret})).status,401);
+  const fresh=await req(target,'GET','/v1/mitm',undefined,headers);
+  assert.deepEqual(JSON.parse(fresh.body),{protocol:1,enabled:false,hosts:[],awaitingSelection:true});
+ },false,previous);
  await run(lab,acl,async(p,t,i)=>assert.equal((await req(p,'POST',endpoint,i)).status,404),true);
  console.log('PASS: owner-pipe-only service-shaped bootstrap; ordinary core and TCP reject; no env-controller takeover; fresh controller disabled');
 }

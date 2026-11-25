@@ -106,6 +106,11 @@ jobs:
         env:
           NETVERGE_ROUTE_DYNAMIC_WORKER: ${{ github.workspace }}/netverge/engines/whistle/route-worker.cjs
         run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeLocalController$' -count=1 -timeout=5m -v
+      - name: Verify guarded service generation with real Whistle
+        working-directory: mihomo-source
+        env:
+          NETVERGE_ROUTE_DYNAMIC_WORKER: ${{ github.workspace }}/netverge/engines/whistle/route-worker.cjs
+        run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeGuardedController$' -count=1 -timeout=5m -v
       - name: Verify original route and single-use CONNECT lease
         working-directory: mihomo-source
         run: go test -tags with_gvisor ./tunnel -run '^TestNetVergeRouteLeaseOriginalDecision$' -count=1 -timeout=5m -v

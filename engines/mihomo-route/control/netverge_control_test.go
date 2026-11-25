@@ -20,7 +20,11 @@ import (
 	"github.com/metacubex/mihomo/tunnel"
 )
 
-func TestNetVergeLocalController(t *testing.T){
+func TestNetVergeLocalController(t *testing.T){testNetVergeController(t,false)}
+func TestNetVergeGuardedController(t *testing.T){testNetVergeController(t,true)}
+func testNetVergeController(t *testing.T,guarded bool){
+ t.Helper()
+ t.Cleanup(func(){tunnel.SetNetVergeStartupFence(false)})
 	t.Cleanup(tunnel.NetVergeLabRestoreState())
 	oldStatus:=tunnel.Status()
 	t.Cleanup(func(){switch oldStatus{case tunnel.Running:tunnel.OnRunning();case tunnel.Inner:tunnel.OnInnerLoading();default:tunnel.OnSuspend()}})
@@ -35,9 +39,11 @@ func TestNetVergeLocalController(t *testing.T){
 	tunnel.UpdateRules([]C.Rule{R.NewDomain(nvWhistleHost,a.Name())},nil,nil)
 	worker:=nvWhistleLaunch(t,origin.caPath,map[string]*nvLabLease{},nil)
 	secret:=nvWhistlePassword(t)
-	control,err:=netvergecontrol.Start(0,secret)
+	start:=netvergecontrol.Start
+ if guarded {start=netvergecontrol.StartGuarded}
+ control,err:=start(0,secret)
 	if err!=nil{t.Fatal(err)}
-	t.Cleanup(control.Close)
+	t.Cleanup(func(){control.Close()})
 	client:=&http.Client{Transport:&http.Transport{Proxy:nil,DisableKeepAlives:true},Timeout:5*time.Second}
 	defer client.CloseIdleConnections()
 	call:=func(method,token string,payload any)(int,map[string]any,error){
@@ -85,7 +91,14 @@ func TestNetVergeLocalController(t *testing.T){
 		if bytes.Equal(peer,origin.leaf)==mitm{return errors.New("unexpected TLS peer")}
 		return nil
 	}
-	if err=run(false);err!=nil{t.Fatal(err)}
+	if guarded {
+  if state["awaitingSelection"]!=true {t.Fatal("missing startup fence status")}
+  if err=run(false);err==nil||dials.Load()!=0||origin.requests.Load()!=0{t.Fatal("unconfirmed generation forwarded traffic")}
+  check("DELETE","invalid",nil,401)
+  if err=run(false);err==nil||dials.Load()!=0{t.Fatal("unauthorized disable released fence")}
+  check("DELETE",secret,nil,204)
+ }
+ if err=run(false);err!=nil{t.Fatal(err)}
 	check("PUT",secret,settings,204)
 	state=check("GET",secret,nil,200)
 	if state["enabled"]!=true||state["workerSecret"]!=nil||state["workerPort"]!=nil{t.Fatal("controller status invalid")}
@@ -95,5 +108,24 @@ func TestNetVergeLocalController(t *testing.T){
 	check("DELETE",secret,nil,204)
 	if err=run(false);err!=nil{t.Fatal(err)}
 	if dials.Load()!=4||origin.requests.Load()!=4||origin.leaked.Load(){t.Fatal("controller changed original routes or leaked credentials")}
+ if guarded {
+  // Controller replacement represents a newly supervised generation;
+  // the subprocess smoke separately restarts the actual executable.
+  control.Close()
+  oldSecret:=secret
+  secret=nvWhistlePassword(t)
+  control,err=start(0,secret)
+  if err!=nil{t.Fatal(err)}
+  check("GET",oldSecret,nil,401)
+  state=check("GET",secret,nil,200)
+  if state["awaitingSelection"]!=true||state["enabled"]!=false{t.Fatal("replacement generation not fenced")}
+  if err=run(false);err==nil||dials.Load()!=4||origin.requests.Load()!=4{t.Fatal("replacement forwarded before restoration")}
+  check("PUT",secret,bad,503)
+  if err=run(false);err==nil||dials.Load()!=4{t.Fatal("failed worker readiness released replacement fence")}
+  check("PUT",secret,settings,204)
+  if err=run(true);err!=nil{t.Fatal(err)}
+  if dials.Load()!=5||origin.requests.Load()!=5{t.Fatal("replacement did not preserve original route")}
+  t.Log("PASS: guarded generations reject pre-confirmation native TCP, reject stale credentials, restore with real Whistle")
+ }
 	t.Log("PASS: local authenticated controller enables native MITM, retains old state on bad worker, disables without profile rewrite")
 }

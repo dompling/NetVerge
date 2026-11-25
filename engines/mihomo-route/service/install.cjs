@@ -13,3 +13,10 @@ if(part.split(anchor).length!==2)throw Error('Unexpected pinned pipe handler');
 s=s.slice(0,start)+part.replace(anchor,()=> 'Handler: netvergeServicePipeHandler(router(cfg.IsDebug, "", cfg.DohServer, cfg.Cors)),')+s.slice(end);
 fs.writeFileSync(target,s);
 fs.copyFileSync(path.join(__dirname,'netverge_service_pipe_lab.go'),path.join(dir,'netverge_service_pipe_lab.go'));
+
+const main=path.join(process.argv[2],'main.go');
+let m=fs.readFileSync(main,'utf8').replace(/\r\n/g,'\n');
+function once(a,b){if(m.split(a).length!==2)throw Error('Unexpected main startup layout');m=m.replace(a,()=>b);}
+once('"github.com/metacubex/mihomo/hub/executor"','"github.com/metacubex/mihomo/hub/executor"\n\t"github.com/metacubex/mihomo/hub/route"');
+once('\n\tif err := hub.Parse(configBytes, options...); err != nil {','\n\troute.NetVergeServiceLabArm(externalControllerPipe)\n\tif err := hub.Parse(configBytes, options...); err != nil {');
+fs.writeFileSync(main,m);
