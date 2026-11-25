@@ -15,8 +15,13 @@ $scope = [Windows.Automation.TreeScope]::Descendants
 $nameProperty = [Windows.Automation.AutomationElement]::NameProperty
 $invoke = [Windows.Automation.InvokePattern]::Pattern
 
-function Find-Element([string]$Name) {
-    return $root.FindFirst($scope, [Windows.Automation.PropertyCondition]::new($nameProperty, $Name))
+function Find-Element([string]$Name, [Windows.Automation.ControlType]$Type) {
+    $condition = [Windows.Automation.PropertyCondition]::new($nameProperty, $Name, [Windows.Automation.PropertyConditionFlags]::IgnoreCase)
+    if ($Type) {
+        $kind = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, $Type)
+        $condition = [Windows.Automation.AndCondition]::new($condition, $kind)
+    }
+    return $root.FindFirst($scope, $condition)
 }
 
 switch ($Action) {
@@ -28,18 +33,14 @@ switch ($Action) {
             'CONTINUED'
             break
         }
-        $links = $root.FindAll($scope, [Windows.Automation.PropertyCondition]::new(
-            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Hyperlink))
-        foreach ($link in $links) {
-            if ($link.Current.Name -eq 'MITM' -and $link.Current.IsEnabled) {
-                $link.GetCurrentPattern($invoke).Invoke()
-                'OK'
-                break
-            }
+        $button = Find-Element 'MITM' ([Windows.Automation.ControlType]::Button)
+        if ($button -and $button.Current.IsEnabled) {
+            $button.GetCurrentPattern($invoke).Invoke()
+            'OK'
         }
     }
     'Switch' {
-        $element = Find-Element 'Windows MITM service mode'
+        $element = Find-Element 'Windows MITM service mode' ([Windows.Automation.ControlType]::CheckBox)
         if ($element -and $element.Current.IsEnabled) {
             $toggle = $element.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
             if ($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::Off) { $toggle.Toggle() }
