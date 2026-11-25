@@ -1,0 +1,76 @@
+diff --git a/src/channel.rs b/src/channel.rs
+index 06ca0c9..052afe3 100644
+--- a/src/channel.rs
++++ b/src/channel.rs
+@@ -34,6 +34,19 @@ pub const SERVICE_DISPLAY_NAME: &str = CHANNEL_IDENTITY.service_display_name;
+ pub const MACOS_APP_BUNDLE_ID: &str = CHANNEL_IDENTITY.macos_app_bundle_id;
+ pub const MACOS_SERVICE_ID: &str = CHANNEL_IDENTITY.macos_service_id;
+
++#[cfg(all(windows, feature = "development-channel"))]
++pub(crate) const NETVERGE_GUARDED_CORE_NAME: &str = "netverge-mihomo-service.exe";
++
++#[cfg(any(feature = "client", feature = "standalone"))]
++pub(crate) fn is_supported_core_name(name: &str) -> bool {
++    #[cfg(all(windows, feature = "development-channel"))]
++    if name == NETVERGE_GUARDED_CORE_NAME {
++        return true;
++    }
++
++    matches!(name.strip_suffix(std::env::consts::EXE_SUFFIX), Some("verge-mihomo" | "verge-mihomo-alpha"))
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::CHANNEL_IDENTITY;
+diff --git a/src/core/installation.rs b/src/core/installation.rs
+index a7c5e24..058cb77 100644
+--- a/src/core/installation.rs
++++ b/src/core/installation.rs
+@@ -50,11 +50,7 @@ pub(super) async fn inspect(
+ }
+
+ fn inspect_core(directory: &Path, required: &CoreRequirement) -> CoreAvailability {
+-    let allowed = [
+-        format!("verge-mihomo{}", std::env::consts::EXE_SUFFIX),
+-        format!("verge-mihomo-alpha{}", std::env::consts::EXE_SUFFIX),
+-    ];
+-    if !allowed.contains(&required.name) {
++    if !crate::channel::is_supported_core_name(&required.name) {
+         return CoreAvailability::Rejected {
+             reason: "unsupported core name".into(),
+         };
+diff --git a/src/execution_windows.rs b/src/execution_windows.rs
+index 9af30d9..c991daf 100644
+--- a/src/execution_windows.rs
++++ b/src/execution_windows.rs
+@@ -59,7 +59,12 @@ pub(super) fn require_stopped_service() -> Result<()> {
+
+ pub(super) fn require_no_core_process(include_service: bool) -> Result<()> {
+     #[cfg(not(feature = "test"))]
+-    const CORE_NAMES: &[&str] = &["verge-mihomo.exe", "verge-mihomo-alpha.exe"];
++    const CORE_NAMES: &[&str] = &[
++        "verge-mihomo.exe",
++        "verge-mihomo-alpha.exe",
++        #[cfg(feature = "development-channel")]
++        crate::channel::NETVERGE_GUARDED_CORE_NAME,
++    ];
+     #[cfg(feature = "test")]
+     const CORE_NAMES: &[&str] = &["mock_binary.exe", "crash_binary.exe"];
+     let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+diff --git a/src/management.rs b/src/management.rs
+index cbc8ba1..11347e2 100644
+--- a/src/management.rs
++++ b/src/management.rs
+@@ -165,11 +165,7 @@ impl PreparedCores {
+         };
+         for core in cores {
+             anyhow::ensure!(
+-                [
+-                    format!("verge-mihomo{}", std::env::consts::EXE_SUFFIX),
+-                    format!("verge-mihomo-alpha{}", std::env::consts::EXE_SUFFIX)
+-                ]
+-                .contains(&core.name),
++                crate::channel::is_supported_core_name(&core.name),
+                 "unsupported core name {}",
+                 core.name
+             );

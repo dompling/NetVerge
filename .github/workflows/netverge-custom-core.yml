@@ -116,6 +116,27 @@ jobs:
           cargo test --locked --manifest-path $manifest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo run --locked --manifest-path $manifest -- "$core" "$worker"
+      - uses: actions/checkout@v7
+        if: runner.os == 'Windows'
+        with:
+          repository: clash-verge-rev/clash-verge-service-ipc
+          ref: 9d4ea7d27fb3c43804bd18f3bb3b686528763239
+          path: service-source
+          persist-credentials: false
+      - name: Verify dedicated core installation through the Windows development service
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 8
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_INCREMENTAL: '0'
+        run: |
+          $patch = Join-Path $env:GITHUB_WORKSPACE 'netverge/engines/mihomo-route/service/windows-install.patch'
+          git -C service-source apply --whitespace=error $patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked --manifest-path service-source/Cargo.toml --features standalone,client,development-channel --bin clash-verge-service --bin clash-verge-service-install --bin clash-verge-service-uninstall
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./netverge/engines/mihomo-route/service/test-windows-install.ps1 -BuildDirectory './service-source/target/debug' -GuardedCore './service-lab/mihomo-service-lab.exe'
       - uses: actions/upload-artifact@v4
         with:
           name: mihomo-netverge-${{ matrix.os }}-${{ github.sha }}
