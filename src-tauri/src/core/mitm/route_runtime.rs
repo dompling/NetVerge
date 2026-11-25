@@ -1,7 +1,7 @@
 //! Original-route MITM development adapter. Reuses the existing process,
 //! CA verification, health snapshots, and generation-scoped recovery budget.
 //! It does not reopen the legacy YAML overlay or ordinary product activation.
-use super::{Health, MitmPublicCa, MitmSettings, PUBLIC_STATE, PublicState, RecoveryBudget, MAX_RECOVERY_ATTEMPTS, valid_host};
+use super::{Health, MitmPublicCa, MitmSettings, PUBLIC_STATE, PublicState, RecoveryBudget, MAX_RECOVERY_ATTEMPTS, valid_host, controller_state::{CoreState, same_hosts}};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}};
 use parking_lot::Mutex;
@@ -165,12 +165,6 @@ pub(crate) async fn prepare_sidecar() -> Result<Option<Launch>> {
 }
 
 #[derive(Deserialize)]
-struct CoreState {
-    protocol: u32,
-    enabled: bool,
-    hosts: Vec<String>,
-}
-#[derive(Deserialize)]
 struct WorkerState {
     protocol: u32,
     hosts: Vec<String>,
@@ -216,7 +210,7 @@ impl Launch {
         let (code, body) = self.core("GET", &[])?;
         ensure!(code == 200, "custom Mihomo controller authentication failed");
         let state: CoreState = serde_json::from_slice(&body)?;
-        ensure!(state.protocol == 1, "custom Mihomo controller protocol mismatch");
+        state.verify_protocol()?;
         Ok(state)
     }
 
@@ -241,21 +235,13 @@ impl Launch {
     }
 
     fn verify_disabled(&self) -> Result<()> {
-        let state = self.core_state()?;
-        ensure!(!state.enabled && state.hosts.is_empty(), "custom Mihomo disable not confirmed");
-        Ok(())
+        self.core_state()?.verify_selection(false, &[])
     }
 
     fn verify(&self) -> Result<()> {
         self.worker_ready()?;
-        let state = self.core_state()?;
-        ensure!(state.enabled && same_hosts(&state.hosts, &self.settings.hosts), "original-route core configuration mismatch");
-        Ok(())
+        self.core_state()?.verify_selection(true, &self.settings.hosts)
     }
-}
-
-fn same_hosts(a: &[String], b: &[String]) -> bool {
-    a.len() == b.len() && a.iter().collect::<BTreeSet<_>>() == b.iter().collect::<BTreeSet<_>>()
 }
 
 struct RouteSession {
@@ -411,8 +397,9 @@ pub(crate) async fn activate(launch: Launch, generation: u64) -> Result<()> {
         session.recovery.activate(generation);
         session.publish(Health::Checking);
         let result = (|| {
-            let state = session.launch.core_state()?;
-            ensure!(!state.enabled, "new custom core must start with MITM disabled");
+            // An ordinary sidecar must be confirmed disabled, not an
+            // uncommitted service-style generation.
+            session.launch.verify_disabled()?;
             if session.launch.restore_enabled {
                 let selection = MitmSettings { enable: true, hostname: session.launch.settings.hosts.clone(), policy: None };
                 session.change(selection)?;
@@ -515,6 +502,32 @@ pub(super) async fn save(expected: String, candidate: MitmSettings) -> Result<Op
     let (selection, revision, saved) = match applied {
         Ok(applied) => applied,
         Err(err) => {
+            // A failed runtime PUT/DELETE can have reached the controller.
+            // Never mark the old selection committed merely because change()
+            // returned an error. Keep the pending marker unless the previous
+            // scope and its CA/worker have been verified again.
+            let restored = tokio::task::spawn_blocking({
+                let previous = before.selection();
+                let expected_ca = before.ca_fingerprint.clone();
+                move || {
+                    let mut guard = ROUTE.lock();
+                    let Some(session) = guard.as_mut() else { return false; };
+                    if session.recovery.generation != Some(generation) || session.selection() != previous {
+                        session.publish(Health::Degraded);
+                        return false;
+                    }
+                    let verified = if previous.enable {
+                        session.ca.as_ref().is_some_and(|ca| Some(&ca.sha256_fingerprint) == expected_ca.as_ref())
+                            && session.child.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+                            && session.launch.verify().is_ok()
+                    } else {
+                        session.launch.verify_disabled().is_ok()
+                    };
+                    if !verified { session.publish(Health::Degraded); }
+                    verified
+                }
+            }).await?;
+            ensure!(restored, "MITM change failed and previous scope could not be verified; pending selection retained, restart blocked until reviewed");
             write_saved(&data, &before).await.context("MITM change failed and previous selection could not be saved; restart is blocked until reviewed")?;
             return Err(err);
         }

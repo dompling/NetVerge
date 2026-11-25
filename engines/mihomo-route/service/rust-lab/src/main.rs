@@ -1,6 +1,9 @@
 //! Run on a disposable Windows CI runner only. Uses the actual upstream
 //! service IPC and watchdog in test mode (no service registration/elevation).
-mod transport;
+#[path = "../../../../../src-tauri/src/core/mitm/service_restore.rs"]
+mod service_restore;
+#[path = "../../../../../src-tauri/src/core/mitm/controller_state.rs"]
+mod controller_state;
 #[path = "../../../../../src-tauri/src/core/mitm/service_generation.rs"]
 mod service_generation;
 #[path = "../../../../../src-tauri/src/core/mitm/control_http.rs"]
@@ -17,7 +20,7 @@ use clash_verge_service_ipc::{
 use std::{path::{Path, PathBuf}, process::Stdio, time::Duration};
 use tokio::{io::{AsyncBufReadExt, BufReader}, process::{Child, Command}, sync::oneshot, time::{sleep, timeout}};
 use service_generation::{Generation, GenerationWatch, Transition};
-use transport::{BoundController, current, free_port, secret};
+use service_restore::{BoundController, CommittedSelection, WorkerLink, current, free_port, secret};
 use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess}};
 
 async fn wait_core(credentials: &OwnerCredentials, proof: &OwnerSessionProof, previous: Option<Generation>) -> Result<Generation> {
@@ -67,7 +70,7 @@ fn isolated_worker_command(script: &Path, data: &Path) -> Command {
     command
 }
 
-struct Worker { child: Child, port: u16, secret: String }
+struct Worker { child: Child, port: u16, secret: String, ca_fingerprint: String }
 impl Worker {
     async fn start(script: &Path, data: &Path) -> Result<Self> {
         // Each test uses its own fresh data root; never reuse the runner's CA.
@@ -85,18 +88,22 @@ impl Worker {
             }))?)
             .spawn()?;
         let mut lines = BufReader::new(child.stdout.take().context("worker stdout missing")?).lines();
-        timeout(Duration::from_secs(30), async {
+        let ca_fingerprint = timeout(Duration::from_secs(30), async {
             loop {
                 let line = lines.next_line().await?.context("worker exited before readiness; inspect sanitized Whistle initialization stage")?;
                 if let Some(ca) = line.strip_prefix("NETVERGE_MITM_READY ") {
                     ensure!(!ca.is_empty() && ca.len() <= 22000, "invalid worker CA readiness");
-                    return Ok::<_, anyhow::Error>(());
+                    use base64::Engine as _;
+                    use sha2::{Digest, Sha256};
+                    let der = base64::engine::general_purpose::STANDARD.decode(ca)?;
+                    ensure!(!der.is_empty() && der.len() <= 16384, "invalid worker CA DER");
+                    return Ok::<_, anyhow::Error>(format!("{:x}", Sha256::digest(&der)));
                 }
             }
         }).await.context("worker readiness timed out")??;
         tokio::spawn(async move { while matches!(lines.next_line().await, Ok(Some(_))) {} });
         println!("PASS: isolated Whistle worker initialized and returned its verified CA");
-        Ok(Self { child, port, secret })
+        Ok(Self { child, port, secret, ca_fingerprint })
     }
 }
 
@@ -117,10 +124,15 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
     println!("PASS: initial authenticated service core generation {first:?}");
     let port = free_port()?;
     ensure!(port != worker.port, "fixture ports collide");
-    let controller = BoundController::connect(credentials, proof, first, port).await?;
-    controller.apply(credentials, proof, &["api.example.test"], worker.port, &worker.secret).await?;
-    controller.confirm_current(credentials, proof).await?;
-    println!("PASS: Rust owner/PID-bound named-pipe bootstrap and real Whistle selection");
+    let enabled = CommittedSelection { enabled: true, hosts: vec!["api.example.test".into()], ca_fingerprint: Some(worker.ca_fingerprint.clone()) };
+    let disabled = CommittedSelection { enabled: false, hosts: enabled.hosts.clone(), ca_fingerprint: enabled.ca_fingerprint.clone() };
+    let link = || WorkerLink { port: worker.port, secret: &worker.secret, ca_fingerprint: &worker.ca_fingerprint };
+    let controller = BoundController::new(first, port)?;
+    controller.bootstrap(credentials, proof).await?.verify_pending()?;
+    controller.restore(credentials, proof, &enabled, Some(link())).await?;
+    // Replay the same generation and selection, as after an uncertain reply.
+    controller.restore(credentials, proof, &enabled, Some(link())).await?;
+    println!("PASS: Rust owner/PID-bound bootstrap and idempotent committed selection");
     terminate_fixture(first.pid)?;
     ensure!(watch.observe(None) == Transition::Unavailable && watch.current().is_none(), "lost generation still current");
     let second = wait_core(credentials, proof, Some(first)).await?;
@@ -129,17 +141,32 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
     ensure!(watch.observe(Some(second)) == Transition::Reconfirmed && watch.current() == Some(second), "replacement not reconfirmed");
     println!("PASS: service watchdog published replacement core generation {second:?}");
     ensure!(controller.confirm_current(credentials, proof).await.is_err(), "old generation remained current");
-    let fresh = BoundController::connect(credentials, proof, second, port).await?;
+    let fresh = BoundController::new(second, port)?;
+    fresh.bootstrap(credentials, proof).await?.verify_pending()?;
+    // Same credential after a possible lost bootstrap acknowledgement.
+    fresh.bootstrap(credentials, proof).await?.verify_pending()?;
     ensure!(fresh.request("DELETE", &controller.secret, &[]).await?.0 == 401, "old controller secret accepted");
     let invalid = secret()?;
-    ensure!(fresh.apply(credentials, proof, &["api.example.test"], worker.port, &invalid).await.is_err(), "invalid worker accepted");
-    ensure!(fresh.state().await?.awaiting_selection, "failed restoration released startup fence");
-    fresh.apply(credentials, proof, &["api.example.test"], worker.port, &worker.secret).await?;
-    ensure!(fresh.state().await?.enabled, "new core did not restore MITM");
-    println!("PASS: actual service watchdog replaced core, rejected old credentials and restored Whistle scope");
+    ensure!(fresh.restore(credentials, proof, &enabled, Some(WorkerLink { secret: &invalid, ..link() })).await.is_err(), "invalid worker accepted");
+    fresh.state().await?.verify_pending()?;
+    let bad_ca = "0".repeat(64);
+    ensure!(fresh.restore(credentials, proof, &enabled, Some(WorkerLink { ca_fingerprint: &bad_ca, ..link() })).await.is_err(), "changed worker CA accepted");
+    fresh.state().await?.verify_pending()?;
+    fresh.restore(credentials, proof, &enabled, Some(link())).await?;
+    fresh.restore(credentials, proof, &enabled, Some(link())).await?;
+    fresh.state().await?.verify_selection(true, &enabled.hosts)?;
+    println!("PASS: actual watchdog restored committed scope; stale credentials and CA mismatch rejected");
+    // This is a deliberate owner disable, not an automatic fallback.
     ensure!(fresh.request("DELETE", &fresh.secret, &[]).await?.0 == 204, "disable rejected");
-    let state = fresh.state().await?;
-    ensure!(!state.enabled && !state.awaiting_selection, "disable did not settle generation");
+    fresh.state().await?.verify_selection(false, &[])?;
+    terminate_fixture(second.pid)?;
+    let third = wait_core(credentials, proof, Some(second)).await?;
+    let replacement = BoundController::new(third, port)?;
+    replacement.bootstrap(credentials, proof).await?.verify_pending()?;
+    replacement.restore(credentials, proof, &disabled, None).await?;
+    replacement.restore(credentials, proof, &disabled, None).await?;
+    replacement.state().await?.verify_selection(false, &[])?;
+    println!("PASS: explicitly disabled selection stays disabled after actual watchdog restart");
     Ok(())
 }
 

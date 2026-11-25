@@ -21,6 +21,7 @@ pub(crate) mod settings;
 pub(crate) mod route_runtime;
 pub(crate) mod service_generation;
 mod control_http;
+mod controller_state;
 #[cfg(windows)]
 pub(crate) mod service_pipe;
 
