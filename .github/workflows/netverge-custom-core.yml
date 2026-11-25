@@ -82,6 +82,23 @@ jobs:
           mkdir -p ../service-lab
           go build -tags "with_gvisor netverge_service_lab" -trimpath -o ../service-lab/mihomo-service-lab.exe .
           node ../netverge/engines/mihomo-route/service/smoke.cjs ../artifact/mihomo-netverge.exe ../service-lab/mihomo-service-lab.exe
+      - name: Set up Rust for isolated service integration
+        if: runner.os == 'Windows'
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install Whistle for the service integration
+        if: runner.os == 'Windows'
+        working-directory: netverge/engines/whistle
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Exercise actual upstream service watchdog from Rust
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_INCREMENTAL: '0'
+        run: |
+          $core = Join-Path $env:GITHUB_WORKSPACE 'service-lab/mihomo-service-lab.exe'
+          $worker = Join-Path $env:GITHUB_WORKSPACE 'netverge/engines/whistle/route-worker.cjs'
+          cargo run --manifest-path netverge/engines/mihomo-route/service/rust-lab/Cargo.toml -- "$core" "$worker"
       - uses: actions/upload-artifact@v4
         with:
           name: mihomo-netverge-${{ matrix.os }}-${{ github.sha }}
