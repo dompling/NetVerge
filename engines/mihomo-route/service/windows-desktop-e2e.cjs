@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
+const http = require('node:http');
 const { once } = require('node:events');
 const { spawn, execFileSync } = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
@@ -73,8 +74,20 @@ function stopTree(child) {
 
 async function cdp(port, oldId) {
   return until('desktop WebView', async () => {
-    const response = await fetch('http://127.0.0.1:' + port + '/json/list', { signal: AbortSignal.timeout(1800) });
-    const page = (await response.json()).find(item => item.type === 'page' && item.id !== oldId && /tauri\.localhost|tauri:\/\/localhost/.test(item.url));
+    const targets = await new Promise((resolve, reject) => {
+      const request = http.get({ host: '127.0.0.1', port, path: '/json/list', agent: false }, response => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', chunk => { body += chunk; });
+        response.on('error', reject);
+        response.on('end', () => {
+          try { resolve(JSON.parse(body)); } catch (error) { reject(error); }
+        });
+      });
+      request.on('error', reject);
+      request.setTimeout(1800, () => request.destroy(new Error('WebView HTTP request timed out')));
+    });
+    const page = targets.find(item => item.type === 'page' && item.id !== oldId && /tauri\.localhost|tauri:\/\/localhost/.test(item.url));
     if (!page) return;
     const endpoint = new URL(page.webSocketDebuggerUrl);
     assert.equal(endpoint.hostname, '127.0.0.1');
@@ -145,7 +158,8 @@ async function main() {
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'netverge-desktop-e2e-'));
   const bootstrap = path.join(temp, 'bootstrap.json');
-  let origin, seed, desktop, page, attemptedInstall = false;
+  let origin, seed, desktop, page, debugPort, registryConfigured = false, attemptedInstall = false;
+  const registry = 'HKCU:\\Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments';
   let desktopOutput = '';
   try {
     origin = spawn(process.execPath, [netFixture, 'serve', temp], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
@@ -160,7 +174,12 @@ async function main() {
       `require(${JSON.stringify(worker)});`,
     ].join('\n'));
     const dnsPort = await freePort();
-    const debugPort = await freePort();
+    debugPort = await freePort();
+    const debugArgs = '--remote-debugging-port=' + debugPort + ' --remote-debugging-address=127.0.0.1';
+    powershell("$key = " + q(registry) + "; New-Item -Path $key -Force | Out-Null;" +
+      "if (Get-ItemPropertyValue -LiteralPath $key -Name 'NetVerge-MITM.exe' -ErrorAction SilentlyContinue) { throw 'Existing WebView debugger policy' };" +
+      "New-ItemProperty -LiteralPath $key -Name 'NetVerge-MITM.exe' -PropertyType String -Value " + q(debugArgs) + ' | Out-Null');
+    registryConfigured = true;
     fs.mkdirSync(path.join(appRoot, 'profiles'), { recursive: true });
     fs.mkdirSync(mitm);
     const bootstrapBytes = JSON.stringify({ node, worker: fixtureWorker, hosts: [selected] });
@@ -215,7 +234,7 @@ async function main() {
         CLASH_VERGE_DEV_SERVICE_DIR: path.join(root, 'service'),
         NETVERGE_MITM_ROUTE_DEV_CONFIG: bootstrap,
         NETVERGE_MITM_SERVICE_CORE_SHA256: coreDigest,
-        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=' + debugPort + ' --remote-debugging-address=127.0.0.1',
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: debugArgs,
         WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'WebView2'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -263,6 +282,10 @@ async function main() {
       }
     }
     console.error(powershell("Get-Process -Name 'NetVerge-MITM','msedgewebview2' -ErrorAction SilentlyContinue | Select-Object ProcessName,Id,SessionId | ConvertTo-Json -Compress; exit 0"));
+    if (debugPort) console.error(powershell(
+      "Get-CimInstance Win32_Process -Filter \"Name = 'msedgewebview2.exe'\" | ForEach-Object { " +
+      "[pscustomobject]@{ProcessId=$_.ProcessId;HasDebugFlag=$_.CommandLine -match 'remote-debugging-port=" + debugPort + "'} } | ConvertTo-Json -Compress;"
+      + ' Get-NetTCPConnection -LocalPort ' + debugPort + ' -State Listen -ErrorAction SilentlyContinue | Select-Object LocalAddress,OwningProcess | ConvertTo-Json -Compress; exit 0'));
     throw error;
   } finally {
     page?.close();
@@ -270,6 +293,7 @@ async function main() {
     stopTree(desktop);
     stopTree(origin);
     if (desktop) powershell("Get-Process -Name 'NetVerge-MITM' -ErrorAction SilentlyContinue | Where-Object Path -eq " + q(app) + ' | Stop-Process -Force; exit 0');
+    if (registryConfigured) powershell('Remove-ItemProperty -LiteralPath ' + q(registry) + " -Name 'NetVerge-MITM.exe'; exit 0");
     if (attemptedInstall) powershell("& " + q(launcher) + ' -Action Uninstall', 'inherit');
     fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
