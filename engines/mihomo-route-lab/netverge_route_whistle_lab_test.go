@@ -162,7 +162,7 @@ func nvWhistleLaunch(t *testing.T, caPath string, routes map[string]*nvLabLease,
 	}
 	settings, err := json.Marshal(config)
 	if err != nil { t.Fatal(err) }
-	cmd := exec.Command("node", worker)
+	cmd := nvWhistleCommand(worker)
 	env := make([]string, 0, len(os.Environ()) + 4)
 	for _, entry := range os.Environ() {
 		key := strings.ToUpper(strings.SplitN(entry, "=", 2)[0])
@@ -183,11 +183,13 @@ func nvWhistleLaunch(t *testing.T, caPath string, routes map[string]*nvLabLease,
 	if err != nil { t.Fatal(err) }
 	// Avoid logging worker credentials, keys or arbitrary child stdout.
 	cmd.Stderr = os.Stderr
-	if err = cmd.Start(); err != nil { t.Fatal(err) }
+	stopTree, err := nvWhistleStartContained(cmd, stdin)
+	if err != nil { t.Fatal(err) }
 	w := &nvWhistleWorker{port:port, auth:"Basic "+base64.StdEncoding.EncodeToString([]byte("netverge:"+password)), cmd:cmd, done:make(chan struct{})}
 	t.Cleanup(func() {
 		_ = stdin.Close()
-		_ = w.cmd.Process.Kill()
+		// Wait for every descendant before testing.T.TempDir cleanup.
+		if err := stopTree(); err != nil { t.Errorf("Whistle process tree cleanup: %v", err) }
 		select {
 		case <-w.done:
 		case <-time.After(5*time.Second):
