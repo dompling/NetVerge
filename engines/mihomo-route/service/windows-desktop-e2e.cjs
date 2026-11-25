@@ -7,7 +7,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { once } = require('node:events');
 const { spawn, execFileSync } = require('node:child_process');
-const { createHash, randomBytes, X509Certificate } = require('node:crypto');
+const { createHash, randomBytes } = require('node:crypto');
 const { setTimeout: sleep } = require('node:timers/promises');
 
 const selected = 'api.example.test';
@@ -145,21 +145,24 @@ async function main() {
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'netverge-desktop-e2e-'));
   const bootstrap = path.join(temp, 'bootstrap.json');
-  let origin, seed, desktop, page, thumbprint, attemptedInstall = false;
+  let origin, seed, desktop, page, attemptedInstall = false;
   try {
     origin = spawn(process.execPath, [netFixture, 'serve', temp], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
     const { exitPort, upstreamDnsPort } = JSON.parse(await firstLine(origin, 'TLS origin fixture'));
-    // Only the disposable runner trusts the local origin CA. The TLS probe verifies
-    // the Whistle CA explicitly and never installs that CA to the Windows store.
-    const originCertificate = path.join(temp, 'origin-ca.cer');
-    fs.writeFileSync(originCertificate, new X509Certificate(fs.readFileSync(path.join(temp, 'origin-ca.pem'))).raw);
-    thumbprint = powershell('(Import-Certificate -FilePath ' + q(originCertificate) + " -CertStoreLocation Cert:\\CurrentUser\\Root).Thumbprint");
-    assert.match(thumbprint, /^[A-Fa-f0-9]{40}$/);
+    // Set the origin trust only inside the fixture worker, keeping TLS
+    // verification enabled without changing the Windows certificate store.
+    const fixtureWorker = path.join(temp, 'route-worker.cjs');
+    fs.writeFileSync(fixtureWorker, [
+      "const tls = require('node:tls');",
+      "const fs = require('node:fs');",
+      `tls.setDefaultCACertificates([...tls.getCACertificates('default'), fs.readFileSync(${JSON.stringify(path.join(temp, 'origin-ca.pem'))}, 'utf8')]);`,
+      `require(${JSON.stringify(worker)});`,
+    ].join('\n'));
     const dnsPort = await freePort();
     const debugPort = await freePort();
     fs.mkdirSync(path.join(appRoot, 'profiles'), { recursive: true });
     fs.mkdirSync(mitm);
-    const bootstrapBytes = JSON.stringify({ node, worker, hosts: [selected] });
+    const bootstrapBytes = JSON.stringify({ node, worker: fixtureWorker, hosts: [selected] });
     fs.writeFileSync(bootstrap, bootstrapBytes);
 
     const caConfig = { dataDir: mitm, port: await freePort(), hosts: [selected], targetPort: 443, controlSecret: randomBytes(24).toString('base64url') };
@@ -211,7 +214,6 @@ async function main() {
         CLASH_VERGE_DEV_SERVICE_DIR: path.join(root, 'service'),
         NETVERGE_MITM_ROUTE_DEV_CONFIG: bootstrap,
         NETVERGE_MITM_SERVICE_CORE_SHA256: coreDigest,
-        NODE_USE_SYSTEM_CA: '1',
         WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=' + debugPort + ' --remote-debugging-address=127.0.0.1',
       },
       stdio: 'ignore',
@@ -250,8 +252,7 @@ async function main() {
     stopTree(seed);
     stopTree(desktop);
     stopTree(origin);
-    powershell("Get-Process -Name 'NetVerge-MITM' -ErrorAction SilentlyContinue | Where-Object Path -eq " + q(app) + ' | Stop-Process -Force');
-    if (thumbprint && /^[A-Fa-f0-9]{40}$/.test(thumbprint)) powershell("Remove-Item -LiteralPath 'Cert:\\CurrentUser\\Root\\" + thumbprint + "' -ErrorAction SilentlyContinue");
+    if (desktop) powershell("Get-Process -Name 'NetVerge-MITM' -ErrorAction SilentlyContinue | Where-Object Path -eq " + q(app) + ' | Stop-Process -Force; exit 0');
     if (attemptedInstall) powershell("& " + q(launcher) + ' -Action Uninstall', 'inherit');
     fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
