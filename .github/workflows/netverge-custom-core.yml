@@ -98,7 +98,14 @@ jobs:
         run: |
           $core = Join-Path $env:GITHUB_WORKSPACE 'service-lab/mihomo-service-lab.exe'
           $worker = Join-Path $env:GITHUB_WORKSPACE 'netverge/engines/whistle/route-worker.cjs'
-          cargo run --manifest-path netverge/engines/mihomo-route/service/rust-lab/Cargo.toml -- "$core" "$worker"
+          $manifest = 'netverge/engines/mihomo-route/service/rust-lab/Cargo.toml'
+          # The service v2.8.1 lock pins this compatible logging revision.
+          # A fresh independent workspace otherwise follows tracing-estuary main (flexi_logger 0.32).
+          cargo generate-lockfile --manifest-path $manifest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo update --manifest-path $manifest -p tracing-estuary --precise dbfce033fa4cff8f936f3e7c2282af1277546f3c
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo run --locked --manifest-path $manifest -- "$core" "$worker"
       - uses: actions/upload-artifact@v4
         with:
           name: mihomo-netverge-${{ matrix.os }}-${{ github.sha }}
