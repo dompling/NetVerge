@@ -644,6 +644,17 @@ impl CoreManager {
 
         let startup = self.prepare_startup().await;
         tracing::Span::current().record("decision", tracing::field::debug(&startup));
+        if crate::core::mitm::route_runtime::service_requested() {
+            let result = match startup {
+                StartupDecision::Service => self.start_core_by_service().await,
+                _ => Err(anyhow::anyhow!("guarded MITM service mode requires a ready Windows development service")),
+            };
+            if let Err(error) = &result {
+                crate::core::mitm::route_runtime::report_service_failure(error);
+                self.rollback_failed_start().await;
+            }
+            return result;
+        }
         if matches!(startup, StartupDecision::Wait) {
             self.rollback_failed_start().await;
             #[cfg(target_os = "macos")]
@@ -730,6 +741,9 @@ impl CoreManager {
     async fn start_sidecar_after_service_failure(&self, error: anyhow::Error) -> Result<()> {
         use crate::core::runstate::RUN_STATE;
 
+        if crate::core::mitm::route_runtime::service_requested() {
+            return Err(error.context("guarded MITM service mode requires the approved service core"));
+        }
         if Handle::global().is_exiting() {
             return Err(error.context("application exited before Sidecar fallback"));
         }
@@ -850,7 +864,8 @@ impl CoreManager {
         #[cfg(target_os = "windows")]
         self.wait_for_service_if_needed().await;
 
-        let service_required = Config::verge().await.latest_arc().enable_tun_mode.unwrap_or(false);
+        let service_required = crate::core::mitm::route_runtime::service_requested()
+            || Config::verge().await.latest_arc().enable_tun_mode.unwrap_or(false);
         if service_required
             && matches!(SERVICE_MANAGER.current().await, ServiceStatus::NotInstalled)
             && SERVICE_MANAGER.require_install_for_session().is_err()

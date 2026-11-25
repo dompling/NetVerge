@@ -726,6 +726,8 @@
   },
   "mitm": {
     "title": "MITM",
+    "serviceMode": "Windows MITM 服務模式",
+    "serviceRestartRequired": "重新啟動 NetVerge 後套用服務模式設定。",
     "summary": "實驗性 HTTPS 解密與憑證管理",
     "experimental": "目前僅支援本機開發設定，使用 Clash YAML 與指定網域。儲存不會改變執行中的引擎或系統信任。",
     "inactive": "未設定",

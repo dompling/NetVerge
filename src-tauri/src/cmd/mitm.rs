@@ -7,6 +7,14 @@ pub fn get_mitm_status() -> MitmStatus {
     mitm::status()
 }
 
+/// Save the guarded service preference for the next complete app start.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_mitm_service_mode(enabled: bool) -> super::CmdResult<()> {
+    use super::StringifyErr as _;
+    mitm::route_runtime::set_service_preference(enabled).await.stringify_err()
+}
+
 /// Returns the last verified public CA only. Never installs trust or exports a private key.
 #[tauri::command]
 #[specta::specta]

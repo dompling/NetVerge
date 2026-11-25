@@ -58,7 +58,9 @@ fn after_change_clash_mode() {
 pub async fn change_clash_mode(mode: String) -> Result<(), String> {
     // Development MITM uses rule-mode guards on both legs. Never PATCH them away.
     let config_write = Config::lock_config_write().await;
-    if crate::core::mitm::development_requested() && !mode.as_str().eq_ignore_ascii_case("rule") {
+    if (crate::core::mitm::development_requested() || crate::core::mitm::route_runtime::service_requested())
+        && !mode.as_str().eq_ignore_ascii_case("rule")
+    {
         return Err("MITM development session requires Rule mode; restart without the MITM development flag to change mode".into());
     }
     let mut mapping = Mapping::new();

@@ -160,6 +160,10 @@ impl CoreManager {
 
     #[tracing::instrument(skip_all, level = "info", fields(pid = tracing::field::Empty))]
     pub(super) async fn start_core_by_sidecar(&self) -> Result<()> {
+        anyhow::ensure!(
+            !crate::core::mitm::route_runtime::service_requested(),
+            "guarded MITM service mode requires the approved Windows service core"
+        );
         #[cfg(target_os = "windows")]
         if !crate::core::runstate::RUN_STATE.state().is_admin && crate::core::mitm::runtime_requests_mitm().await {
             anyhow::bail!("MITM requires an elevated TUN-capable core; refusing sidecar fallback");
@@ -380,7 +384,16 @@ impl CoreManager {
 
     #[tracing::instrument(skip_all, level = "info", fields(config_file = %config_file.display()))]
     pub(super) async fn start_core_by_service_with_config(&self, config_file: &Path) -> Result<()> {
-        anyhow::ensure!(!crate::core::mitm::route_runtime::requested(), "original-route development MITM is Sidecar-only; service integration is not ready");
+        use crate::core::mitm::route_runtime;
+        let guarded = route_runtime::service_requested();
+        anyhow::ensure!(!route_runtime::requested() || guarded, "the original-route development configuration requires an explicit guarded service opt-in");
+        #[cfg(not(all(windows, feature = "verge-dev")))]
+        anyhow::ensure!(!guarded, "guarded MITM service mode requires a NetVerge Windows development build");
+        #[cfg(all(windows, feature = "verge-dev"))]
+        let guarded_launch = match guarded {
+            true => Some(route_runtime::installed_service::prepare().await.inspect_err(route_runtime::report_service_failure)?),
+            false => None,
+        };
         crate::core::mitm::ensure_runtime_worker().await?;
         // 交接时等待 sidecar 释放 ext-controller 通道。
         #[cfg(target_os = "windows")]
@@ -392,6 +405,12 @@ impl CoreManager {
             .await?;
             self.mark_core_ready();
             self.core_started(RunningMode::Service);
+            #[cfg(feature = "verge-dev")]
+            if let Some(launch) = guarded_launch {
+                let readiness = self.current_core_readiness_generation().context("guarded service core is not ready")?;
+                let proof = service::active_service_session()?;
+                route_runtime::installed_service::attach(launch, readiness, proof).await;
+            }
             crate::core::mitm::record_applied_runtime(self.current_core_readiness_generation()).await;
             self.restore_selected_nodes().await;
             service::request_runtime_provider_sync(timing::RUNTIME_PROVIDER_SYNC_DELAY);

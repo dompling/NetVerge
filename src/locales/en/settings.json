@@ -726,6 +726,8 @@
   },
   "mitm": {
     "title": "MITM",
+    "serviceMode": "Windows MITM service mode",
+    "serviceRestartRequired": "Restart NetVerge to apply the service mode setting.",
     "summary": "Experimental HTTPS inspection and certificates",
     "experimental": "Experimental local configuration only. Uses Clash YAML and selected domains. Saving does not change the running engine or system trust.",
     "inactive": "Not configured",

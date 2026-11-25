@@ -21,6 +21,8 @@ import {
   saveMitmConfig,
   getMitmTrustStatus,
   openMitmCertificateManager,
+  restartApp,
+  setMitmServiceMode,
 } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
 
@@ -82,6 +84,19 @@ const MitmPage = () => {
     }
   })
   const status = data?.status
+  const servicePending = status?.serviceModeNextStart != null
+    && status.serviceModeNextStart !== Boolean(status.serviceModeRequested)
+  const toggleService = useLockFn(async (enabled: boolean) => {
+    setBusy(true)
+    try {
+      await setMitmServiceMode(enabled)
+      await mutate()
+    } catch (err) {
+      showNotice.error(err)
+    } finally {
+      setBusy(false)
+    }
+  })
   const trust = data?.trust
   const disabled = busy || isValidating || Boolean(error) || !canManageMitmCertificate(data)
   const mismatch = hasMitmIdentityMismatch(data)
@@ -89,7 +104,7 @@ const MitmPage = () => {
     <BasePage
       title={<Stack direction="row" sx={{ alignItems: 'center', gap: 1 }}>
         <Typography component="span" variant="h6" sx={{ fontWeight: 700 }}>{t('settings.mitm.title')}</Typography>
-        <Switch checked={live && Boolean(config?.active?.enable)} disabled={!live || busy || configLoading || Boolean(configError) || (!config?.active?.enable && !config?.saved?.hostname.length)} onChange={(_, checked) => void toggle(checked)} slotProps={{ input: { 'aria-label': t('settings.mitm.config.enable') } }} />
+        {!status?.serviceModeRequested && <Switch checked={live && Boolean(config?.active?.enable)} disabled={!live || busy || configLoading || Boolean(configError) || (!config?.active?.enable && !config?.saved?.hostname.length)} onChange={(_, checked) => void toggle(checked)} slotProps={{ input: { 'aria-label': t('settings.mitm.config.enable') } }} />}
       </Stack>}
       header={
         <Button size="small" variant="outlined" startIcon={<RefreshRounded />}
@@ -100,7 +115,26 @@ const MitmPage = () => {
     >
       <Stack spacing={1.5}>
         <Typography variant="body2" color="text.secondary">{t('settings.mitm.summary')}</Typography>
-        {!live && <Alert severity="info">{t('settings.mitm.routingPaused')}</Alert>}
+        {status?.serviceModeNextStart != null && (
+          <Card variant="outlined" sx={{ p: 2 }}>
+            <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between' }}>
+              <Typography variant="subtitle2">{t('settings.mitm.serviceMode')}</Typography>
+              <Switch
+                checked={status.serviceModeNextStart}
+                disabled={busy || isValidating}
+                onChange={(_, checked) => void toggleService(checked)}
+                slotProps={{ input: { 'aria-label': t('settings.mitm.serviceMode') } }}
+              />
+            </Stack>
+            {servicePending && <Alert severity="info" action={
+              <Button size="small" disabled={busy} onClick={() => { void restartApp().catch(showNotice.error) }}>
+                {t('shared.actions.restart')}
+              </Button>
+            }>{t('settings.mitm.serviceRestartRequired')}</Alert>}
+          </Card>
+        )}
+        {!live && !status?.serviceModeRequested && <Alert severity="info">{t('settings.mitm.routingPaused')}</Alert>}
+        {status?.serviceFailure && <Alert severity="error">{status.serviceFailure}</Alert>}
         {error && <Alert severity="error">{t('settings.mitm.error')}</Alert>}
         {isValidating && <Typography variant="caption" role="status">{t('settings.mitm.loading')}</Typography>}
         <Grid container spacing={1.5} columns={12}>
@@ -134,7 +168,7 @@ const MitmPage = () => {
                 </Card>
               </Grid>
           )}
-          <Grid size={{ xs: 12, md: 6 }}><MitmConfigEditor live={live} busy={busy} onChanged={() => { void mutate() }} /></Grid>
+          {!status?.serviceModeRequested && <Grid size={{ xs: 12, md: 6 }}><MitmConfigEditor live={live} busy={busy} onChanged={() => { void mutate() }} /></Grid>}
         </Grid>
       </Stack>
     </BasePage>

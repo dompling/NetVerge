@@ -110,7 +110,7 @@ jobs:
       - name: Run MITM Rust configuration unit tests
         working-directory: src-tauri
         run: |
-          cargo test -p clash-verge --lib --features clippy --target ${{ matrix.target }} core::mitm::
+          cargo test -p clash-verge --lib --features clippy,verge-dev --target ${{ matrix.target }} core::mitm::
 
       - name: Provision frontend placeholder for contract generator
         if: runner.os == 'macOS'

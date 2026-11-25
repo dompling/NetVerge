@@ -506,6 +506,7 @@ export async function checkMediaUnlockItem(name: string) {
 
 // NetVerge uses the generated IPC contract; no raw invoke or file paths.
 export const getMitmStatus = commands.getMitmStatus
+export const setMitmServiceMode = commands.setMitmServiceMode
 export const getMitmTrustStatus = commands.getMitmTrustStatus
 export const exportMitmPublicCa = commands.exportMitmPublicCa
 export const openMitmCertificateManager = commands.openMitmCertificateManager

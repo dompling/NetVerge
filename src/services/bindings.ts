@@ -41,6 +41,8 @@ export const commands = {
     __TAURI_INVOKE<RunStateView_Serialize>('get_runtime_state'),
   /**  Read-only MITM state; no configuration or process changes. */
   getMitmStatus: () => __TAURI_INVOKE<MitmStatus_Serialize>('get_mitm_status'),
+  /**  Save the guarded service preference for the next complete app start. */
+  setMitmServiceMode: (enabled: boolean) => __TAURI_INVOKE<null>('set_mitm_service_mode', { enabled }),
   /**  Returns the last verified public CA only. Never installs trust or exports a private key. */
   getMitmPublicCa: () =>
     __TAURI_INVOKE<MitmPublicCa | null>('get_mitm_public_ca'),
@@ -678,6 +680,9 @@ export type MitmStatus_Deserialize = {
   recoveryAttempts: number
   maxRecoveryAttempts: number
   caFingerprint?: string | null
+  serviceModeRequested?: boolean | null
+  serviceModeNextStart?: boolean | null
+  serviceFailure?: string | null
 }
 
 export type MitmStatus_Serialize = {
@@ -687,6 +692,9 @@ export type MitmStatus_Serialize = {
   recoveryAttempts: number
   maxRecoveryAttempts: number
   caFingerprint: string | null
+  serviceModeRequested?: boolean | null
+  serviceModeNextStart?: boolean | null
+  serviceFailure?: string | null
 }
 
 export type MitmStoreMatch = 'present' | 'absent' | 'unknown' | 'unsupported'

@@ -24,6 +24,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
             cmd::upgrade_clash_core,
             cmd::get_runtime_state,
             cmd::get_mitm_status,
+            cmd::set_mitm_service_mode,
             cmd::get_mitm_public_ca,
             cmd::get_mitm_trust_status,
             cmd::export_mitm_public_ca,

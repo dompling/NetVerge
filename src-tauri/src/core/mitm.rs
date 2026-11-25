@@ -24,6 +24,8 @@ mod control_http;
 mod controller_state;
 #[cfg(windows)]
 pub(crate) mod service_pipe;
+#[cfg(all(windows, feature = "verge-dev"))]
+mod service_restore;
 
 const PROXY: &str = "NETVERGE-MITM";
 const RETURN: &str = "netverge-return";
@@ -51,6 +53,12 @@ pub struct MitmStatus {
     recovery_attempts: u8,
     max_recovery_attempts: u8,
     ca_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_mode_requested: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_mode_next_start: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_failure: Option<String>,
 }
 
 struct PublicState {
@@ -63,7 +71,14 @@ struct PublicState {
 // The status reader never waits for a worker spawn, process exit or network probe.
 pub(crate) fn status() -> MitmStatus {
     let current = crate::core::CoreManager::global().current_core_readiness_generation();
-    status_from_snapshot(&PUBLIC_STATE.lock(), current, development_requested() || route_runtime::requested())
+    let service_requested = route_runtime::service_requested();
+    let mut status = status_from_snapshot(
+        &PUBLIC_STATE.lock(), current, development_requested() || route_runtime::requested() || service_requested,
+    );
+    status.service_mode_requested = service_requested.then_some(true);
+    status.service_mode_next_start = route_runtime::service_preference();
+    status.service_failure = route_runtime::service_failure();
+    status
 }
 
 fn status_from_snapshot(snapshot: &PublicState, current: Option<u64>, development_requested: bool) -> MitmStatus {
@@ -80,6 +95,9 @@ fn status_from_snapshot(snapshot: &PublicState, current: Option<u64>, developmen
         recovery_attempts: snapshot.attempts,
         max_recovery_attempts: MAX_RECOVERY_ATTEMPTS,
         ca_fingerprint: snapshot.ca.as_ref().map(|ca| ca.sha256_fingerprint.clone()),
+        service_mode_requested: None,
+        service_mode_next_start: None,
+        service_failure: None,
     }
 }
 
@@ -575,6 +593,10 @@ async fn monitor_worker() {
         let Some(generation) = manager.current_core_readiness_generation() else {
             continue;
         };
+        #[cfg(all(windows, feature = "verge-dev"))]
+        if route_runtime::installed_service::monitor(generation).await {
+            continue;
+        }
         if route_runtime::monitor(generation).await {
             continue;
         }
@@ -668,6 +690,8 @@ fn recover_session(session: &mut Session, generation: u64, data: &Path) {
 
 // Call only after confirmed core stop or application of a non-MITM runtime.
 pub(crate) async fn stop_worker() {
+    #[cfg(all(windows, feature = "verge-dev"))]
+    route_runtime::installed_service::stop().await;
     route_runtime::stop_worker().await;
     if !development_requested() {
         return;

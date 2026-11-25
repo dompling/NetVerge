@@ -972,6 +972,8 @@ export interface TranslationResources {
         refresh: string
         removeHost: string
         routingPaused: string
+        serviceMode: string
+        serviceRestartRequired: string
         states: {
           checking: string
           degraded: string

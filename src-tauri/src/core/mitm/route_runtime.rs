@@ -19,6 +19,43 @@ const ENV: &str = "NETVERGE_MITM_ROUTE_DEV_CONFIG";
 const API: &str = "/v1/mitm";
 const SELECTION_FILE: &str = "route-selection.yaml";
 static ROUTE: Mutex<Option<RouteSession>> = Mutex::new(None);
+#[cfg(all(windows, feature = "verge-dev"))]
+pub(crate) mod installed_service;
+
+static SERVICE_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+pub(crate) fn service_requested() -> bool {
+    #[cfg(all(windows, feature = "verge-dev"))]
+    return installed_service::requested();
+    #[cfg(not(all(windows, feature = "verge-dev")))]
+    false
+}
+
+pub(super) fn service_preference() -> Option<bool> {
+    #[cfg(all(windows, feature = "verge-dev"))]
+    return installed_service::next_start();
+    #[cfg(not(all(windows, feature = "verge-dev")))]
+    None
+}
+
+pub(crate) async fn set_service_preference(enabled: bool) -> Result<()> {
+    #[cfg(all(windows, feature = "verge-dev"))]
+    return installed_service::set_next_start(enabled).await;
+    #[cfg(not(all(windows, feature = "verge-dev")))]
+    {
+        let _ = enabled;
+        anyhow::bail!("guarded MITM service mode requires a NetVerge Windows development build")
+    }
+}
+
+pub(super) fn service_failure() -> Option<String> {
+    SERVICE_FAILURE.lock().clone()
+}
+
+pub(crate) fn report_service_failure(error: &anyhow::Error) {
+    *SERVICE_FAILURE.lock() = Some(format!("{error:#}"));
+    PUBLIC_STATE.lock().health = Health::Failed;
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -136,16 +173,20 @@ pub(crate) async fn prepare_sidecar() -> Result<Option<Launch>> {
     let Some(path) = std::env::var_os(ENV) else { return Ok(None); };
     ensure!(cfg!(windows), "original-route sidecar development is currently Windows only");
     ensure!(crate::core::runstate::RUN_STATE.state().is_admin, "original-route MITM requires an elevated TUN-capable sidecar");
+    Ok(Some(prepare_launch(PathBuf::from(path), false).await?))
+}
+
+async fn prepare_launch(path: PathBuf, require_committed: bool) -> Result<Launch> {
     let runtime = crate::config::Config::runtime().await.latest_arc();
     let config = runtime.config.as_ref().context("original-route MITM requires a runtime profile")?;
-    ensure!(super::enabled_block(config, "tun"), "original-route MITM requires TUN");
-    ensure!(config.get("mode").and_then(serde_yaml_ng::Value::as_str).is_none_or(|mode| mode.eq_ignore_ascii_case("rule")), "original-route MITM requires rule mode");
+    require_tun_rule(config)?;
     drop(runtime);
     tokio::task::spawn_blocking(move || {
-        let (mut settings, bootstrap_sha256) = read_settings(&PathBuf::from(path))?;
+        let (mut settings, bootstrap_sha256) = read_settings(&path)?;
         let data = crate::utils::dirs::app_home_dir()?.join("netverge-mitm-dev");
         private_data(&data)?;
         let saved = read_saved(&data, &bootstrap_sha256)?;
+        ensure!(!require_committed || saved.is_some(), "save an explicit MITM selection before starting the guarded service");
         let restore_enabled = saved.as_ref().is_some_and(|s| s.enable);
         let expected_ca = saved.as_ref().and_then(|s| s.ca_fingerprint.clone());
         if let Some(saved) = saved {
@@ -160,7 +201,7 @@ pub(crate) async fn prepare_sidecar() -> Result<Option<Launch>> {
         };
         // Release the reservations immediately before the sidecar launch.
         // The subsequent authenticated readiness probes detect port races.
-        Ok(Some(launch))
+        Ok(launch)
     }).await?
 }
 
@@ -548,8 +589,8 @@ fn require_tun_rule(config: &serde_yaml_ng::Mapping) -> Result<()> {
 // A profile reload must not silently bypass configured interception by
 // changing TUN/mode while a development generation is enabled.
 pub(super) async fn guard_runtime() -> Result<()> {
-    if !requested() { return Ok(()); }
-    let enabled = tokio::task::spawn_blocking(|| ROUTE.lock().as_ref().is_some_and(|s| s.enabled)).await?;
+    if !requested() && !service_requested() { return Ok(()); }
+    let enabled = service_requested() || tokio::task::spawn_blocking(|| ROUTE.lock().as_ref().is_some_and(|s| s.enabled)).await?;
     if enabled {
         let runtime = crate::config::Config::runtime().await.latest_arc();
         require_tun_rule(runtime.config.as_ref().context("MITM runtime profile missing")?)?;

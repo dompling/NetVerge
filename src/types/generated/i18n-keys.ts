@@ -872,6 +872,8 @@ export const translationKeys = [
   'settings.search.results',
   'settings.search.empty',
   'settings.mitm.title',
+  'settings.mitm.serviceMode',
+  'settings.mitm.serviceRestartRequired',
   'settings.mitm.summary',
   'settings.mitm.experimental',
   'settings.mitm.inactive',

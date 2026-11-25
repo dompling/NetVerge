@@ -841,6 +841,15 @@ pub(crate) fn run_privileged_service_action(action: PendingAction) -> Result<()>
 
 /// Builds the same runtime bundle description for both service start and staging.
 async fn collect_service_runtime_bundle(config_file: &Path) -> Result<RuntimeBundle> {
+    if crate::core::mitm::route_runtime::service_requested() {
+        #[cfg(all(windows, feature = "verge-dev"))]
+        {
+            let core = crate::core::mitm::route_runtime::installed_service::approved_core().await?;
+            return collect_runtime_bundle(config_file, &core).await;
+        }
+        #[cfg(not(all(windows, feature = "verge-dev")))]
+        bail!("guarded MITM service mode requires a NetVerge Windows development build");
+    }
     let verge_config = Config::verge().await;
     let clash_core = verge_config.latest_arc().get_valid_clash_core();
     drop(verge_config);
@@ -1948,6 +1957,9 @@ async fn recover_after_owner_loss_while_locked(reason: OwnerRecoveryReason) {
     }
     clear_active_service_session();
     CoreManager::global().core_stopped();
+    if crate::core::mitm::route_runtime::service_requested() {
+        crate::core::mitm::stop_worker().await;
+    }
     // A displaced Service may still run TUN for its new owner, and DNS settings are system-wide.
     #[cfg(target_os = "macos")]
     if policy.reset_system_proxy {
