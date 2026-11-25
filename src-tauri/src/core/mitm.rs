@@ -19,6 +19,10 @@ use std::{
 pub(crate) mod trust;
 pub(crate) mod settings;
 pub(crate) mod route_runtime;
+pub(crate) mod service_generation;
+mod control_http;
+#[cfg(windows)]
+pub(crate) mod service_pipe;
 
 const PROXY: &str = "NETVERGE-MITM";
 const RETURN: &str = "netverge-return";

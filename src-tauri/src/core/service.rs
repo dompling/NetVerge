@@ -7,6 +7,7 @@ use crate::{
         CoreManager,
         handle::Handle,
         manager::{CoreFailure, RunningMode},
+        mitm::service_generation::{Generation, GenerationWatch, Transition},
         owner_identity::current_owner_credentials,
         proxy_control,
         runstate::{
@@ -104,6 +105,7 @@ fn app_data_owner_command(credentials: &OwnerCredentials) -> Option<String> {
 #[derive(Clone)]
 struct ActiveServiceSession {
     proof: Arc<OwnerSessionProof>,
+    core_generation: GenerationWatch,
     supports_runtime_staging: bool,
     supports_runtime_file_read: bool,
     supports_runtime_geo_read: bool,
@@ -983,6 +985,7 @@ pub(super) async fn start_with_existing_service(config_file: &Path) -> Result<()
             generation: result.session.generation,
             token: request.proposed_session_token,
         }),
+        core_generation: GenerationWatch::default(),
         supports_runtime_staging: capabilities.runtime_staging,
         supports_runtime_file_read: capabilities.runtime_file_read,
         supports_runtime_geo_read: capabilities.runtime_geo_read,
@@ -1711,7 +1714,15 @@ fn start_owner_monitor() {
                 break;
             }
 
+            let proof = active_service_session().ok();
             let (sample, status) = read_owner_sample().await;
+            if OWNER_MONITOR_GENERATION.load(Ordering::Acquire) != generation {
+                break;
+            }
+            observe_service_core_generation(generation, proof.as_ref(), status.as_ref()).await;
+            if OWNER_MONITOR_GENERATION.load(Ordering::Acquire) != generation {
+                break;
+            }
             if let Some(status) = &status {
                 log_core_restarts(&mut core_restarts, status);
             }
@@ -1735,6 +1746,62 @@ fn start_owner_monitor() {
             }
         }
     });
+}
+
+/// Record readiness for the actual process, separately from the existing
+/// owner/proxy lifecycle. A watchdog restart is not a new owner session.
+/// Never publish a sample from a superseded monitor or session.
+async fn observe_service_core_generation(
+    monitor: u64,
+    expected: Option<&Arc<OwnerSessionProof>>,
+    status: Option<&ServiceStatusSnapshot>,
+) {
+    let Some(expected) = expected else { return; };
+    let Some(previous) = service_generation_if_current(monitor, expected) else { return; };
+    let candidate = status.and_then(|state| Generation::from_status(expected.generation, state).ok().flatten());
+    #[cfg(windows)]
+    let candidate = if let Some(next) = candidate {
+        if previous == Some(next) || verify_service_core_pipe(expected, next).await {
+            Some(next)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    #[cfg(not(windows))]
+    let _ = previous;
+    let mut active = ACTIVE_SERVICE_SESSION.lock();
+    let Some(session) = active.as_mut().filter(|s| Arc::ptr_eq(&s.proof, expected)) else { return; };
+    if OWNER_MONITOR_GENERATION.load(Ordering::Acquire) != monitor { return; }
+    match session.core_generation.observe(candidate) {
+        Transition::Initial | Transition::Reconfirmed | Transition::Restarted => {
+            logging!(debug, Type::Service, "service core instance confirmed: {:?}", session.core_generation.current());
+        }
+        Transition::Rejected => {
+            logging!(warn, Type::Service, "service core instance sample rejected; no current MITM generation");
+        }
+        Transition::Unavailable | Transition::Unchanged => {}
+    }
+}
+
+fn service_generation_if_current(monitor: u64, expected: &Arc<OwnerSessionProof>) -> Option<Option<Generation>> {
+    let active = ACTIVE_SERVICE_SESSION.lock();
+    if OWNER_MONITOR_GENERATION.load(Ordering::Acquire) != monitor { return None; }
+    active.as_ref().filter(|s| Arc::ptr_eq(&s.proof, expected)).map(|s| s.core_generation.current())
+}
+
+#[cfg(windows)]
+async fn verify_service_core_pipe(expected: &OwnerSessionProof, instance: Generation) -> bool {
+    let Ok(credentials) = current_owner_credentials() else { return false; };
+    let pipe = clash_verge_service_ipc::mihomo_ipc_path(&credentials.identity);
+    let Ok(_pipe) = crate::core::mitm::service_pipe::open_verified(&pipe, instance, Duration::from_secs(1)).await else {
+        return false;
+    };
+    // Verify the owner and generation again after opening the real pipe.
+    // No bootstrap request is sent from the ordinary desktop path.
+    let Ok(reply) = clash_verge_service_ipc::get_status(&credentials).await else { return false; };
+    reply.code == 0 && reply.data.as_ref().and_then(|s| Generation::from_status(expected.generation, s).ok().flatten()) == Some(instance)
 }
 
 /// The Service logs its watchdog restarts where the app cannot read them.

@@ -4,6 +4,9 @@ on:
     branches: [feat/mitm-route-integration]
     paths:
       - 'engines/mihomo-route/**'
+      - 'src-tauri/src/core/mitm/service_generation.rs'
+      - 'src-tauri/src/core/mitm/service_pipe.rs'
+      - 'src-tauri/src/core/mitm/control_http.rs'
       - 'engines/mihomo-route-lab/install-adapter-type-lab.cjs'
       - 'engines/whistle/route-worker.cjs'
       - 'engines/whistle/ca-integrity.cjs'
@@ -107,6 +110,8 @@ jobs:
           cargo generate-lockfile --manifest-path $manifest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo update --manifest-path $manifest -p tracing-estuary --precise dbfce033fa4cff8f936f3e7c2282af1277546f3c
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --manifest-path $manifest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo run --locked --manifest-path $manifest -- "$core" "$worker"
       - uses: actions/upload-artifact@v4

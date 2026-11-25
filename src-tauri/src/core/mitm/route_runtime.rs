@@ -199,18 +199,12 @@ fn request(port: u16, method: &str, path: &str, auth_name: &str, auth: &str, bod
         ensure!(!remaining.is_zero(), "MITM control timeout");
         stream.set_read_timeout(Some(remaining))?;
         let n = stream.read(&mut buffer)?;
-        if n == 0 { break; }
+        ensure!(n != 0, "MITM control response ended before declared body");
         response.extend_from_slice(&buffer[..n]);
-        ensure!(response.len() <= 65536, "MITM control response too large");
+        if let Some((status, body)) = super::control_http::complete(&response)? {
+            return Ok((status, body.to_vec()));
+        }
     }
-    let separator = response.windows(4).position(|w| w == b"\r\n\r\n").context("invalid MITM control response")?;
-    let headers = std::str::from_utf8(&response[..separator])?;
-    let mut lines = headers.lines();
-    let status = lines.next().context("missing MITM status")?;
-    ensure!(status.starts_with("HTTP/1.1 ") || status.starts_with("HTTP/1.0 "), "invalid MITM HTTP status");
-    let code = status.split_whitespace().nth(1).context("missing MITM status code")?.parse::<u16>()?;
-    ensure!(!lines.any(|line| line.to_ascii_lowercase().starts_with("transfer-encoding:")), "unsupported MITM response framing");
-    Ok((code, response[separator + 4..].to_vec()))
 }
 
 impl Launch {

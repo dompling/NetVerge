@@ -1,6 +1,12 @@
 //! Run on a disposable Windows CI runner only. Uses the actual upstream
 //! service IPC and watchdog in test mode (no service registration/elevation).
 mod transport;
+#[path = "../../../../../src-tauri/src/core/mitm/service_generation.rs"]
+mod service_generation;
+#[path = "../../../../../src-tauri/src/core/mitm/control_http.rs"]
+mod control_http;
+#[path = "../../../../../src-tauri/src/core/mitm/service_pipe.rs"]
+mod service_pipe;
 
 use anyhow::{Context, Result, ensure};
 use clash_verge_service_ipc::{
@@ -10,7 +16,8 @@ use clash_verge_service_ipc::{
 };
 use std::{path::{Path, PathBuf}, process::Stdio, time::Duration};
 use tokio::{io::{AsyncBufReadExt, BufReader}, process::{Child, Command}, sync::oneshot, time::{sleep, timeout}};
-use transport::{BoundController, Generation, current, free_port, secret};
+use service_generation::{Generation, GenerationWatch, Transition};
+use transport::{BoundController, current, free_port, secret};
 use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess}};
 
 async fn wait_core(credentials: &OwnerCredentials, proof: &OwnerSessionProof, previous: Option<Generation>) -> Result<Generation> {
@@ -105,6 +112,8 @@ fn terminate_fixture(pid: u32) -> Result<()> {
 
 async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, worker: &Worker) -> Result<()> {
     let first = wait_core(credentials, proof, None).await?;
+    let mut watch = GenerationWatch::default();
+    ensure!(watch.observe(Some(first)) == Transition::Initial && watch.current() == Some(first), "initial service generation not recorded");
     println!("PASS: initial authenticated service core generation {first:?}");
     let port = free_port()?;
     ensure!(port != worker.port, "fixture ports collide");
@@ -113,7 +122,11 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
     controller.confirm_current(credentials, proof).await?;
     println!("PASS: Rust owner/PID-bound named-pipe bootstrap and real Whistle selection");
     terminate_fixture(first.pid)?;
+    ensure!(watch.observe(None) == Transition::Unavailable && watch.current().is_none(), "lost generation still current");
     let second = wait_core(credentials, proof, Some(first)).await?;
+    ensure!(watch.observe(Some(second)) == Transition::Restarted, "replacement service generation rejected");
+    ensure!(watch.observe(Some(first)) == Transition::Rejected && watch.current().is_none(), "stale service sample accepted");
+    ensure!(watch.observe(Some(second)) == Transition::Reconfirmed && watch.current() == Some(second), "replacement not reconfirmed");
     println!("PASS: service watchdog published replacement core generation {second:?}");
     ensure!(controller.confirm_current(credentials, proof).await.is_err(), "old generation remained current");
     let fresh = BoundController::connect(credentials, proof, second, port).await?;
