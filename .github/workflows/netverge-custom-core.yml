@@ -138,8 +138,85 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $worker = Join-Path $env:GITHUB_WORKSPACE 'netverge/engines/whistle/route-worker.cjs'
           & ./netverge/engines/mihomo-route/service/test-windows-install.ps1 -BuildDirectory './service-source/target/debug' -GuardedCore './service-lab/mihomo-service-lab.exe' -Worker $worker
+      - name: Stage Windows test package components and a previous-version fixture
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: mihomo-source
+        env:
+          CGO_ENABLED: '0'
+          GOAMD64: v1
+        run: |
+          mkdir -p ../windows-mitm-components
+          cp ../artifact/mihomo-netverge.exe ../windows-mitm-components/verge-mihomo.exe
+          cp ../service-lab/mihomo-service-lab.exe ../windows-mitm-components/netverge-mihomo-service.exe
+          cp ../service-source/target/debug/clash-verge-service{,-install,-uninstall}.exe ../windows-mitm-components/
+          go build -tags "with_gvisor netverge_service_lab" -trimpath -ldflags "-X github.com/metacubex/mihomo/constant.Version=netverge-rollback-fixture" -o ../windows-mitm-components/previous-core.exe .
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: windows-mitm-components
+          path: windows-mitm-components/
+          if-no-files-found: error
+          retention-days: 1
       - uses: actions/upload-artifact@v4
         with:
           name: mihomo-netverge-${{ matrix.os }}-${{ github.sha }}
           path: artifact/
+          if-no-files-found: error
+  windows-test-package:
+    name: Build and verify Windows x64 MITM test package
+    needs: core
+    if: github.event_name == 'push' || inputs.platform == 'windows-latest' || inputs.platform == 'all'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: '0'
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '32'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      CARGO_INCREMENTAL: '0'
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-mitm-components
+          path: windows-mitm-components
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26.13.1'
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: 'netverge-windows-mitm-test-package-v1'
+          cache-all-crates: true
+          cache-workspace-crates: false
+      - name: Build the isolated desktop client
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm run prebuild x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm exec tauri build --no-bundle --features verge-dev --target x86_64-pc-windows-msvc --config ./engines/mihomo-route/service/windows-test-tauri.json
+      - name: Verify install, upgrade and rollback from the extracted Windows test package
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:GITHUB_WORKSPACE "NetVerge-MITM-Test-Windows-x64-$($env:GITHUB_SHA.Substring(0, 7)).zip"
+          $scripts = Join-Path $env:GITHUB_WORKSPACE 'engines/mihomo-route/service'
+          $components = Join-Path $env:GITHUB_WORKSPACE 'windows-mitm-components'
+          $desktop = Join-Path $env:GITHUB_WORKSPACE 'target/x86_64-pc-windows-msvc/release/clash-verge.exe'
+          & "$scripts/package-windows-mitm.ps1" -SourceRoot $env:GITHUB_WORKSPACE -Components $components -Desktop $desktop -Archive $archive
+          & "$scripts/test-windows-package.ps1" -Archive $archive -PreviousCore "$components/previous-core.exe"
+      - uses: actions/upload-artifact@v7
+        with:
+          path: NetVerge-MITM-Test-Windows-x64-*.zip
+          archive: false
           if-no-files-found: error

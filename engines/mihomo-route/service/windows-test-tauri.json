@@ -1,0 +1,16 @@
+{
+  "identifier": "io.github.clash-verge-rev.clash-verge-rev.dev",
+  "bundle": {
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["netverge-mitm-test"]
+      }
+    },
+    "updater": {
+      "endpoints": []
+    }
+  }
+}
