@@ -61,7 +61,10 @@ switch ($Action) {
     }
     'Healthy' {
         if (Find-Element 'Local link healthy') { 'OK'; break }
-        $refresh = Find-Element 'Refresh'
+        # The icon contributes a zero-width character to WebView2's accessible name.
+        $buttons = $root.FindAll($scope, [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button))
+        $refresh = $buttons | Where-Object { ($_.Current.Name -replace '[\p{Cf}\s]', '') -eq 'Refresh' } | Select-Object -First 1
         if ($refresh -and $refresh.Current.IsEnabled) { $refresh.GetCurrentPattern($invoke).Invoke() }
     }
     'Inspect' {

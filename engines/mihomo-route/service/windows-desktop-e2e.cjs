@@ -184,12 +184,14 @@ async function main() {
       return /^\d+$/.test(pid) && Number(pid) !== desktop.pid;
     });
     await until('MITM navigation after restart', () => automation(app, 'Open') === 'OK', 70000);
-    await until('restored desktop MITM state', () => automation(app, 'Healthy') === 'OK', 60000);
-    console.log('PASS: clicked desktop MITM service switch and restarted into a protected service generation');
     const processPath = powershell("(Get-Process -Name 'netverge-mihomo-service').Path");
     assert.match(processPath, /\\clash-verge-service-dev\\cores\\netverge-mihomo-service\.exe$/i);
     execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled'], { stdio: 'inherit', timeout: 75000 });
+    await until('restored desktop MITM state', () => automation(app, 'Healthy') === 'OK', 60000);
+    console.log('PASS: clicked desktop MITM service switch and restarted into a protected service generation');
+
   } catch (error) {
+    console.error(powershell("Get-Process -Name 'netverge-mihomo-service','verge-mihomo','node' -ErrorAction SilentlyContinue | Select-Object ProcessName,Id | ConvertTo-Json -Compress; exit 0"));
     console.error('Desktop process exit code:', desktop?.exitCode);
     if (desktopOutput) console.error(desktopOutput);
     const logDirectory = path.join(appRoot, 'logs');
