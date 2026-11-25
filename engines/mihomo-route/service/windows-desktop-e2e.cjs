@@ -146,6 +146,7 @@ async function main() {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'netverge-desktop-e2e-'));
   const bootstrap = path.join(temp, 'bootstrap.json');
   let origin, seed, desktop, page, attemptedInstall = false;
+  let desktopOutput = '';
   try {
     origin = spawn(process.execPath, [netFixture, 'serve', temp], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
     const { exitPort, upstreamDnsPort } = JSON.parse(await firstLine(origin, 'TLS origin fixture'));
@@ -215,9 +216,13 @@ async function main() {
         NETVERGE_MITM_ROUTE_DEV_CONFIG: bootstrap,
         NETVERGE_MITM_SERVICE_CORE_SHA256: coreDigest,
         WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=' + debugPort + ' --remote-debugging-address=127.0.0.1',
+        WEBVIEW2_USER_DATA_FOLDER: path.join(temp, 'WebView2'),
       },
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
+    for (const stream of [desktop.stdout, desktop.stderr]) {
+      stream.on('data', chunk => { desktopOutput = (desktopOutput + chunk).slice(-24000); });
+    }
     page = await cdp(debugPort);
     await openMitm(page);
     const selector = JSON.stringify(serviceSwitch);
@@ -247,6 +252,18 @@ async function main() {
     const processPath = powershell("(Get-Process -Name 'netverge-mihomo-service').Path");
     assert.match(processPath, /\\clash-verge-service-dev\\cores\\netverge-mihomo-service\.exe$/i);
     execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled'], { stdio: 'inherit', timeout: 75000 });
+  } catch (error) {
+    console.error('Desktop process exit code:', desktop?.exitCode);
+    if (desktopOutput) console.error(desktopOutput);
+    const logDirectory = path.join(appRoot, 'logs');
+    if (fs.existsSync(logDirectory)) {
+      for (const file of fs.readdirSync(logDirectory).filter(name => name.endsWith('.log')).slice(-2)) {
+        const lines = fs.readFileSync(path.join(logDirectory, file), 'utf8').split(/\r?\n/);
+        console.error(lines.filter(line => /failed|error|panic|warn|WebView|readiness/i.test(line) && !/secret|password|token|authorization/i.test(line)).slice(-25).join('\n'));
+      }
+    }
+    console.error(powershell("Get-Process -Name 'NetVerge-MITM','msedgewebview2' -ErrorAction SilentlyContinue | Select-Object ProcessName,Id,SessionId | ConvertTo-Json -Compress; exit 0"));
+    throw error;
   } finally {
     page?.close();
     stopTree(seed);
