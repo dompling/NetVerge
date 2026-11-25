@@ -33,7 +33,13 @@ impl CoreState {
 
     pub(crate) fn verify_selection(&self, enabled: bool, hosts: &[String]) -> Result<()> {
         self.verify_protocol()?;
-        ensure!(!self.awaiting_selection && self.enabled == enabled, "MITM selection is not settled");
+        if self.awaiting_selection {
+            // Distinguish a valid guarded startup from a contradictory
+            // controller response; neither is a committed selection.
+            self.verify_pending()?;
+            anyhow::bail!("MITM startup protection is awaiting committed selection");
+        }
+        ensure!(self.enabled == enabled, "MITM selection is not settled");
         let expected = if enabled { hosts } else { &[] };
         ensure!(same_hosts(&self.hosts, expected), "MITM controller scope differs from committed selection");
         Ok(())
@@ -49,6 +55,9 @@ mod tests {
         let pending: CoreState = serde_json::from_str(r#"{"protocol":1,"enabled":false,"hosts":[],"awaitingSelection":true}"#)?;
         pending.verify_pending()?;
         assert!(pending.verify_selection(false, &[]).is_err());
+        let contradictory: CoreState = serde_json::from_str(r#"{"protocol":1,"enabled":true,"hosts":["a.test"],"awaitingSelection":true}"#)?;
+        assert!(contradictory.verify_pending().is_err());
+        assert!(contradictory.verify_selection(true, &["a.test".into()]).is_err());
         let disabled: CoreState = serde_json::from_str(r#"{"protocol":1,"enabled":false,"hosts":[]}"#)?;
         disabled.verify_selection(false, &["saved.test".into()])?;
         assert!(disabled.verify_pending().is_err());
