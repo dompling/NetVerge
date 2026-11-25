@@ -42,10 +42,11 @@ switch ($Action) {
     { $_ -in 'EnableService', 'DisableService' } {
         $element = Find-Element 'Windows MITM service mode' ([Windows.Automation.ControlType]::Button)
         if ($element -and $element.Current.IsEnabled) {
+            # Each transition starts from a persisted, verified state. WebView2 exposes
+            # this switch as a button, so activate it once and verify the saved result.
             $toggle = $null
             if ($element.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) {
-                $enabled = $toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On
-                if ($enabled -ne ($Action -eq 'EnableService')) { $toggle.Toggle() }
+                $toggle.Toggle()
             } else {
                 $element.GetCurrentPattern($invoke).Invoke()
             }
