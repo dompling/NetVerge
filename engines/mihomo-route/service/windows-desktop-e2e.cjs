@@ -187,8 +187,8 @@ async function main() {
     const processPath = await until('guarded service core startup', () =>
       powershell("(Get-Process -Name 'netverge-mihomo-service' -ErrorAction SilentlyContinue).Path; exit 0"), 90000);
     assert.match(processPath, /\\clash-verge-service-dev\\cores\\netverge-mihomo-service\.exe$/i);
-    execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled'], { stdio: 'inherit', timeout: 75000 });
     await until('restored desktop MITM state', () => automation(app, 'Healthy') === 'OK', 60000);
+    execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled'], { stdio: 'inherit', timeout: 75000 });
     console.log('PASS: clicked desktop MITM service switch and restarted into a protected service generation');
 
   } catch (error) {
