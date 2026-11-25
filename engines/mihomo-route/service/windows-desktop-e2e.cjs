@@ -177,7 +177,7 @@ async function main() {
     debugPort = await freePort();
     const debugArgs = '--remote-debugging-port=' + debugPort + ' --remote-debugging-address=127.0.0.1';
     powershell("$key = " + q(registry) + "; New-Item -Path $key -Force | Out-Null;" +
-      "if (Get-ItemPropertyValue -LiteralPath $key -Name 'NetVerge-MITM.exe' -ErrorAction SilentlyContinue) { throw 'Existing WebView debugger policy' };" +
+      "if ((Get-ItemProperty -LiteralPath $key).PSObject.Properties['NetVerge-MITM.exe']) { throw 'Existing WebView debugger policy' };" +
       "New-ItemProperty -LiteralPath $key -Name 'NetVerge-MITM.exe' -PropertyType String -Value " + q(debugArgs) + ' | Out-Null');
     registryConfigured = true;
     fs.mkdirSync(path.join(appRoot, 'profiles'), { recursive: true });
