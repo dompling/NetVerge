@@ -8,6 +8,7 @@ const net = require('node:net');
 const path = require('node:path');
 const { X509Certificate } = require('node:crypto');
 const { Resolver } = require('node:dns/promises');
+const { resolveReady } = require('./windows-tun-dns-readiness.cjs');
 const { execFileSync } = require('node:child_process');
 const { makeCertificates, startLabDns, listen, dialTun } = require('./mitm-lab.cjs');
 
@@ -55,9 +56,16 @@ async function serve(dir) {
 }
 
 async function fakeAddress(port, host) {
-  const resolver = new Resolver({ timeout: 900, tries: 5 });
-  resolver.setServers(['127.0.0.1:' + port]);
-  const [ip] = await resolver.resolve4(host);
+  // Local link health can be published before the new DNS listener binds.
+  // Give only this lookup a bounded readiness window (~18 seconds worst case).
+  // Each attempt uses a fresh resolver rather than a previous core's socket.
+  const [ip] = await resolveReady(name => {
+    const resolver = new Resolver({ timeout: 900, tries: 1 });
+    resolver.setServers(['127.0.0.1:' + port]);
+    return resolver.resolve4(name);
+  }, host, {
+    onRetry: (code, attempt) => console.log('Waiting for local DNS listener: ' + host + ' (' + code + ', attempt ' + attempt + ')'),
+  });
   assert.match(ip, /^198\.18\.17\.(?:[4-9]|[1-9][0-9]{1,2})$/);
   const route = execFileSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command',
     `$ErrorActionPreference='Stop'; Find-NetRoute -RemoteIPAddress '${ip}' | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_NetRoute' } | ForEach-Object { $_.InterfaceAlias + ' ' + $_.DestinationPrefix }`,
