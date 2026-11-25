@@ -22,6 +22,12 @@ function Find-Element([string]$Name) {
 switch ($Action) {
     'Open' {
         if (Find-Element 'Windows MITM service mode') { 'OK'; break }
+        $continue = Find-Element 'CONTINUE WITH SIDECAR'
+        if ($continue -and $continue.Current.IsEnabled) {
+            $continue.GetCurrentPattern($invoke).Invoke()
+            'CONTINUED'
+            break
+        }
         $links = $root.FindAll($scope, [Windows.Automation.PropertyCondition]::new(
             [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Hyperlink))
         foreach ($link in $links) {
