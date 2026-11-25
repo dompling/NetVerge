@@ -97,7 +97,10 @@ impl Worker {
                     use sha2::{Digest, Sha256};
                     let der = base64::engine::general_purpose::STANDARD.decode(ca)?;
                     ensure!(!der.is_empty() && der.len() <= 16384, "invalid worker CA DER");
-                    return Ok::<_, anyhow::Error>(format!("{:x}", Sha256::digest(&der)));
+                    // sha2 0.11 returns a hybrid-array without LowerHex.
+                    // Match the desktop CA fingerprint's byte-wise encoding.
+                    let fingerprint: String = Sha256::digest(&der).iter().map(|byte| format!("{byte:02x}")).collect();
+                    return Ok::<_, anyhow::Error>(fingerprint);
                 }
             }
         }).await.context("worker readiness timed out")??;
