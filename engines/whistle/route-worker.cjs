@@ -4,6 +4,7 @@
 // Whistle private hooks remain pinned; desktop activation is not wired here.
 const path = require('node:path');
 const http = require('node:http');
+const fs = require('node:fs');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { readVerifiedCa } = require('./ca-integrity.cjs');
 if (process.platform !== 'win32') process.umask(0o077);
@@ -19,6 +20,55 @@ if (!path.isAbsolute(dataDir || '') || !Number.isInteger(port) || port < 1024 ||
   throw new Error('Invalid dynamic route configuration');
 }
 const allowed = new Set(hosts.map(host => host + ':443'));
+// This file belongs to the local MITM profile. Remote Clash profiles cannot supply rules.
+const rewriteFile = path.join(dataDir, 'response-header-rule.json');
+let responseRule;
+function loadResponseRule() {
+  responseRule = undefined;
+  try {
+    const stat = fs.lstatSync(rewriteFile);
+    if (!stat.isFile() || stat.size > 8192) throw new Error();
+    const rule = JSON.parse(fs.readFileSync(rewriteFile, 'utf8'));
+    if (rule.enabled === false) return;
+    if (rule.enabled !== true || !hosts.includes(rule.host) || typeof rule.path !== 'string' ||
+        !/^\/[^?#\s]*$/.test(rule.path) || typeof rule.header !== 'string' ||
+        !/^x-[a-z0-9-]{1,100}$/i.test(rule.header) || typeof rule.value !== 'string' ||
+        rule.value.length > 1024) throw new Error();
+    http.validateHeaderValue(rule.header, rule.value);
+    responseRule = { ...rule, header: rule.header.toLowerCase() };
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Invalid local response header rule; rewrite disabled');
+  }
+}
+loadResponseRule();
+fs.watchFile(rewriteFile, { interval: 500, persistent: false }, loadResponseRule);
+
+function applyResponseRule(req, res, authority) {
+  const rule = responseRule;
+  if (!rule || authority !== rule.host + ':443' ||
+      new URL(req.url, 'https://' + authority).pathname !== rule.path) return;
+  const writeHead = res.writeHead;
+  res.writeHead = function(status, reason, fields) {
+    const headers = typeof reason === 'string' ? fields : reason;
+    // Explicit writeHead fields take precedence over setHeader, including
+    // differently cased or repeated fields. Preserve every unrelated field.
+    if (Array.isArray(headers)) {
+      const pairs = [];
+      for (let i = 0; i < headers.length; i += 2) {
+        if (headers[i].toLowerCase() !== rule.header) pairs.push(headers[i], headers[i + 1]);
+      }
+      pairs.push(rule.header, rule.value);
+      return typeof reason === 'string' ? writeHead.call(this, status, reason, pairs) : writeHead.call(this, status, pairs);
+    }
+    const updated = { ...headers };
+    for (const name of Object.keys(updated)) {
+      if (name.toLowerCase() === rule.header) delete updated[name];
+    }
+    updated[rule.header] = rule.value;
+    return typeof reason === 'string' ? writeHead.call(this, status, reason, updated) : writeHead.call(this, status, updated);
+  };
+}
+
 const routes = new Map();
 const maxRoutes = 128;
 const controlAuthority = '127.0.0.1:' + port;
@@ -179,6 +229,7 @@ server.emit = function(event, ...args) {
     // After the internal TLS bridge, do not trust any user-supplied route
     // header; route identity lives only on the admitted request object.
     admissions.set(req, admission);
+    applyResponseRule(req, res, admission.route.authority);
   }
   if (event === 'upgrade') { args[1].destroy(); return true; }
   return emit.call(this, event, ...args);

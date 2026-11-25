@@ -98,7 +98,9 @@ async function main() {
   const app = path.join(root, 'NetVerge-MITM.exe');
   const launcher = path.join(root, 'NetVerge-MITM.ps1');
   const node = path.join(root, 'worker', 'node.exe');
-  const worker = path.join(root, 'worker', 'route-worker.cjs');
+  const rewriteTest = process.argv[3] === 'rewrite';
+  const worker = rewriteTest ? path.resolve(__dirname, '../../whistle/route-worker.cjs') :
+    path.join(root, 'worker', 'route-worker.cjs');
   const mitm = path.join(appRoot, 'netverge-mitm-dev');
   const netFixture = path.resolve(__dirname, '../../whistle/windows-tun-lab.cjs');
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8').replace(/^\uFEFF/, ''));
@@ -199,6 +201,20 @@ async function main() {
     await until('restored desktop MITM state', () => automation(app, 'Healthy') === 'OK', 60000);
     execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled'], { stdio: 'inherit', timeout: 75000 });
     console.log('PASS: clicked desktop MITM service switch and restarted into a protected service generation');
+
+    if (rewriteTest) {
+      const file = path.join(mitm, 'response-header-rule.json');
+      for (const enabled of [true, false]) {
+        const rule = { enabled, host: selected, path: '/demo', header: 'X-NetVerge-Test', value: '1' };
+        fs.writeFileSync(file + '.tmp', JSON.stringify(rule));
+        fs.renameSync(file + '.tmp', file);
+        // Each probe establishes new native TUN connections after the worker reload.
+        await sleep(1200);
+        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', enabled ? 'on' : 'off'],
+          { stdio: 'inherit', timeout: 75000 });
+        console.log('PASS: response header rewrite ' + (enabled ? 'enabled' : 'disabled') + ', exact path, bypass and exit verified');
+      }
+    }
 
     const serviceDesktopPid = desktopPid(app);
     await until('disable service mode switch', () => automation(app, 'DisableService') === 'OK');

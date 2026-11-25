@@ -7,6 +7,9 @@ on:
       - '.github/workflows/netverge-windows-desktop-e2e.yml'
       - 'engines/mihomo-route/service/windows-desktop-e2e.cjs'
       - 'engines/mihomo-route/service/windows-desktop-uia.ps1'
+      - 'engines/whistle/route-worker.cjs'
+      - 'engines/whistle/windows-tun-lab.cjs'
+      - 'engines/whistle/mitm-lab.cjs'
   workflow_dispatch:
     inputs:
       package_run:
@@ -26,6 +29,10 @@ permissions:
 
 jobs:
   desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [packaged, rewrite]
     runs-on: windows-latest
     timeout-minutes: 12
     steps:
@@ -58,4 +65,4 @@ jobs:
           if (!(Test-Path -LiteralPath (Join-Path $package 'NetVerge-MITM.exe') -PathType Leaf)) {
             throw 'The downloaded artifact does not contain the desktop test executable.'
           }
-          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package
+          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package ${{ matrix.scenario }}

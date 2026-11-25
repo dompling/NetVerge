@@ -205,7 +205,7 @@ async function fakeAddress(port, host) {
   return ip;
 }
 
-function dialTun(ip, host, originPort, ca, deadlineMs = 15000) {
+function dialTun(ip, host, originPort, ca, deadlineMs = 15000, requestPath = '/netverge-proof') {
   return new Promise((resolve, reject) => {
     // Native TLS socket to the fake IP; no HTTP proxy or CONNECT at the client.
     const secured = tls.connect({ host: ip, port: originPort, servername: host, ca, rejectUnauthorized: true, ALPNProtocols: ['http/1.1'] });
@@ -222,7 +222,7 @@ function dialTun(ip, host, originPort, ca, deadlineMs = 15000) {
       secured.on('data', chunk => { response += chunk; });
       secured.once('end', () => { clearTimeout(timer); resolve({ fingerprint, response }); });
       secured.once('close', () => { if (!response) fail(new Error('TUN closed without response')); });
-      secured.write('GET /netverge-proof HTTP/1.1\r\nHost: ' + host + ':' + originPort + '\r\nConnection: close\r\n\r\n');
+      secured.write('GET ' + requestPath + ' HTTP/1.1\r\nHost: ' + host + ':' + originPort + '\r\nConnection: close\r\n\r\n');
     });
   });
 }

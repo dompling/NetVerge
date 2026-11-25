@@ -24,10 +24,11 @@ async function serve(dir) {
   const dns = await startLabDns(hosts);
   dns.on('error', err => { throw err; });
   const origin = https.createServer({ key: certs.key, cert: certs.cert }, (req, res) => {
-    if (req.url !== '/netverge-proof' || req.headers['proxy-authorization'] || req.headers['x-whistle-tunnel-data']) {
+    if (!['/netverge-proof', '/demo', '/demo/other'].includes(req.url) || req.headers['proxy-authorization'] || req.headers['x-whistle-tunnel-data']) {
       res.writeHead(400).end();
       return;
     }
+    res.setHeader('X-NetVerge-Test', 'origin');
     res.end(body);
   });
   const originPort = await listen(origin);
@@ -65,11 +66,13 @@ async function fakeAddress(port, host) {
   return ip;
 }
 
-async function probe(dir, port, mode) {
+async function probe(dir, port, mode, rewrite) {
   const log = path.join(dir, 'exit-observations');
   const originCA = fs.readFileSync(path.join(dir, 'origin-ca.pem'));
   const originLeaf = new X509Certificate(fs.readFileSync(path.join(dir, 'origin-leaf.pem')));
-  for (const host of hosts) {
+  const cases = rewrite ? [[selected, '/demo'], [selected, '/demo/other'], [bypass, '/demo']] :
+    hosts.map(host => [host, '/netverge-proof']);
+  for (const [host, requestPath] of cases) {
     const ip = await fakeAddress(port, host);
     const before = fs.readFileSync(log, 'utf8');
     if (mode === 'pending') {
@@ -82,9 +85,14 @@ async function probe(dir, port, mode) {
     const ca = intercepted
       ? new X509Certificate(fs.readFileSync(path.join(dir, 'whistle.der'))).toString()
       : originCA;
-    const result = await dialTun(ip, host, 443, ca);
+    const result = await dialTun(ip, host, 443, ca, 15000, requestPath);
     assert.match(result.response, /^HTTP\/1\.[01] 200 /);
     assert.ok(result.response.includes(body), 'missing controlled origin response');
+    if (rewrite) {
+      const expected = rewrite === 'on' && intercepted && requestPath === '/demo' ? '1' : 'origin';
+      const fields = result.response.split('\r\n\r\n')[0].split('\r\n').filter(line => /^x-netverge-test:/i.test(line));
+      assert.deepEqual(fields.map(line => line.slice(line.indexOf(':') + 1).trim()), [expected], host + requestPath);
+    }
     if (intercepted) assert.notEqual(result.fingerprint, originLeaf.fingerprint256);
     else assert.equal(result.fingerprint, originLeaf.fingerprint256);
     assert.equal(fs.readFileSync(log, 'utf8'), before + host + ':443\n', 'flow must use the original HTTP exit once');
@@ -93,9 +101,9 @@ async function probe(dir, port, mode) {
 }
 
 async function main() {
-  const [action, dir, port, mode] = process.argv.slice(2);
+  const [action, dir, port, mode, rewrite] = process.argv.slice(2);
   if (action === 'serve') await serve(dir);
-  else if (action === 'probe' && ['pending', 'enabled', 'disabled'].includes(mode)) await probe(dir, port, mode);
+  else if (action === 'probe' && ['pending', 'enabled', 'disabled'].includes(mode)) await probe(dir, port, mode, rewrite);
   else throw new Error('expected serve or probe with a valid TUN phase');
 }
 
