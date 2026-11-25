@@ -971,6 +971,18 @@ export interface TranslationResources {
         recovery: string
         refresh: string
         removeHost: string
+        rewrite: {
+          add: string
+          enable: string
+          header: string
+          hint: string
+          hits: string
+          host: string
+          path: string
+          saving: string
+          title: string
+          value: string
+        }
         routingPaused: string
         serviceMode: string
         serviceRestartRequired: string

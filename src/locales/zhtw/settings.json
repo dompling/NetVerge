@@ -725,6 +725,18 @@
     "empty": "找不到設定"
   },
   "mitm": {
+    "rewrite": {
+      "title": "回應標頭重寫",
+      "add": "新增規則",
+      "hint": "離開欄位後自動儲存。規則僅適用於已加入 MITM 的網域。",
+      "host": "MITM 網域",
+      "path": "精確路徑",
+      "header": "標頭名稱（X-…）",
+      "value": "標頭值",
+      "enable": "啟用規則",
+      "hits": "本次 worker 執行命中",
+      "saving": "正在儲存…"
+    },
     "title": "MITM",
     "serviceMode": "Windows MITM 服務模式",
     "serviceRestartRequired": "重新啟動 NetVerge 後套用服務模式設定。",

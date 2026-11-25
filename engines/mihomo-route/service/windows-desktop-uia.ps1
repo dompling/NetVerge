@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,6 +69,40 @@ switch ($Action) {
             catch [Windows.Automation.ElementNotAvailableException] { }
             'OK'
         }
+    }
+    'FillRule' {
+        $add = Find-Element 'Add rule' ([Windows.Automation.ControlType]::Button)
+        if ($add) { $add.GetCurrentPattern($invoke).Invoke(); break }
+        $keys = New-Object -ComObject WScript.Shell
+        if (!$keys.AppActivate($process.Id)) { break }
+        $fields = [ordered]@{'MITM hostname'='api.example.test'; 'Exact path'='/demo'; 'X- header name'='X-NetVerge-Test'; 'Header value'='1'}
+        foreach ($label in $fields.Keys) {
+            $field = Find-Element $label ([Windows.Automation.ControlType]::Edit)
+            if (!$field) { return }
+            $field.SetFocus()
+            $keys.SendKeys('^a')
+            $keys.SendKeys($fields[$label])
+            $keys.SendKeys('{TAB}')
+        }
+        'OK'
+    }
+    'ToggleRule' {
+        $button = Find-Element 'Enable rule' ([Windows.Automation.ControlType]::Button)
+        if (!$button -or !$button.Current.IsEnabled) { break }
+        $keys = New-Object -ComObject WScript.Shell
+        if (!$keys.AppActivate($process.Id)) { break }
+        $button.SetFocus()
+        $keys.SendKeys(' ')
+        'OK'
+    }
+    'DeleteRule' {
+        $button = Find-Element 'Delete' ([Windows.Automation.ControlType]::Button)
+        if ($button) { $button.GetCurrentPattern($invoke).Invoke(); 'OK' }
+    }
+    'RuleHits' {
+        $texts = $root.FindAll($scope, [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Text))
+        if ($texts | Where-Object { $_.Current.Name -match 'Hits this worker session.*[1-9]' }) { 'OK' }
     }
     'Healthy' {
         if (Find-Element 'Local link healthy') { 'OK'; break }

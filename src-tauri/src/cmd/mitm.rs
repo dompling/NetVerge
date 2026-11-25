@@ -15,6 +15,26 @@ pub async fn set_mitm_service_mode(enabled: bool) -> super::CmdResult<()> {
     mitm::route_runtime::set_service_preference(enabled).await.stringify_err()
 }
 
+#[tauri::command]
+#[specta::specta]
+pub fn get_response_header_rule() -> super::CmdResult<Option<mitm::rewrite::ResponseHeaderRule>> {
+    use super::StringifyErr as _;
+    mitm::rewrite::read().stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn save_response_header_rule(expected: Option<mitm::rewrite::ResponseHeaderRule>, rule: Option<mitm::rewrite::ResponseHeaderRule>) -> super::CmdResult<()> {
+    use super::StringifyErr as _;
+    mitm::rewrite::save(expected, rule).await.stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_response_header_hits() -> Option<u32> {
+    mitm::route_runtime::response_header_hits()
+}
+
 /// Returns the last verified public CA only. Never installs trust or exports a private key.
 #[tauri::command]
 #[specta::specta]

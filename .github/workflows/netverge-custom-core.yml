@@ -4,6 +4,8 @@ on:
     branches: [feat/mitm-route-integration]
     paths:
       - 'engines/mihomo-route/**'
+      - 'src/components/mitm/response-rule-editor.tsx'
+      - 'src-tauri/src/core/mitm/rewrite.rs'
       - 'src-tauri/src/core/mitm/service_generation.rs'
       - 'src-tauri/src/core/mitm/service_pipe.rs'
       - 'src-tauri/src/core/mitm/control_http.rs'
@@ -220,3 +222,33 @@ jobs:
           path: NetVerge-MITM-Test-Windows-x64-*.zip
           archive: false
           if-no-files-found: error
+
+  windows-rewrite-editor:
+    needs: windows-test-package
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26.13.1'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: NetVerge-MITM-Test-Windows-x64-*.zip
+          merge-multiple: true
+          path: desktop-artifact
+      - name: Install probe dependencies
+        working-directory: engines/whistle
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Verify packaged rewrite editor through Windows UI and TLS
+        shell: pwsh
+        run: |
+          $package = (Resolve-Path desktop-artifact).Path
+          $zip = Get-ChildItem $package -Filter 'NetVerge-MITM-Test-Windows-x64-*.zip' | Select-Object -First 1
+          if ($zip) {
+            $package = Join-Path $env:RUNNER_TEMP 'netverge-rewrite-editor'
+            Expand-Archive -LiteralPath $zip.FullName -DestinationPath $package
+          }
+          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package editor

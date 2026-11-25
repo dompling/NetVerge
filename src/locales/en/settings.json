@@ -725,6 +725,18 @@
     "empty": "No settings found"
   },
   "mitm": {
+    "rewrite": {
+      "title": "Response header rewrite",
+      "add": "Add rule",
+      "hint": "Changes save when you leave a field. The rule applies only to a hostname selected for MITM.",
+      "host": "MITM hostname",
+      "path": "Exact path",
+      "header": "X- header name",
+      "value": "Header value",
+      "enable": "Enable rule",
+      "hits": "Hits this worker session",
+      "saving": "Saving…"
+    },
     "title": "MITM",
     "serviceMode": "Windows MITM service mode",
     "serviceRestartRequired": "Restart NetVerge to apply the service mode setting.",

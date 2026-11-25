@@ -43,6 +43,10 @@ export const commands = {
   getMitmStatus: () => __TAURI_INVOKE<MitmStatus_Serialize>('get_mitm_status'),
   /**  Save the guarded service preference for the next complete app start. */
   setMitmServiceMode: (enabled: boolean) => __TAURI_INVOKE<null>('set_mitm_service_mode', { enabled }),
+  getResponseHeaderRule: () => __TAURI_INVOKE<ResponseHeaderRule | null>('get_response_header_rule'),
+  saveResponseHeaderRule: (expected: ResponseHeaderRule | null, rule: ResponseHeaderRule | null) =>
+    __TAURI_INVOKE<null>('save_response_header_rule', { expected, rule }),
+  getResponseHeaderHits: () => __TAURI_INVOKE<number | null>('get_response_header_hits'),
   /**  Returns the last verified public CA only. Never installs trust or exports a private key. */
   getMitmPublicCa: () =>
     __TAURI_INVOKE<MitmPublicCa | null>('get_mitm_public_ca'),
@@ -650,6 +654,14 @@ export type MitmConfigView_Serialize = {
   revision: string | null
   restartRequired: boolean
   policies: string[]
+}
+
+export type ResponseHeaderRule = {
+  enabled: boolean
+  host: string
+  path: string
+  header: string
+  value: string
 }
 
 export type MitmPublicCa = {

@@ -23,6 +23,7 @@ const allowed = new Set(hosts.map(host => host + ':443'));
 // This file belongs to the local MITM profile. Remote Clash profiles cannot supply rules.
 const rewriteFile = path.join(dataDir, 'response-header-rule.json');
 let responseRule;
+let rewriteHits = 0;
 function loadResponseRule() {
   responseRule = undefined;
   try {
@@ -49,6 +50,7 @@ function applyResponseRule(req, res, authority) {
       new URL(req.url, 'https://' + authority).pathname !== rule.path) return;
   const writeHead = res.writeHead;
   res.writeHead = function(status, reason, fields) {
+    rewriteHits = Math.min(rewriteHits + 1, 0xfffffffe);
     const headers = typeof reason === 'string' ? fields : reason;
     // Explicit writeHead fields take precedence over setHeader, including
     // differently cased or repeated fields. Preserve every unrelated field.
@@ -115,7 +117,7 @@ function control(req,res) {
     reply(res,403); return true;
   }
   if (req.method === 'GET' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
-    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)]});
+    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],rewriteHits});
     res.writeHead(200, {Connection:'close','Cache-Control':'no-store','Content-Type':'application/json','Content-Length':Buffer.byteLength(body)});
     res.end(body);
     return true;

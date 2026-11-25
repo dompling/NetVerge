@@ -216,6 +216,27 @@ async function main() {
       }
     }
 
+    if (process.argv[3] === 'editor') {
+      const file = path.join(mitm, 'response-header-rule.json');
+      await until('enter rewrite fields', () => automation(app, 'FillRule') === 'OK');
+      const rule = { enabled: false, host: selected, path: '/demo', header: 'X-NetVerge-Test', value: '1' };
+      for (const enabled of [false, true, false]) {
+        if (enabled !== rule.enabled) await until('toggle rewrite', () => automation(app, 'ToggleRule') === 'OK');
+        rule.enabled = enabled;
+        await until('autosaved rewrite', () => {
+          assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), rule);
+          return true;
+        });
+        await sleep(1200);
+        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', enabled ? 'on' : 'off'],
+          { stdio: 'inherit', timeout: 75000 });
+        if (enabled) await until('visible rewrite hits', () => automation(app, 'RuleHits') === 'OK');
+      }
+      await until('delete rewrite', () => automation(app, 'DeleteRule') === 'OK');
+      await until('removed rewrite file', () => !fs.existsSync(file));
+      console.log('PASS: packaged editor autosave, toggle, TLS response, hits and deletion');
+    }
+
     const serviceDesktopPid = desktopPid(app);
     await until('disable service mode switch', () => automation(app, 'DisableService') === 'OK');
     await until('disabled service preference persisted', () =>
