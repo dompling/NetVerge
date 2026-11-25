@@ -1,5 +1,13 @@
-//! Run on a disposable Windows CI runner only. Uses the actual upstream
-//! service IPC and watchdog in test mode (no service registration/elevation).
+//! Run on a disposable Windows CI runner only. Both modes exercise the same
+//! recovery scenario against the upstream watchdog.
+#[cfg(any(
+    all(feature = "in-process", feature = "installed-service"),
+    not(any(feature = "in-process", feature = "installed-service"))
+))]
+compile_error!("select exactly one of in-process or installed-service");
+
+#[cfg(feature = "installed-service")]
+mod installed;
 #[path = "../../../../../src-tauri/src/core/mitm/service_restore.rs"]
 mod service_restore;
 #[path = "../../../../../src-tauri/src/core/mitm/controller_state.rs"]
@@ -13,24 +21,33 @@ mod service_pipe;
 
 use anyhow::{Context, Result, ensure};
 use clash_verge_service_ipc::{
-    CoreWatchdogTestConfig, OwnerCredentials, OwnerSessionProof, RuntimeBundle, StartClashRequest,
-    ServiceLifecycleState, connect, run_ipc_supervisor_until_shutdown, service_lifecycle_state,
-    set_core_watchdog_config_for_tests, start_clash, stop_clash, test_owner_credentials,
+    OwnerCredentials, OwnerSessionProof, RuntimeBundle, StartClashRequest, start_clash, stop_clash,
 };
-use std::{os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle}, path::{Path, PathBuf}, process::Stdio, time::Duration};
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, process::{Child, Command}, sync::oneshot, time::{sleep, timeout}};
+#[cfg(feature = "in-process")]
+use clash_verge_service_ipc::{
+    CoreWatchdogTestConfig, ServiceLifecycleState, connect, run_ipc_supervisor_until_shutdown, service_lifecycle_state,
+    set_core_watchdog_config_for_tests, test_owner_credentials,
+};
+use std::{
+    ffi::OsString,
+    os::windows::{ffi::OsStringExt, io::{AsRawHandle, FromRawHandle, OwnedHandle}},
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
+use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, process::{Child, Command}, time::{sleep, timeout}};
 use service_generation::{Generation, GenerationWatch, Transition};
 use service_restore::{BoundController, CommittedSelection, WorkerLink, current, free_port, secret};
-use windows_sys::Win32::{
-    Foundation::CloseHandle,
-    System::{
-        JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-            QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
-        },
-        Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE, TerminateProcess},
+use windows_sys::Win32::System::{
+    JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+        QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+    },
+    Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
+        PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
     },
 };
 
@@ -202,17 +219,31 @@ impl Worker {
     }
 }
 
-fn terminate_fixture(pid: u32) -> Result<()> {
-    // SAFETY: this PID comes from the isolated, authenticated service fixture.
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-    ensure!(!handle.is_null(), "unable to open supervised fixture");
-    let killed = unsafe { TerminateProcess(handle, 19) };
-    unsafe { CloseHandle(handle) };
-    ensure!(killed != 0, "unable to terminate supervised fixture");
+fn open_fixture(pid: u32, expected_image: &Path, access: u32) -> Result<OwnedHandle> {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | access, 0, pid) };
+    if handle.is_null() {
+        return Err(std::io::Error::last_os_error()).context("open supervised fixture");
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    let mut image = vec![0_u16; 32768];
+    let mut length = image.len() as u32;
+    if unsafe { QueryFullProcessImageNameW(handle.as_raw_handle(), PROCESS_NAME_WIN32, image.as_mut_ptr(), &mut length) } == 0 {
+        return Err(std::io::Error::last_os_error()).context("identify supervised fixture image");
+    }
+    let image = PathBuf::from(OsString::from_wide(&image[..length as usize]));
+    ensure!(image.canonicalize()?.as_path() == expected_image, "supervised fixture is not the expected core image");
+    Ok(handle)
+}
+
+fn terminate_fixture(pid: u32, expected_image: &Path) -> Result<()> {
+    let handle = open_fixture(pid, expected_image, PROCESS_TERMINATE)?;
+    if unsafe { TerminateProcess(handle.as_raw_handle(), 19) } == 0 {
+        return Err(std::io::Error::last_os_error()).context("terminate supervised fixture");
+    }
     Ok(())
 }
 
-async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, worker: &Worker) -> Result<()> {
+async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, worker: &Worker, core: &Path) -> Result<()> {
     let first = wait_core(credentials, proof, None).await?;
     let mut watch = GenerationWatch::default();
     ensure!(watch.observe(Some(first)) == Transition::Initial && watch.current() == Some(first), "initial service generation not recorded");
@@ -223,12 +254,14 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
     let disabled = CommittedSelection { enabled: false, hosts: enabled.hosts.clone(), ca_fingerprint: enabled.ca_fingerprint.clone() };
     let link = || WorkerLink { port: worker.port, secret: &worker.secret, ca_fingerprint: &worker.ca_fingerprint };
     let controller = BoundController::new(first, port)?;
+    #[cfg(feature = "installed-service")]
+    installed::verify_generation(credentials, first, core).await?;
     controller.bootstrap(credentials, proof).await?.verify_pending()?;
     controller.restore(credentials, proof, &enabled, Some(link())).await?;
     // Replay the same generation and selection, as after an uncertain reply.
     controller.restore(credentials, proof, &enabled, Some(link())).await?;
     println!("PASS: Rust owner/PID-bound bootstrap and idempotent committed selection");
-    terminate_fixture(first.pid)?;
+    terminate_fixture(first.pid, core)?;
     ensure!(watch.observe(None) == Transition::Unavailable && watch.current().is_none(), "lost generation still current");
     let second = wait_core(credentials, proof, Some(first)).await?;
     ensure!(watch.observe(Some(second)) == Transition::Restarted, "replacement service generation rejected");
@@ -237,6 +270,8 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
     println!("PASS: service watchdog published replacement core generation {second:?}");
     ensure!(controller.confirm_current(credentials, proof).await.is_err(), "old generation remained current");
     let fresh = BoundController::new(second, port)?;
+    #[cfg(feature = "installed-service")]
+    installed::verify_generation(credentials, second, core).await?;
     fresh.bootstrap(credentials, proof).await?.verify_pending()?;
     // Same credential after a possible lost bootstrap acknowledgement.
     fresh.bootstrap(credentials, proof).await?.verify_pending()?;
@@ -254,15 +289,74 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
     // This is a deliberate owner disable, not an automatic fallback.
     ensure!(fresh.request("DELETE", &fresh.secret, &[]).await?.0 == 204, "disable rejected");
     fresh.state().await?.verify_selection(false, &[])?;
-    terminate_fixture(second.pid)?;
+    terminate_fixture(second.pid, core)?;
     let third = wait_core(credentials, proof, Some(second)).await?;
     let replacement = BoundController::new(third, port)?;
+    #[cfg(feature = "installed-service")]
+    installed::verify_generation(credentials, third, core).await?;
     replacement.bootstrap(credentials, proof).await?.verify_pending()?;
     replacement.restore(credentials, proof, &disabled, None).await?;
     replacement.restore(credentials, proof, &disabled, None).await?;
     replacement.state().await?.verify_selection(false, &[])?;
     println!("PASS: explicitly disabled selection stays disabled after actual watchdog restart");
     Ok(())
+}
+
+async fn start_and_exercise(credentials: &OwnerCredentials, core: &Path, worker: &Worker) -> Result<()> {
+    let mut session_bytes = [0_u8; 32];
+    getrandom::fill(&mut session_bytes).map_err(|_| anyhow::anyhow!("random source unavailable"))?;
+    let token: String = session_bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let response = start_clash(credentials, &StartClashRequest {
+        runtime: RuntimeBundle {
+            yaml: "mode: rule\nlog-level: warning\nmixed-port: 0\nallow-lan: false\ngeo-auto-update: false\nrules:\n  - MATCH,DIRECT\n".into(),
+            assets: Vec::new(), remote_providers: Vec::new(), core_path: core.to_string_lossy().into_owned(),
+        },
+        proposed_session_token: token.clone(), macos_proxy: None,
+    }).await?;
+    ensure!(response.code == 0, "service start rejected ({}): {}", response.code, response.message);
+    let proof = OwnerSessionProof { generation: response.data.context("missing service owner session")?.session.generation, token };
+    let result = scenario(credentials, &proof, worker, core).await;
+    let stopped = stop_clash(credentials, &proof).await;
+    result?;
+    let stopped = stopped?;
+    ensure!(stopped.code == 0, "service stop rejected ({}): {}", stopped.code, stopped.message);
+    Ok(())
+}
+
+#[cfg(feature = "in-process")]
+async fn exercise(core: PathBuf, fixture: &Path, worker: &Worker) -> Result<()> {
+    let core_copy = fixture.join("verge-mihomo.exe");
+    std::fs::copy(core, &core_copy)?;
+    let core_copy = core_copy.canonicalize()?;
+    let credentials = test_owner_credentials(&fixture.join("owner"))?;
+    set_core_watchdog_config_for_tests(Some(CoreWatchdogTestConfig {
+        max_restarts: 3, restart_window: Duration::from_secs(60), max_backoff: Duration::ZERO,
+    }));
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let supervisor = tokio::spawn(run_ipc_supervisor_until_shutdown(async move {
+        let _ = shutdown_rx.await;
+    }));
+    let result = async {
+        timeout(Duration::from_secs(20), async {
+            while service_lifecycle_state() != ServiceLifecycleState::Running || connect().await.is_err() {
+                sleep(Duration::from_millis(100)).await;
+            }
+        }).await.context("service IPC readiness timeout")?;
+        println!("PASS: actual upstream IPC supervisor reports Running");
+        start_and_exercise(&credentials, &core_copy, worker).await
+    }.await;
+    let _ = shutdown_tx.send(());
+    let shutdown = timeout(Duration::from_secs(30), supervisor).await;
+    set_core_watchdog_config_for_tests(None);
+    result?;
+    shutdown.context("service supervisor shutdown timed out")?.context("service supervisor task failed")??;
+    Ok(())
+}
+
+#[cfg(feature = "installed-service")]
+async fn exercise(core: PathBuf, _fixture: &Path, worker: &Worker) -> Result<()> {
+    let credentials = installed::owner_credentials()?;
+    start_and_exercise(&credentials, &core, worker).await
 }
 
 #[tokio::main]
@@ -279,52 +373,13 @@ async fn main() -> Result<()> {
     let fixture = std::env::temp_dir().join(format!("netverge-service-rust-lab-{}-{}", std::process::id(), secret()?));
     std::fs::create_dir(&fixture)?;
     let fixture = ordinary_directory(&fixture)?;
-    let core_copy = fixture.join("verge-mihomo.exe");
-    std::fs::copy(core, &core_copy)?;
-    let credentials = test_owner_credentials(&fixture.join("owner"))?;
     let worker = Worker::start(&script, &fixture.join("whistle")).await?;
-    set_core_watchdog_config_for_tests(Some(CoreWatchdogTestConfig {
-        max_restarts: 3, restart_window: Duration::from_secs(60), max_backoff: Duration::ZERO,
-    }));
-    // run_ipc_server() alone leaves the upstream service lifecycle state
-    // at Starting. Use the real supervisor, which owns readiness and cleanup.
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let supervisor = tokio::spawn(run_ipc_supervisor_until_shutdown(async move {
-        let _ = shutdown_rx.await;
-    }));
-    let result = async {
-        timeout(Duration::from_secs(20), async {
-            while service_lifecycle_state() != ServiceLifecycleState::Running || connect().await.is_err() {
-                sleep(Duration::from_millis(100)).await;
-            }
-        }).await.context("service IPC readiness timeout")?;
-        println!("PASS: actual upstream IPC supervisor reports Running");
-        let token = "42".repeat(32);
-        let response = start_clash(&credentials, &StartClashRequest {
-            runtime: RuntimeBundle {
-                yaml: "mode: rule\nlog-level: warning\nmixed-port: 0\nallow-lan: false\ngeo-auto-update: false\nrules:\n  - MATCH,DIRECT\n".into(),
-                assets: Vec::new(), remote_providers: Vec::new(), core_path: core_copy.to_string_lossy().into_owned(),
-            },
-            proposed_session_token: token.clone(), macos_proxy: None,
-        }).await?;
-        ensure!(response.code == 0, "service start rejected: {}", response.code);
-        let proof = OwnerSessionProof { generation: response.data.context("missing service owner session")?.session.generation, token };
-        let result = scenario(&credentials, &proof, &worker).await;
-        let stopped = stop_clash(&credentials, &proof).await;
-        result?;
-        ensure!(stopped?.code == 0, "service stop rejected");
-        Ok::<_, anyhow::Error>(())
-    }.await;
-    let _ = shutdown_tx.send(());
-    let shutdown = timeout(Duration::from_secs(30), supervisor).await;
+    let result = exercise(core, &fixture, &worker).await;
     let worker_shutdown = worker.stop().await;
-    set_core_watchdog_config_for_tests(None);
     let cleanup = worker_shutdown.and_then(|()| {
         std::fs::remove_dir_all(fixture).context("remove service fixture directory after shutdown")
     });
     result?;
-    shutdown.context("service supervisor shutdown timed out")?
-        .context("service supervisor task failed")??;
     cleanup?;
     Ok(())
 }

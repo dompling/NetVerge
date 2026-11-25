@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$BuildDirectory,
-    [Parameter(Mandatory)][string]$GuardedCore
+    [Parameter(Mandatory)][string]$GuardedCore,
+    [Parameter(Mandatory)][string]$Worker
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,16 +54,44 @@ try {
         throw 'Rejected core bytes changed the approved copy'
     }
     Write-Host 'PASS: a digest mismatch leaves the approved guarded core intact'
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $ownerRoot = Join-Path $fixtureDirectory 'owner'
+    $null = New-Item -ItemType Directory -Path $ownerRoot
+    $directoryAcl = Get-Acl -LiteralPath $ownerRoot
+    $directoryAcl.SetOwner($identity)
+    Set-Acl -LiteralPath $ownerRoot -AclObject $directoryAcl
+    $tokenPath = Join-Path $ownerRoot '.clash-verge-service-owner-token'
+    $token = [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+    [IO.File]::WriteAllBytes($tokenPath, $token)
+    $tokenAcl = [Security.AccessControl.FileSecurity]::new()
+    $tokenAcl.SetOwner($identity)
+    $tokenAcl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @($identity.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+        $principal = [Security.Principal.SecurityIdentifier]::new($sid)
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new($principal, 'FullControl', 'Allow')
+        $tokenAcl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $tokenPath -AclObject $tokenAcl
+
+    $manifest = Join-Path $PSScriptRoot 'rust-lab/Cargo.toml'
+    cargo run --locked --manifest-path $manifest --no-default-features --features installed-service -- $installedCore $Worker $identity.Value $ownerRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed service recovery scenario failed with exit code $LASTEXITCODE"
+    }
 } finally {
-    Remove-Item -LiteralPath $fixtureDirectory -Recurse -Force
-    if ($installAttempted) {
-        & $uninstaller
-        if ($LASTEXITCODE -ne 0) {
-            throw "Development service uninstaller failed with exit code $LASTEXITCODE"
+    try {
+        if ($installAttempted) {
+            & $uninstaller
+            if ($LASTEXITCODE -ne 0) {
+                throw "Development service uninstaller failed with exit code $LASTEXITCODE"
+            }
+            if ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $installedCore)) {
+                throw 'The development service or its approved guarded core survived uninstall'
+            }
+            Write-Host 'PASS: Windows development service and approved guarded core removed'
         }
-        if ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $installedCore)) {
-            throw 'The development service or its approved guarded core survived uninstall'
-        }
-        Write-Host 'PASS: Windows development service and approved guarded core removed'
+    } finally {
+        Remove-Item -LiteralPath $fixtureDirectory -Recurse -Force
     }
 }

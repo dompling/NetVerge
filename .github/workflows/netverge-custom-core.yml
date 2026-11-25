@@ -123,7 +123,7 @@ jobs:
           ref: 9d4ea7d27fb3c43804bd18f3bb3b686528763239
           path: service-source
           persist-credentials: false
-      - name: Verify dedicated core installation through the Windows development service
+      - name: Verify Windows development service installation and guarded core recovery
         if: runner.os == 'Windows'
         shell: pwsh
         timeout-minutes: 8
@@ -136,7 +136,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --locked --manifest-path service-source/Cargo.toml --features standalone,client,development-channel --bin clash-verge-service --bin clash-verge-service-install --bin clash-verge-service-uninstall
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./netverge/engines/mihomo-route/service/test-windows-install.ps1 -BuildDirectory './service-source/target/debug' -GuardedCore './service-lab/mihomo-service-lab.exe'
+          $worker = Join-Path $env:GITHUB_WORKSPACE 'netverge/engines/whistle/route-worker.cjs'
+          & ./netverge/engines/mihomo-route/service/test-windows-install.ps1 -BuildDirectory './service-source/target/debug' -GuardedCore './service-lab/mihomo-service-lab.exe' -Worker $worker
       - uses: actions/upload-artifact@v4
         with:
           name: mihomo-netverge-${{ matrix.os }}-${{ github.sha }}

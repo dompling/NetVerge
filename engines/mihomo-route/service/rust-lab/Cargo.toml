@@ -8,6 +8,11 @@ publish = false
 # with the production client or relax its installed-core trust boundary.
 [workspace]
 
+[features]
+default = ["in-process"]
+in-process = ["clash_verge_service_ipc/standalone", "clash_verge_service_ipc/test"]
+installed-service = ["clash_verge_service_ipc/development-channel", "windows-sys/Win32_Security_Authorization", "windows-sys/Win32_Storage_FileSystem"]
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
@@ -16,5 +21,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "process"] }
-clash_verge_service_ipc = { git = "https://github.com/clash-verge-rev/clash-verge-service-ipc.git", tag = "v2.8.1", features = ["standalone", "client", "test"] }
+clash_verge_service_ipc = { git = "https://github.com/clash-verge-rev/clash-verge-service-ipc.git", tag = "v2.8.1", features = ["client"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
