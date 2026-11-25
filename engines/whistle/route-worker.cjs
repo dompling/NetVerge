@@ -44,6 +44,46 @@ function loadResponseRule() {
 loadResponseRule();
 fs.watchFile(rewriteFile, { interval: 500, persistent: false }, loadResponseRule);
 
+// Request rewriting has its own local rule and session counter. Do not
+// accept routing, identity, framing, authentication or Whistle control
+// headers: this initial implementation permits only X-Custom-* names.
+const requestRewriteFile = path.join(dataDir, 'request-header-rule.json');
+let requestRule;
+let requestRewriteHits = 0;
+function loadRequestRule() {
+  requestRule = undefined;
+  try {
+    const stat = fs.lstatSync(requestRewriteFile);
+    if (!stat.isFile() || stat.size > 8192) throw new Error();
+    const rule = JSON.parse(fs.readFileSync(requestRewriteFile, 'utf8'));
+    if (rule.enabled === false) return;
+    if (rule.enabled !== true || Object.keys(rule).sort().join(',') !== 'enabled,header,host,path,value' ||
+        !hosts.includes(rule.host) || typeof rule.path !== 'string' ||
+        !/^\/[^?#\s]*$/.test(rule.path) || typeof rule.header !== 'string' ||
+        !/^x-custom-[a-z0-9-]{1,91}$/i.test(rule.header) || typeof rule.value !== 'string' ||
+        rule.value.length > 1024) throw new Error();
+    http.validateHeaderValue(rule.header, rule.value);
+    requestRule = { ...rule, header: rule.header.toLowerCase() };
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Invalid local request header rule; rewrite disabled');
+  }
+}
+loadRequestRule();
+fs.watchFile(requestRewriteFile, { interval: 500, persistent: false }, loadRequestRule);
+
+function applyRequestRule(req, authority) {
+  const rule = requestRule;
+  if (!rule || authority !== rule.host + ':443' ||
+      new URL(req.url, 'https://' + authority).pathname !== rule.path) return;
+  // The verified request still uses its original admitted connection lease.
+  // Remove every case variant from raw headers so duplicate client values
+  // cannot take precedence when Whistle reconstructs the upstream request.
+  strip(req, rule.header);
+  req.headers[rule.header] = rule.value;
+  if (Array.isArray(req.rawHeaders)) req.rawHeaders.push(rule.header, rule.value);
+  requestRewriteHits = Math.min(requestRewriteHits + 1, 0xfffffffe);
+}
+
 function applyResponseRule(req, res, authority) {
   const rule = responseRule;
   if (!rule || authority !== rule.host + ':443' ||
@@ -117,7 +157,7 @@ function control(req,res) {
     reply(res,403); return true;
   }
   if (req.method === 'GET' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
-    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],rewriteHits});
+    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],rewriteHits,requestRewriteHits});
     res.writeHead(200, {Connection:'close','Cache-Control':'no-store','Content-Type':'application/json','Content-Length':Buffer.byteLength(body)});
     res.end(body);
     return true;
@@ -231,6 +271,7 @@ server.emit = function(event, ...args) {
     // After the internal TLS bridge, do not trust any user-supplied route
     // header; route identity lives only on the admitted request object.
     admissions.set(req, admission);
+    applyRequestRule(req, admission.route.authority);
     applyResponseRule(req, res, admission.route.authority);
   }
   if (event === 'upgrade') { args[1].destroy(); return true; }

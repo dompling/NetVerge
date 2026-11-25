@@ -30,6 +30,7 @@ async function serve(dir) {
       return;
     }
     res.setHeader('X-NetVerge-Test', 'origin');
+    res.setHeader('X-NetVerge-Observed-Request', req.headers['x-custom-netverge-test'] ?? 'missing');
     res.end(body);
   });
   const originPort = await listen(origin);
@@ -93,13 +94,19 @@ async function probe(dir, port, mode, rewrite) {
     const ca = intercepted
       ? new X509Certificate(fs.readFileSync(path.join(dir, 'whistle.der'))).toString()
       : originCA;
-    const result = await dialTun(ip, host, 443, ca, 15000, requestPath);
+    const requestRewrite = rewrite === 'request-on' || rewrite === 'request-off';
+    const result = await dialTun(ip, host, 443, ca, 15000, requestPath, requestRewrite);
     assert.match(result.response, /^HTTP\/1\.[01] 200 /);
     assert.ok(result.response.includes(body), 'missing controlled origin response');
     if (rewrite) {
       const expected = rewrite === 'on' && intercepted && requestPath === '/demo' ? '1' : 'origin';
       const fields = result.response.split('\r\n\r\n')[0].split('\r\n').filter(line => /^x-netverge-test:/i.test(line));
       assert.deepEqual(fields.map(line => line.slice(line.indexOf(':') + 1).trim()), [expected], host + requestPath);
+    }
+    if (requestRewrite) {
+      const expected = rewrite === 'request-on' && intercepted && requestPath === '/demo' ? 'rewritten' : 'client, duplicate';
+      const fields = result.response.split('\r\n\r\n')[0].split('\r\n').filter(line => /^x-netverge-observed-request:/i.test(line));
+      assert.deepEqual(fields.map(line => line.slice(line.indexOf(':') + 1).trim()), [expected], 'upstream request header: ' + host + requestPath);
     }
     if (intercepted) assert.notEqual(result.fingerprint, originLeaf.fingerprint256);
     else assert.equal(result.fingerprint, originLeaf.fingerprint256);

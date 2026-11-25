@@ -238,6 +238,26 @@ async function main() {
       console.log('PASS: packaged editor autosave, toggle, TLS response, hits and deletion');
     }
 
+    if (rewriteTest || process.argv[3] === 'editor') {
+      // The editor acceptance runs the newly packaged worker, while the
+      // independent rewrite scenario runs the current source worker.
+      const file = path.join(mitm, 'request-header-rule.json');
+      const rule = { enabled: true, host: selected, path: '/demo', header: 'X-Custom-NetVerge-Test', value: 'rewritten' };
+      for (const [name, candidate, expected] of [
+        ['enabled', rule, 'request-on'],
+        ['disabled', { ...rule, enabled: false }, 'request-off'],
+        ['reserved control header rejected', { ...rule, header: 'X-Whistle-Tunnel-Data' }, 'request-off'],
+      ]) {
+        fs.writeFileSync(file + '.tmp', JSON.stringify(candidate));
+        fs.renameSync(file + '.tmp', file);
+        await sleep(1200);
+        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', expected],
+          { stdio: 'inherit', timeout: 75000 });
+        console.log('PASS: request header rewrite ' + name + ', exact path, bypass, TLS and original exit verified');
+      }
+      fs.unlinkSync(file);
+    }
+
     const serviceDesktopPid = desktopPid(app);
     await until('disable service mode switch', () => automation(app, 'DisableService') === 'OK');
     await until('disabled service preference persisted', () =>
