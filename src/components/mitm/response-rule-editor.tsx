@@ -1,4 +1,4 @@
-import { Alert, Button, Card, FormControlLabel, Stack, Switch, TextField, Typography } from '@mui/material'
+import { Alert, Button, Card, FormControlLabel, Stack, Switch, ToggleButton, ToggleButtonGroup, TextField, Typography } from '@mui/material'
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
@@ -13,17 +13,38 @@ function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export function ResponseRuleEditor() {
+type Direction = 'request' | 'response'
+const editors = {
+  request: { read: commands.getRequestHeaderRule, save: commands.saveRequestHeaderRule, hits: commands.getRequestHeaderHits },
+  response: { read: commands.getResponseHeaderRule, save: commands.saveResponseHeaderRule, hits: commands.getResponseHeaderHits },
+}
+
+export function HeaderRuleEditor() {
   const { t } = useTranslation()
-  const { data, error, mutate } = useSWR('mitm-response-rule', commands.getResponseHeaderRule, {
+  const [direction, setDirection] = useState<Direction>('response')
+  return <Stack spacing={1}>
+    <ToggleButtonGroup size="small" exclusive value={direction}
+      onChange={(_, next: Direction | null) => { if (next) setDirection(next) }}>
+      <ToggleButton value="response">{t('settings.mitm.rewrite.title')}</ToggleButton>
+      <ToggleButton value="request">{t('settings.mitm.rewrite.requestTitle')}</ToggleButton>
+    </ToggleButtonGroup>
+    {(['response', 'request'] as const).map(kind => <div key={kind} hidden={direction !== kind}>
+      <Editor direction={kind} visible={direction === kind} />
+    </div>)}
+  </Stack>
+}
+
+function Editor({ direction, visible }: { direction: Direction; visible: boolean }) {
+  const { t } = useTranslation()
+  const { data, error, mutate } = useSWR('mitm-' + direction + '-rule', editors[direction].read, {
     revalidateOnMount: true, revalidateOnFocus: false, revalidateOnReconnect: false,
   })
   if (error) return <Alert severity="error" action={<Button onClick={() => void mutate()}>{t('shared.actions.retry')}</Button>}>{errorDetail(error)}</Alert>
   if (data === undefined) return null
-  return <RuleForm initial={data} changed={rule => { void mutate(rule, { revalidate: false }) }} />
+  return <RuleForm direction={direction} visible={visible} initial={data} changed={rule => { void mutate(rule, { revalidate: false }) }} />
 }
 
-function RuleForm({ initial, changed }: { initial: ResponseHeaderRule | null; changed: (rule: ResponseHeaderRule | null) => void }) {
+function RuleForm({ initial, changed, direction, visible }: { direction: Direction; visible: boolean; initial: ResponseHeaderRule | null; changed: (rule: ResponseHeaderRule | null) => void }) {
   const { t } = useTranslation()
   const [draft, setDraft] = useState(initial)
   // Keep the input snapshot synchronous across keyboard/blur events. A blur
@@ -38,7 +59,7 @@ function RuleForm({ initial, changed }: { initial: ResponseHeaderRule | null; ch
   const saved = useRef(initial)
   const queue = useRef(Promise.resolve())
   const latest = useRef(0)
-  const { data: hits } = useSWR('mitm-response-hits', commands.getResponseHeaderHits, { refreshInterval: 3000 })
+  const { data: hits } = useSWR(visible ? 'mitm-' + direction + '-hits' : null, editors[direction].hits, { refreshInterval: 3000 })
   // Publish the label and count as one accessible status, not separate text nodes.
   const hitStatus = hits == null ? null : `${t('settings.mitm.rewrite.hits')} · ${hits}`
   const persist = (next: ResponseHeaderRule | null) => {
@@ -48,7 +69,7 @@ function RuleForm({ initial, changed }: { initial: ResponseHeaderRule | null; ch
       if (version !== latest.current) return
       try {
         if (JSON.stringify(next) !== JSON.stringify(saved.current)) {
-          await commands.saveResponseHeaderRule(saved.current, next)
+          await editors[direction].save(saved.current, next)
           saved.current = next
           changed(next)
         }
@@ -67,12 +88,11 @@ function RuleForm({ initial, changed }: { initial: ResponseHeaderRule | null; ch
   }
   return <Card variant="outlined" sx={{ p: 2 }}>
     <Stack spacing={1.5}>
-      <Typography variant="subtitle1">{t('settings.mitm.rewrite.title')}</Typography>
       {!draft ? <Button size="small" sx={{ alignSelf: 'flex-start' }} onClick={() => updateDraft({ ...blank })}>{t('settings.mitm.rewrite.add')}</Button> : <>
         <Typography variant="caption">{t('settings.mitm.rewrite.hint')}</Typography>
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
           {(['host', 'path', 'header', 'value'] as const).map(field =>
-            <TextField key={field} fullWidth size="small" label={t(`settings.mitm.rewrite.${field}`)}
+            <TextField key={field} fullWidth size="small" label={t(field === 'header' && direction === 'request' ? 'settings.mitm.rewrite.requestHeader' : `settings.mitm.rewrite.${field}`)}
               value={draft[field]} onChange={event => {
                 if (draftRef.current) updateDraft({ ...draftRef.current, [field]: event.target.value })
               }}

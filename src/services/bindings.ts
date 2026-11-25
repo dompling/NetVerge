@@ -47,6 +47,10 @@ export const commands = {
   saveResponseHeaderRule: (expected: ResponseHeaderRule | null, rule: ResponseHeaderRule | null) =>
     __TAURI_INVOKE<null>('save_response_header_rule', { expected, rule }),
   getResponseHeaderHits: () => __TAURI_INVOKE<number | null>('get_response_header_hits'),
+  getRequestHeaderRule: () => __TAURI_INVOKE<ResponseHeaderRule | null>('get_request_header_rule'),
+  saveRequestHeaderRule: (expected: ResponseHeaderRule | null, rule: ResponseHeaderRule | null) =>
+    __TAURI_INVOKE<null>('save_request_header_rule', { expected, rule }),
+  getRequestHeaderHits: () => __TAURI_INVOKE<number | null>('get_request_header_hits'),
   /**  Returns the last verified public CA only. Never installs trust or exports a private key. */
   getMitmPublicCa: () =>
     __TAURI_INVOKE<MitmPublicCa | null>('get_mitm_public_ca'),

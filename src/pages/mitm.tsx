@@ -7,7 +7,7 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR, { useSWRConfig } from 'swr'
 
-import { ResponseRuleEditor } from '@/components/mitm/response-rule-editor'
+import { HeaderRuleEditor } from '@/components/mitm/response-rule-editor'
 import { BasePage } from '@/components/base'
 import { MitmConfigEditor, MITM_CONFIG_KEY } from '@/components/mitm/mitm-config-editor'
 import {
@@ -134,7 +134,7 @@ const MitmPage = () => {
             }>{t('settings.mitm.serviceRestartRequired')}</Alert>}
           </Card>
         )}
-        {(live || status?.serviceModeRequested) && <ResponseRuleEditor />}
+        {(live || status?.serviceModeRequested) && <HeaderRuleEditor />}
         {!live && !status?.serviceModeRequested && <Alert severity="info">{t('settings.mitm.routingPaused')}</Alert>}
         {status?.serviceFailure && <Alert severity="error">{status.serviceFailure}</Alert>}
         {error && <Alert severity="error">{t('settings.mitm.error')}</Alert>}

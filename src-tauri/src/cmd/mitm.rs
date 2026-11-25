@@ -19,20 +19,40 @@ pub async fn set_mitm_service_mode(enabled: bool) -> super::CmdResult<()> {
 #[specta::specta]
 pub fn get_response_header_rule() -> super::CmdResult<Option<mitm::rewrite::ResponseHeaderRule>> {
     use super::StringifyErr as _;
-    mitm::rewrite::read().stringify_err()
+    mitm::rewrite::read(mitm::rewrite::Direction::Response).stringify_err()
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn save_response_header_rule(expected: Option<mitm::rewrite::ResponseHeaderRule>, rule: Option<mitm::rewrite::ResponseHeaderRule>) -> super::CmdResult<()> {
     use super::StringifyErr as _;
-    mitm::rewrite::save(expected, rule).await.stringify_err()
+    mitm::rewrite::save(mitm::rewrite::Direction::Response, expected, rule).await.stringify_err()
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn get_response_header_hits() -> Option<u32> {
     mitm::route_runtime::response_header_hits()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_request_header_rule() -> super::CmdResult<Option<mitm::rewrite::ResponseHeaderRule>> {
+    use super::StringifyErr as _;
+    mitm::rewrite::read(mitm::rewrite::Direction::Request).stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn save_request_header_rule(expected: Option<mitm::rewrite::ResponseHeaderRule>, rule: Option<mitm::rewrite::ResponseHeaderRule>) -> super::CmdResult<()> {
+    use super::StringifyErr as _;
+    mitm::rewrite::save(mitm::rewrite::Direction::Request, expected, rule).await.stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_request_header_hits() -> Option<u32> {
+    mitm::route_runtime::request_header_hits()
 }
 
 /// Returns the last verified public CA only. Never installs trust or exports a private key.

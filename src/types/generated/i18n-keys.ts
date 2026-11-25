@@ -871,6 +871,8 @@ export const translationKeys = [
   'settings.search.back',
   'settings.search.results',
   'settings.search.empty',
+  'settings.mitm.rewrite.requestTitle',
+  'settings.mitm.rewrite.requestHeader',
   'settings.mitm.rewrite.title',
   'settings.mitm.rewrite.add',
   'settings.mitm.rewrite.hint',

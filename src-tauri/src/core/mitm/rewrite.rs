@@ -15,13 +15,22 @@ pub struct ResponseHeaderRule {
 
 static WRITE: Mutex<()> = Mutex::const_new(());
 
-fn file() -> Result<PathBuf> {
-    ensure!(cfg!(all(windows, feature = "verge-dev")) && super::route_runtime::requested(), "MITM rewrite is unavailable");
-    Ok(crate::utils::dirs::app_home_dir()?.join("netverge-mitm-dev").join("response-header-rule.json"))
+#[derive(Clone, Copy)]
+pub enum Direction { Request, Response }
+
+impl Direction {
+    fn filename(self) -> &'static str {
+        match self { Self::Request => "request-header-rule.json", Self::Response => "response-header-rule.json" }
+    }
 }
 
-pub fn read() -> Result<Option<ResponseHeaderRule>> {
-    let bytes = match super::settings::read_bounded(&file()?) {
+fn file(direction: Direction) -> Result<PathBuf> {
+    ensure!(cfg!(all(windows, feature = "verge-dev")) && super::route_runtime::requested(), "MITM rewrite is unavailable");
+    Ok(crate::utils::dirs::app_home_dir()?.join("netverge-mitm-dev").join(direction.filename()))
+}
+
+pub fn read(direction: Direction) -> Result<Option<ResponseHeaderRule>> {
+    let bytes = match super::settings::read_bounded(&file(direction)?) {
         Ok(bytes) => bytes,
         Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == ErrorKind::NotFound) => return Ok(None),
         Err(error) => return Err(error),
@@ -29,15 +38,19 @@ pub fn read() -> Result<Option<ResponseHeaderRule>> {
     Ok(Some(serde_json::from_slice(&bytes)?))
 }
 
-pub async fn save(expected: Option<ResponseHeaderRule>, rule: Option<ResponseHeaderRule>) -> Result<()> {
+pub async fn save(direction: Direction, expected: Option<ResponseHeaderRule>, rule: Option<ResponseHeaderRule>) -> Result<()> {
     let _guard = WRITE.lock().await;
-    ensure!(read()? == expected, "Rewrite rule changed. Reopen the MITM page to reload.");
-    let path = file()?;
+    ensure!(read(direction)? == expected, "Rewrite rule changed. Reopen the MITM page to reload.");
+    let path = file(direction)?;
     if let Some(rule) = rule {
         ensure!(super::valid_host(&rule.host), "Invalid MITM hostname");
         ensure!(rule.path.starts_with('/') && !rule.path.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#')), "Expected an exact URL path");
         let name = rule.header.to_ascii_lowercase();
-        ensure!(name.strip_prefix("x-").is_some_and(|s| !s.is_empty() && s.len() <= 100 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')), "Expected an X- response header");
+        let (prefix, limit) = match direction {
+            Direction::Request => ("x-custom-", 91),
+            Direction::Response => ("x-", 100),
+        };
+        ensure!(name.strip_prefix(prefix).is_some_and(|s| !s.is_empty() && s.len() <= limit && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')), "Expected a valid {prefix} header");
         ensure!(rule.value.chars().count() <= 1024 && rule.value.chars().all(|c| c == '\t' || (' '..='~').contains(&c) || ('\u{80}'..='\u{ff}').contains(&c)), "Invalid HTTP header value");
         let json = serde_json::to_string(&rule)?;
         ensure!(json.len() <= 8192, "Rewrite rule exceeds 8192 bytes");

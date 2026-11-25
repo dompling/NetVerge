@@ -979,6 +979,8 @@ export interface TranslationResources {
           hits: string
           host: string
           path: string
+          requestHeader: string
+          requestTitle: string
           saving: string
           title: string
           value: string

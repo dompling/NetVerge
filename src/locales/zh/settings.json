@@ -726,6 +726,8 @@
   },
   "mitm": {
     "rewrite": {
+      "requestTitle": "请求头重写",
+      "requestHeader": "请求头名称（X-Custom-…）",
       "title": "响应头重写",
       "add": "添加规则",
       "hint": "离开输入框后自动保存。规则仅对已加入 MITM 的域名生效。",

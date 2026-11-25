@@ -726,6 +726,8 @@
   },
   "mitm": {
     "rewrite": {
+      "requestTitle": "Request header rewrite",
+      "requestHeader": "X-Custom- header name",
       "title": "Response header rewrite",
       "add": "Add rule",
       "hint": "Changes save when you leave a field. The rule applies only to a hostname selected for MITM.",

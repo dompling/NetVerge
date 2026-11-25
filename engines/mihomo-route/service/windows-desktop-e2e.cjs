@@ -216,10 +216,13 @@ async function main() {
       }
     }
 
-    if (process.argv[3] === 'editor') {
-      const file = path.join(mitm, 'response-header-rule.json');
-      await until('enter and verify all rewrite field values', () => automation(app, 'FillRule') === 'OK', 70000);
-      const rule = { enabled: false, host: selected, path: '/demo', header: 'X-NetVerge-Test', value: '1' };
+    for (const direction of process.argv[3] === 'editor' ? ['response', 'request'] : []) {
+      const request = direction === 'request';
+      if (request) await until('open request header editor', () => automation(app, 'OpenRequestRule') === 'OK');
+      const file = path.join(mitm, direction + '-header-rule.json');
+      await until('enter and verify all rewrite field values', () => automation(app, request ? 'FillRequestRule' : 'FillRule') === 'OK', 70000);
+      const rule = { enabled: false, host: selected, path: '/demo',
+        header: request ? 'X-Custom-NetVerge-Test' : 'X-NetVerge-Test', value: request ? 'rewritten' : '1' };
       for (const [index, enabled] of [false, true, false].entries()) {
         if (enabled !== rule.enabled) await until('toggle rewrite', () => automation(app, 'ToggleRule') === 'OK');
         rule.enabled = enabled;
@@ -228,14 +231,14 @@ async function main() {
           return true;
         });
         await sleep(1200);
-        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', enabled ? 'on' : 'off'],
+        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', (request ? 'request-' : '') + (enabled ? 'on' : 'off')],
           { stdio: 'inherit', timeout: 75000 });
         if (index === 0) await until('visible zero rewrite hits before enabling', () => automation(app, 'RuleHitsZero') === 'OK');
         if (enabled) await until('visible positive rewrite hits after matching TLS request', () => automation(app, 'RuleHits') === 'OK');
       }
       await until('delete rewrite', () => automation(app, 'DeleteRule') === 'OK');
       await until('removed rewrite file', () => !fs.existsSync(file));
-      console.log('PASS: packaged editor autosave, toggle, TLS response, hits and deletion');
+      console.log('PASS: packaged ' + direction + ' editor autosave, toggle, TLS, hits and deletion');
     }
 
     if (rewriteTest || process.argv[3] === 'editor') {

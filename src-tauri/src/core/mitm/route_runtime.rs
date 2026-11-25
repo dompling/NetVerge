@@ -211,10 +211,18 @@ pub(crate) fn response_header_hits() -> Option<u32> {
     (value != u32::MAX && matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy)).then_some(value)
 }
 
+static REQUEST_REWRITE_HITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+pub(crate) fn request_header_hits() -> Option<u32> {
+    let value = REQUEST_REWRITE_HITS.load(std::sync::atomic::Ordering::Relaxed);
+    (value != u32::MAX && matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy)).then_some(value)
+}
+
 #[derive(Deserialize)]
 struct WorkerState {
     #[serde(default, rename = "rewriteHits")]
     rewrite_hits: Option<u32>,
+    #[serde(default, rename = "requestRewriteHits")]
+    request_rewrite_hits: Option<u32>,
     protocol: u32,
     hosts: Vec<String>,
 }
@@ -269,6 +277,7 @@ impl Launch {
         ensure!(code == 200, "original-route worker authentication failed");
         let state: WorkerState = serde_json::from_slice(&body)?;
         ensure!(state.protocol == 1 && same_hosts(&state.hosts, &self.settings.hosts), "original-route worker scope mismatch");
+        REQUEST_REWRITE_HITS.store(state.request_rewrite_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         REWRITE_HITS.store(state.rewrite_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
