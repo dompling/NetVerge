@@ -40,10 +40,14 @@ switch ($Action) {
         }
     }
     'Switch' {
-        $element = Find-Element 'Windows MITM service mode' ([Windows.Automation.ControlType]::CheckBox)
+        $element = Find-Element 'Windows MITM service mode' ([Windows.Automation.ControlType]::Button)
         if ($element -and $element.Current.IsEnabled) {
-            $toggle = $element.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
-            if ($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::Off) { $toggle.Toggle() }
+            $toggle = $null
+            if ($element.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) {
+                if ($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::Off) { $toggle.Toggle() }
+            } else {
+                $element.GetCurrentPattern($invoke).Invoke()
+            }
             'OK'
         }
     }
