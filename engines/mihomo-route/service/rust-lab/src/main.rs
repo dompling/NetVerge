@@ -8,6 +8,7 @@ compile_error!("select exactly one of in-process or installed-service");
 
 #[cfg(feature = "installed-service")]
 mod installed;
+mod native_tun;
 #[path = "../../../../../src-tauri/src/core/mitm/service_restore.rs"]
 mod service_restore;
 #[path = "../../../../../src-tauri/src/core/mitm/controller_state.rs"]
@@ -170,14 +171,18 @@ impl WorkerJob {
 
 struct Worker { child: Child, job: WorkerJob, port: u16, secret: String, ca_fingerprint: String }
 impl Worker {
-    async fn start(script: &Path, data: &Path) -> Result<Self> {
+    async fn start(script: &Path, data: &Path, tun: Option<&native_tun::NativeTun>) -> Result<Self> {
         // Each test uses its own fresh data root; never reuse the runner's CA.
         std::fs::create_dir(data)?;
         let data = ordinary_directory(data)?;
         let port = free_port()?;
         let secret = secret()?;
         let job = WorkerJob::new()?;
-        let mut child = isolated_worker_command(script, &data)
+        let mut command = isolated_worker_command(script, &data);
+        if let Some(tun) = tun {
+            command.env("NODE_EXTRA_CA_CERTS", tun.origin_ca());
+        }
+        let mut child = command
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -198,6 +203,7 @@ impl Worker {
                     use sha2::{Digest, Sha256};
                     let der = base64::engine::general_purpose::STANDARD.decode(ca)?;
                     ensure!(!der.is_empty() && der.len() <= 16384, "invalid worker CA DER");
+                    if let Some(tun) = tun { tun.expose_worker_ca(&der)?; }
                     // sha2 0.11 returns a hybrid-array without LowerHex.
                     // Match the desktop CA fingerprint's byte-wise encoding.
                     let fingerprint: String = Sha256::digest(&der).iter().map(|byte| format!("{byte:02x}")).collect();
@@ -243,7 +249,7 @@ fn terminate_fixture(pid: u32, expected_image: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, worker: &Worker, core: &Path) -> Result<()> {
+async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, worker: &Worker, core: &Path, tun: Option<&native_tun::NativeTun>) -> Result<()> {
     let first = wait_core(credentials, proof, None).await?;
     let mut watch = GenerationWatch::default();
     ensure!(watch.observe(Some(first)) == Transition::Initial && watch.current() == Some(first), "initial service generation not recorded");
@@ -257,7 +263,9 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
     #[cfg(feature = "installed-service")]
     installed::verify_generation(credentials, first, core).await?;
     controller.bootstrap(credentials, proof).await?.verify_pending()?;
+    native_tun::probe(tun, "pending").await?;
     controller.restore(credentials, proof, &enabled, Some(link())).await?;
+    native_tun::probe(tun, "enabled").await?;
     // Replay the same generation and selection, as after an uncertain reply.
     controller.restore(credentials, proof, &enabled, Some(link())).await?;
     println!("PASS: Rust owner/PID-bound bootstrap and idempotent committed selection");
@@ -282,9 +290,11 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
     let bad_ca = "0".repeat(64);
     ensure!(fresh.restore(credentials, proof, &enabled, Some(WorkerLink { ca_fingerprint: &bad_ca, ..link() })).await.is_err(), "changed worker CA accepted");
     fresh.state().await?.verify_pending()?;
+    native_tun::probe(tun, "pending").await?;
     fresh.restore(credentials, proof, &enabled, Some(link())).await?;
     fresh.restore(credentials, proof, &enabled, Some(link())).await?;
     fresh.state().await?.verify_selection(true, &enabled.hosts)?;
+    native_tun::probe(tun, "enabled").await?;
     println!("PASS: actual watchdog restored committed scope; stale credentials and CA mismatch rejected");
     // This is a deliberate owner disable, not an automatic fallback.
     ensure!(fresh.request("DELETE", &fresh.secret, &[]).await?.0 == 204, "disable rejected");
@@ -298,24 +308,28 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
     replacement.restore(credentials, proof, &disabled, None).await?;
     replacement.restore(credentials, proof, &disabled, None).await?;
     replacement.state().await?.verify_selection(false, &[])?;
+    native_tun::probe(tun, "disabled").await?;
     println!("PASS: explicitly disabled selection stays disabled after actual watchdog restart");
     Ok(())
 }
 
-async fn start_and_exercise(credentials: &OwnerCredentials, core: &Path, worker: &Worker) -> Result<()> {
+async fn start_and_exercise(credentials: &OwnerCredentials, core: &Path, worker: &Worker, tun: Option<&native_tun::NativeTun>) -> Result<()> {
     let mut session_bytes = [0_u8; 32];
     getrandom::fill(&mut session_bytes).map_err(|_| anyhow::anyhow!("random source unavailable"))?;
     let token: String = session_bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let response = start_clash(credentials, &StartClashRequest {
         runtime: RuntimeBundle {
-            yaml: "mode: rule\nlog-level: warning\nmixed-port: 0\nallow-lan: false\ngeo-auto-update: false\nrules:\n  - MATCH,DIRECT\n".into(),
+            yaml: tun.map_or_else(
+                || "mode: rule\nlog-level: warning\nmixed-port: 0\nallow-lan: false\ngeo-auto-update: false\nrules:\n  - MATCH,DIRECT\n".into(),
+                native_tun::NativeTun::runtime,
+            ),
             assets: Vec::new(), remote_providers: Vec::new(), core_path: core.to_string_lossy().into_owned(),
         },
         proposed_session_token: token.clone(), macos_proxy: None,
     }).await?;
     ensure!(response.code == 0, "service start rejected ({}): {}", response.code, response.message);
     let proof = OwnerSessionProof { generation: response.data.context("missing service owner session")?.session.generation, token };
-    let result = scenario(credentials, &proof, worker, core).await;
+    let result = scenario(credentials, &proof, worker, core, tun).await;
     let stopped = stop_clash(credentials, &proof).await;
     result?;
     let stopped = stopped?;
@@ -324,7 +338,7 @@ async fn start_and_exercise(credentials: &OwnerCredentials, core: &Path, worker:
 }
 
 #[cfg(feature = "in-process")]
-async fn exercise(core: PathBuf, fixture: &Path, worker: &Worker) -> Result<()> {
+async fn exercise(core: PathBuf, fixture: &Path, worker: &Worker, tun: Option<&native_tun::NativeTun>) -> Result<()> {
     let core_copy = fixture.join("verge-mihomo.exe");
     std::fs::copy(core, &core_copy)?;
     let core_copy = core_copy.canonicalize()?;
@@ -343,7 +357,7 @@ async fn exercise(core: PathBuf, fixture: &Path, worker: &Worker) -> Result<()> 
             }
         }).await.context("service IPC readiness timeout")?;
         println!("PASS: actual upstream IPC supervisor reports Running");
-        start_and_exercise(&credentials, &core_copy, worker).await
+        start_and_exercise(&credentials, &core_copy, worker, tun).await
     }.await;
     let _ = shutdown_tx.send(());
     let shutdown = timeout(Duration::from_secs(30), supervisor).await;
@@ -354,9 +368,9 @@ async fn exercise(core: PathBuf, fixture: &Path, worker: &Worker) -> Result<()> 
 }
 
 #[cfg(feature = "installed-service")]
-async fn exercise(core: PathBuf, _fixture: &Path, worker: &Worker) -> Result<()> {
+async fn exercise(core: PathBuf, _fixture: &Path, worker: &Worker, tun: Option<&native_tun::NativeTun>) -> Result<()> {
     let credentials = installed::owner_credentials()?;
-    start_and_exercise(&credentials, &core, worker).await
+    start_and_exercise(&credentials, &core, worker, tun).await
 }
 
 #[tokio::main]
@@ -373,9 +387,15 @@ async fn main() -> Result<()> {
     let fixture = std::env::temp_dir().join(format!("netverge-service-rust-lab-{}-{}", std::process::id(), secret()?));
     std::fs::create_dir(&fixture)?;
     let fixture = ordinary_directory(&fixture)?;
-    let worker = Worker::start(&script, &fixture.join("whistle")).await?;
-    let result = exercise(core, &fixture, &worker).await;
+    let tun = if cfg!(feature = "installed-service") {
+        Some(native_tun::NativeTun::start(&script, &fixture.join("native-tun")).await?)
+    } else {
+        None
+    };
+    let worker = Worker::start(&script, &fixture.join("whistle"), tun.as_ref()).await?;
+    let result = exercise(core, &fixture, &worker, tun.as_ref()).await;
     let worker_shutdown = worker.stop().await;
+    if let Some(tun) = tun { tun.stop().await?; }
     let cleanup = worker_shutdown.and_then(|()| {
         std::fs::remove_dir_all(fixture).context("remove service fixture directory after shutdown")
     });

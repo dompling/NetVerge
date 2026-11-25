@@ -23,7 +23,7 @@ const TUN = process.argv.includes('--tun');
 const TUN_DEVICE = 'nvmitm0';
 const FAKE_RANGE = '198.18.0.0/16';
 
-function makeCertificates() {
+function makeCertificates(hosts = [TARGET, BYPASS]) {
   const caKeys = pki.rsa.generateKeyPair(2048);
   const leafKeys = pki.rsa.generateKeyPair(2048);
   function cert(keys, serial, cn) {
@@ -39,13 +39,13 @@ function makeCertificates() {
   ca.setIssuer(ca.subject.attributes);
   ca.setExtensions([{ name: 'basicConstraints', cA: true, critical: true }, { name: 'keyUsage', keyCertSign: true, cRLSign: true, critical: true }]);
   ca.sign(caKeys.privateKey, forge.md.sha256.create());
-  const leaf = cert(leafKeys, '02', TARGET);
+  const leaf = cert(leafKeys, '02', hosts[0]);
   leaf.setIssuer(ca.subject.attributes);
   leaf.setExtensions([
     { name: 'basicConstraints', cA: false },
     { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
     { name: 'extKeyUsage', serverAuth: true },
-    { name: 'subjectAltName', altNames: [TARGET, BYPASS].map(value => ({ type: 2, value })) },
+    { name: 'subjectAltName', altNames: hosts.map(value => ({ type: 2, value })) },
   ]);
   leaf.sign(caKeys.privateKey, forge.md.sha256.create());
   return { ca: pki.certificateToPem(ca), cert: pki.certificateToPem(leaf), key: pki.privateKeyToPem(leafKeys.privateKey) };
@@ -60,7 +60,7 @@ async function listen(server) {
 }
 
 // Answer only the two lab names; never forward DNS to an external resolver.
-async function startLabDns() {
+async function startLabDns(hosts = [TARGET, BYPASS]) {
   const server = dgram.createSocket('udp4');
   server.on('message', (query, peer) => {
     if (query.length < 17 || query.readUInt16BE(4) !== 1) return;
@@ -77,7 +77,7 @@ async function startLabDns() {
     const type = query.readUInt16BE(offset);
     const qclass = query.readUInt16BE(offset + 2);
     const name = labels.join('.').toLowerCase();
-    const known = [TARGET, BYPASS].includes(name);
+    const known = hosts.includes(name);
     const hasAnswer = known && type === 1 && qclass === 1;
     const header = Buffer.alloc(12);
     query.copy(header, 0, 0, 2);
@@ -205,14 +205,14 @@ async function fakeAddress(port, host) {
   return ip;
 }
 
-function dialTun(ip, host, originPort, ca) {
+function dialTun(ip, host, originPort, ca, deadlineMs = 15000) {
   return new Promise((resolve, reject) => {
     // Native TLS socket to the fake IP; no HTTP proxy or CONNECT at the client.
     const secured = tls.connect({ host: ip, port: originPort, servername: host, ca, rejectUnauthorized: true, ALPNProtocols: ['http/1.1'] });
     const timer = setTimeout(() => {
       secured.destroy();
       reject(new Error('TUN/TLS timeout: ' + host));
-    }, 15000);
+    }, deadlineMs);
     const fail = err => { clearTimeout(timer); secured.destroy(); reject(err); };
     secured.once('error', fail);
     secured.once('secureConnect', () => {
@@ -424,4 +424,7 @@ async function main() {
   }
 }
 
-main().catch(err => { console.error(err); process.exitCode = 1; });
+if (require.main === module) {
+  main().catch(err => { console.error(err); process.exitCode = 1; });
+}
+module.exports = { makeCertificates, startLabDns, listen, dialTun };

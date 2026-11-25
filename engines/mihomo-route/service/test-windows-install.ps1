@@ -14,9 +14,13 @@ $installedCore = Join-Path $coreDirectory $coreName
 $installer = Join-Path $BuildDirectory 'clash-verge-service-install.exe'
 $uninstaller = Join-Path $BuildDirectory 'clash-verge-service-uninstall.exe'
 $corePath = (Resolve-Path -LiteralPath $GuardedCore).Path
+$fakePrefix = '198.18.17.0/24'
 
 if ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $stateRoot)) {
     throw 'The isolated development service or its state directory already exists'
+}
+if (Get-NetRoute -DestinationPrefix $fakePrefix -ErrorAction SilentlyContinue) {
+    throw 'The native TUN fixture prefix is already in use'
 }
 
 $expectedDigest = (Get-FileHash -LiteralPath $corePath -Algorithm SHA256).Hash
@@ -88,6 +92,9 @@ try {
             }
             if ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $installedCore)) {
                 throw 'The development service or its approved guarded core survived uninstall'
+            }
+            if (Get-NetRoute -DestinationPrefix $fakePrefix -ErrorAction SilentlyContinue) {
+                throw 'The native TUN route survived service uninstall'
             }
             Write-Host 'PASS: Windows development service and approved guarded core removed'
         }
