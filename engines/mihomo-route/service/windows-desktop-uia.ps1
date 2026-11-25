@@ -24,6 +24,15 @@ function Find-Element([string]$Name, [Windows.Automation.ControlType]$Type) {
     return $root.FindFirst($scope, $condition)
 }
 
+# These are public synthetic fixture inputs, never credentials.
+function Read-EditValue([string]$Label) {
+    $field = Find-Element $Label ([Windows.Automation.ControlType]::Edit)
+    if (!$field) { return $null }
+    $pattern = $null
+    if (!$field.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { return $null }
+    return $pattern.Current.Value
+}
+
 switch ($Action) {
     'Open' {
         if (Find-Element 'Windows MITM service mode') { 'OK'; break }
@@ -78,11 +87,30 @@ switch ($Action) {
         $fields = [ordered]@{'MITM hostname'='api.example.test'; 'Exact path'='/demo'; 'X- header name'='X-NetVerge-Test'; 'Header value'='1'}
         foreach ($label in $fields.Keys) {
             $field = Find-Element $label ([Windows.Automation.ControlType]::Edit)
-            if (!$field) { return }
+            if (!$field -or !$field.Current.IsEnabled) { return }
             $field.SetFocus()
-            $keys.SendKeys('^a')
-            $keys.SendKeys($fields[$label])
+            Start-Sleep -Milliseconds 150
+            if (!$field.Current.HasKeyboardFocus) { return }
+            # Keyboard injection is asynchronous in WebView2. Confirm the
+            # actual edit value before moving focus, instead of assuming that
+            # SendKeys delivered its entire sequence.
+            if ((Read-EditValue $label) -cne $fields[$label]) {
+                $keys.SendKeys('^a')
+                Start-Sleep -Milliseconds 100
+                $keys.SendKeys($fields[$label])
+                $deadline = [DateTime]::UtcNow.AddSeconds(2)
+                while ((Read-EditValue $label) -cne $fields[$label] -and [DateTime]::UtcNow -lt $deadline) {
+                    Start-Sleep -Milliseconds 100
+                }
+                if ((Read-EditValue $label) -cne $fields[$label]) { return }
+            }
             $keys.SendKeys('{TAB}')
+            Start-Sleep -Milliseconds 150
+            $field = Find-Element $label ([Windows.Automation.ControlType]::Edit)
+            if (!$field -or $field.Current.HasKeyboardFocus) { return }
+        }
+        foreach ($label in $fields.Keys) {
+            if ((Read-EditValue $label) -cne $fields[$label]) { return }
         }
         'OK'
     }
@@ -92,6 +120,8 @@ switch ($Action) {
         $keys = New-Object -ComObject WScript.Shell
         if (!$keys.AppActivate($process.Id)) { break }
         $button.SetFocus()
+        Start-Sleep -Milliseconds 150
+        if (!$button.Current.HasKeyboardFocus) { break }
         $keys.SendKeys(' ')
         'OK'
     }
@@ -128,5 +158,9 @@ switch ($Action) {
         $elements = $root.FindAll($scope, [Windows.Automation.Condition]::TrueCondition)
         $elements | Where-Object { $_.Current.Name } | Select-Object -First 70 |
             ForEach-Object { $_.Current.ControlType.ProgrammaticName + ' ' + $_.Current.Name }
+        foreach ($label in @('MITM hostname', 'Exact path', 'X- header name', 'Header value')) {
+            $value = Read-EditValue $label
+            if ($null -ne $value) { 'Fixture field ' + $label + ' = ' + $value }
+        }
     }
 }

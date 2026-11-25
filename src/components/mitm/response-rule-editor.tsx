@@ -7,12 +7,18 @@ import { commands, type ResponseHeaderRule } from '@/services/bindings'
 
 const blank: ResponseHeaderRule = { enabled: false, host: '', path: '/', header: '', value: '' }
 
+// Tauri command failures are structured objects, not necessarily Error instances.
+function errorDetail(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'detail' in error && typeof error.detail === 'string') return error.detail
+  return error instanceof Error ? error.message : String(error)
+}
+
 export function ResponseRuleEditor() {
   const { t } = useTranslation()
   const { data, error, mutate } = useSWR('mitm-response-rule', commands.getResponseHeaderRule, {
     revalidateOnMount: true, revalidateOnFocus: false, revalidateOnReconnect: false,
   })
-  if (error) return <Alert severity="error" action={<Button onClick={() => void mutate()}>{t('shared.actions.retry')}</Button>}>{String(error)}</Alert>
+  if (error) return <Alert severity="error" action={<Button onClick={() => void mutate()}>{t('shared.actions.retry')}</Button>}>{errorDetail(error)}</Alert>
   if (data === undefined) return null
   return <RuleForm initial={data} changed={rule => { void mutate(rule, { revalidate: false }) }} />
 }
@@ -20,6 +26,13 @@ export function ResponseRuleEditor() {
 function RuleForm({ initial, changed }: { initial: ResponseHeaderRule | null; changed: (rule: ResponseHeaderRule | null) => void }) {
   const { t } = useTranslation()
   const [draft, setDraft] = useState(initial)
+  // Keep the input snapshot synchronous across keyboard/blur events. A blur
+  // must not save an older render's draft after a rapid field edit.
+  const draftRef = useRef(initial)
+  const updateDraft = (next: ResponseHeaderRule | null) => {
+    draftRef.current = next
+    setDraft(next)
+  }
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
   const saved = useRef(initial)
@@ -41,37 +54,42 @@ function RuleForm({ initial, changed }: { initial: ResponseHeaderRule | null; ch
         }
         if (version === latest.current) setError('')
       } catch (err) {
-        if (version === latest.current) setError(String(err))
+        if (version === latest.current) setError(errorDetail(err))
       } finally {
         if (version === latest.current) setPending(false)
       }
     })
   }
-  const commit = (next: ResponseHeaderRule) => {
-    if (!next.host || !next.header || !next.path) return
+  const commit = () => {
+    const next = draftRef.current
+    if (!next?.host || !next.header || !next.path) return
     persist(next)
   }
   return <Card variant="outlined" sx={{ p: 2 }}>
     <Stack spacing={1.5}>
       <Typography variant="subtitle1">{t('settings.mitm.rewrite.title')}</Typography>
-      {!draft ? <Button size="small" sx={{ alignSelf: 'flex-start' }} onClick={() => setDraft({ ...blank })}>{t('settings.mitm.rewrite.add')}</Button> : <>
+      {!draft ? <Button size="small" sx={{ alignSelf: 'flex-start' }} onClick={() => updateDraft({ ...blank })}>{t('settings.mitm.rewrite.add')}</Button> : <>
         <Typography variant="caption">{t('settings.mitm.rewrite.hint')}</Typography>
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
           {(['host', 'path', 'header', 'value'] as const).map(field =>
             <TextField key={field} fullWidth size="small" label={t(`settings.mitm.rewrite.${field}`)}
-              value={draft[field]} onChange={event => setDraft({ ...draft, [field]: event.target.value })}
-              onBlur={() => commit(draft)} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.querySelector('input')?.blur() }} />)}
+              value={draft[field]} onChange={event => {
+                if (draftRef.current) updateDraft({ ...draftRef.current, [field]: event.target.value })
+              }}
+              onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.querySelector('input')?.blur() }} />)}
         </Stack>
         <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
           <FormControlLabel label={t('settings.mitm.rewrite.enable')} control={<Switch checked={draft.enabled}
             disabled={!draft.host || !draft.path || !draft.header}
-            onChange={(_, enabled) => { const next = { ...draft, enabled }; setDraft(next); commit(next) }} />} />
+            onChange={(_, enabled) => {
+              if (draftRef.current) { updateDraft({ ...draftRef.current, enabled }); commit() }
+            }} />} />
           {hitStatus !== null && <Typography variant="caption" role="status" aria-label={hitStatus}>{hitStatus}</Typography>}
-          <Button size="small" onClick={() => { setDraft(null); persist(null) }}>{t('shared.actions.delete')}</Button>
+          <Button size="small" onClick={() => { updateDraft(null); persist(null) }}>{t('shared.actions.delete')}</Button>
         </Stack>
       </>}
       {pending && <Typography variant="caption">{t('settings.mitm.rewrite.saving')}</Typography>}
-      {error && <Alert severity="error" action={<Button onClick={() => persist(draft)}>{t('shared.actions.retry')}</Button>}>{error}</Alert>}
+      {error && <Alert severity="error" action={<Button onClick={() => persist(draftRef.current)}>{t('shared.actions.retry')}</Button>}>{error}</Alert>}
     </Stack>
   </Card>
 }
