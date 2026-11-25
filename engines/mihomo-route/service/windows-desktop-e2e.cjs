@@ -184,7 +184,8 @@ async function main() {
       return /^\d+$/.test(pid) && Number(pid) !== desktop.pid;
     });
     await until('MITM navigation after restart', () => automation(app, 'Open') === 'OK', 70000);
-    const processPath = powershell("(Get-Process -Name 'netverge-mihomo-service').Path");
+    const processPath = await until('guarded service core startup', () =>
+      powershell("(Get-Process -Name 'netverge-mihomo-service' -ErrorAction SilentlyContinue).Path; exit 0"), 90000);
     assert.match(processPath, /\\clash-verge-service-dev\\cores\\netverge-mihomo-service\.exe$/i);
     execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled'], { stdio: 'inherit', timeout: 75000 });
     await until('restored desktop MITM state', () => automation(app, 'Healthy') === 'OK', 60000);
@@ -196,9 +197,10 @@ async function main() {
     if (desktopOutput) console.error(desktopOutput);
     const logDirectory = path.join(appRoot, 'logs');
     if (fs.existsSync(logDirectory)) {
-      for (const file of fs.readdirSync(logDirectory).filter(name => name.endsWith('.log')).slice(-2)) {
+      for (const file of fs.readdirSync(logDirectory).filter(name => name.endsWith('.log')).sort((a,b) => fs.statSync(path.join(logDirectory,a)).mtimeMs - fs.statSync(path.join(logDirectory,b)).mtimeMs).slice(-3)) {
+        console.error('Desktop log:', file);
         const lines = fs.readFileSync(path.join(logDirectory, file), 'utf8').split(/\r?\n/);
-        console.error(lines.filter(line => /failed|error|panic|warn|WebView|readiness/i.test(line) && !/secret|password|token|authorization/i.test(line)).slice(-25).join('\n'));
+        console.error(lines.filter(line => !/secret|password|token|authorization/i.test(line)).slice(-65).join('\n'));
       }
     }
     console.error(powershell("Get-Process -Name 'NetVerge-MITM','msedgewebview2' -ErrorAction SilentlyContinue | Select-Object ProcessName,Id,SessionId | ConvertTo-Json -Compress; exit 0"));
