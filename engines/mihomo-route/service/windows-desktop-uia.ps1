@@ -44,6 +44,15 @@ switch ($Action) {
         if ($element -and $element.Current.IsEnabled) {
             # Each transition starts from a persisted, verified state. WebView2 exposes
             # this switch as a button, so activate it once and verify the saved result.
+            if ($Action -eq 'DisableService') {
+                $keys = New-Object -ComObject WScript.Shell
+                if (!$keys.AppActivate($process.Id)) { break }
+                $element.SetFocus()
+                if (!$element.Current.HasKeyboardFocus) { break }
+                $keys.SendKeys(' ')
+                'OK'
+                break
+            }
             $toggle = $null
             if ($element.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) {
                 $toggle.Toggle()

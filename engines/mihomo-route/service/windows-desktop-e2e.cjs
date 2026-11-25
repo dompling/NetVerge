@@ -213,6 +213,11 @@ async function main() {
     console.log('PASS: service mode disabled, guarded core stopped and Sidecar preserved the selected TLS scope and exit');
   } catch (error) {
     console.error(powershell("Get-Process -Name 'netverge-mihomo-service','verge-mihomo','node' -ErrorAction SilentlyContinue | Select-Object ProcessName,Id | ConvertTo-Json -Compress; exit 0"));
+    const preferencePath = path.join(mitm, 'guarded-service.yaml');
+    if (fs.existsSync(preferencePath)) {
+      const preference = fs.readFileSync(preferencePath, 'utf8').trim();
+      console.error('Preference after failure:', preference === coreDigest ? 'guarded core' : JSON.stringify(preference).slice(0,100));
+    }
     console.error('Desktop process exit code:', desktop?.exitCode);
     if (desktopOutput) console.error(desktopOutput);
     const logDirectory = path.join(appRoot, 'logs');
