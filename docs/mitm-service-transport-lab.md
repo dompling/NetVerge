@@ -1,0 +1,7 @@
+# Windows service transport laboratory (review 32)
+
+Previous Windows workflow 45423487687 passed. The pinned service-ipc v2.8.1 StartClashRequest and RuntimeBundle have no custom environment field. Its fixed core arguments are -d, -f and -ext-ctl-pipe (Windows); it passes LISTEN_NAMEDPIPE_SDDL with owner SID, SYSTEM and administrators only. Mihomo otherwise defaults to a BUILTIN Users ACL. Avoid writing credentials to subscription/runtime YAML or exposing bootstrap over TCP.
+
+The custom-core workflow first builds the unmodified normal candidate. A separate, non-uploaded Windows lab binary then patches only startPipe, requires the exact service-shaped DACL, disallows an environment-launched controller, validates a bounded bootstrap request and creates the existing authenticated loopback controller, disabled by default. Same credentials are idempotent; replacement is refused. Smoke tests exercise the real named pipe with current owner SID and verify ordinary build/TCP/no-DACL/origin/unknown fields/conflict/authorization negatives. The lab uses service-shaped arguments, not an actual privileged service, and does not test a different user's Windows token.
+
+The service watchdog restarts a crashed core independently. A fresh process has no active controller and could bypass selected interception before the desktop reconfigures it. The service mode gate remains closed. Next step: service-owned generation/launch-capability protocol plus restart-safe handling; do not activate live MITM via this lab. No secrets on disk, no auto trust, no release of lab binary.

@@ -69,6 +69,19 @@ jobs:
           go build -tags with_gvisor -trimpath -ldflags "-s -w -X github.com/metacubex/mihomo/constant.Version=$version" -o "../artifact/mihomo-netverge$ext" .
           "../artifact/mihomo-netverge$ext" -v
           node ../netverge/engines/mihomo-route/smoke-core.cjs "../artifact/mihomo-netverge$ext"
+      - name: Test isolated Windows service pipe bootstrap
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: mihomo-source
+        env:
+          CGO_ENABLED: '0'
+          GOAMD64: v1
+        run: |
+          node ../netverge/engines/mihomo-route/service/install.cjs .
+          gofmt -w hub/route/server.go hub/route/netverge_service_pipe_lab.go
+          mkdir -p ../service-lab
+          go build -tags "with_gvisor netverge_service_lab" -trimpath -o ../service-lab/mihomo-service-lab.exe .
+          node ../netverge/engines/mihomo-route/service/smoke.cjs ../artifact/mihomo-netverge.exe ../service-lab/mihomo-service-lab.exe
       - uses: actions/upload-artifact@v4
         with:
           name: mihomo-netverge-${{ matrix.os }}-${{ github.sha }}
