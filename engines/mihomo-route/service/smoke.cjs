@@ -9,7 +9,10 @@ const http=require('node:http');
 const assert=require('node:assert/strict');
 const normal=path.resolve(process.argv[2]),lab=path.resolve(process.argv[3]);
 const endpoint='/__netverge_service_lab/bootstrap';
-const sid=execFileSync('whoami.exe',['/user','/fo','csv','/nh'],{encoding:'utf8'}).match(/S-1-5-21-\d+-\d+-\d+-\d+/)?.[0];
+// Git Bash puts its GNU whoami.exe ahead of the native Windows tool.
+assert.ok(process.env.SystemRoot,'Windows SystemRoot required');
+const whoami=path.win32.join(process.env.SystemRoot,'System32','whoami.exe');
+const sid=execFileSync(whoami,['/user','/fo','csv','/nh'],{encoding:'utf8'}).match(/S-1-5-21-\d+-\d+-\d+-\d+/)?.[0];
 assert.ok(sid,'Windows owner SID required');
 const acl='D:P(A;;GA;;;'+sid+')(A;;GA;;;SY)(A;;GA;;;BA)';
 const config=Buffer.from('mode: rule\nlog-level: warning\nmixed-port: 0\nallow-lan: false\ngeo-auto-update: false\nrules:\n  - MATCH,DIRECT\n').toString('base64');
