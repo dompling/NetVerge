@@ -23,14 +23,47 @@ async fn wait_core(credentials: &OwnerCredentials, proof: &OwnerSessionProof, pr
     }
 }
 
+// Canonicalize an existing local directory without handing Node a verbatim
+// \\?\ drive path. This expands short Windows names and resolves the actual
+// CA directory, matching the successful Go fixture's EvalSymlinks.
+fn ordinary_directory(path: &Path) -> Result<PathBuf> {
+    let resolved = path.canonicalize()?;
+    let text = resolved.to_str().context("fixture directory is not UTF-8")?;
+    let ordinary = PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(text));
+    ensure!(ordinary.is_absolute() && ordinary.is_dir(), "fixture directory is not an absolute directory");
+    ensure!(matches!(ordinary.components().next(), Some(std::path::Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_))), "fixture directory must use an ordinary Windows drive path");
+    Ok(ordinary)
+}
+
+fn isolated_worker_command(script: &Path, data: &Path) -> Command {
+    let mut command = Command::new("node");
+    command.arg(script);
+    // Whistle's getDataDir() and HTTPS CA module read home-related
+    // state at require time, before the baseDir option is applied.
+    // Match the existing Go and desktop worker launchers.
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy().to_ascii_uppercase();
+        if name.starts_with("WHISTLE_") || name.starts_with("PFORK_")
+            || name.starts_with("NETVERGE_MITM_") || name.starts_with("NETVERGE_LAB_")
+            || matches!(name.as_str(), "HOME" | "USERPROFILE" | "NODE_OPTIONS" | "NODE_PATH"
+                | "NODE_EXTRA_CA_CERTS" | "NODE_TLS_REJECT_UNAUTHORIZED"
+                | "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" | "NO_PROXY") {
+            command.env_remove(key);
+        }
+    }
+    command.env("HOME", data).env("USERPROFILE", data);
+    command
+}
+
 struct Worker { child: Child, port: u16, secret: String }
 impl Worker {
     async fn start(script: &Path, data: &Path) -> Result<Self> {
-        std::fs::create_dir_all(data)?;
+        // Each test uses its own fresh data root; never reuse the runner's CA.
+        std::fs::create_dir(data)?;
+        let data = ordinary_directory(data)?;
         let port = free_port()?;
         let secret = secret()?;
-        let mut child = Command::new("node")
-            .arg(script)
+        let mut child = isolated_worker_command(script, &data)
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -42,7 +75,7 @@ impl Worker {
         let mut lines = BufReader::new(child.stdout.take().context("worker stdout missing")?).lines();
         timeout(Duration::from_secs(30), async {
             loop {
-                let line = lines.next_line().await?.context("worker exited before readiness")?;
+                let line = lines.next_line().await?.context("worker exited before readiness; inspect sanitized Whistle initialization stage")?;
                 if let Some(ca) = line.strip_prefix("NETVERGE_MITM_READY ") {
                     ensure!(!ca.is_empty() && ca.len() <= 22000, "invalid worker CA readiness");
                     return Ok::<_, anyhow::Error>(());
@@ -50,6 +83,7 @@ impl Worker {
             }
         }).await.context("worker readiness timed out")??;
         tokio::spawn(async move { while matches!(lines.next_line().await, Ok(Some(_))) {} });
+        println!("PASS: isolated Whistle worker initialized and returned its verified CA");
         Ok(Self { child, port, secret })
     }
 }
@@ -100,8 +134,9 @@ async fn main() -> Result<()> {
     ensure!(matches!(script.components().next(), Some(std::path::Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_))), "worker must use an ordinary Windows drive path");
 
     ensure!(cfg!(windows), "Windows runner required");
-    let fixture = std::env::temp_dir().join(format!("netverge-service-rust-lab-{}", std::process::id()));
-    std::fs::create_dir_all(&fixture)?;
+    let fixture = std::env::temp_dir().join(format!("netverge-service-rust-lab-{}-{}", std::process::id(), secret()?));
+    std::fs::create_dir(&fixture)?;
+    let fixture = ordinary_directory(&fixture)?;
     let core_copy = fixture.join("verge-mihomo.exe");
     std::fs::copy(core, &core_copy)?;
     let credentials = test_owner_credentials(&fixture.join("owner"))?;

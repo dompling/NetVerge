@@ -5,6 +5,9 @@ on:
     paths:
       - 'engines/mihomo-route/**'
       - 'engines/mihomo-route-lab/install-adapter-type-lab.cjs'
+      - 'engines/whistle/route-worker.cjs'
+      - 'engines/whistle/ca-integrity.cjs'
+      - 'engines/whistle/package.json'
       - '.github/workflows/netverge-custom-core.yml'
   workflow_dispatch:
     inputs:

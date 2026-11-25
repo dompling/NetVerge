@@ -257,9 +257,28 @@ config.getHttpsAgent = function(options, requestOptions) {
   return agent;
 };
 
-function die() { console.error('Dynamic route listener or CA initialization failed'); process.exit(1); }
-server.on('error', die);
-denied.on('error', die);
+// Emit only fixed reason codes: never log an exception stack, file path,
+// certificate contents, config payload, or authentication secret.
+function die(stage) {
+  console.error('Dynamic route initialization failed: ' + stage);
+  process.exit(1);
+}
+function listenerFailure(stage, error) {
+  const known = ['EADDRINUSE', 'EACCES', 'EADDRNOTAVAIL'];
+  die(stage + ':' + (known.includes(error?.code) ? error.code : 'OTHER'));
+}
+const caReasons = new Map([
+  ['Unsafe CA directory', 'CA_DIRECTORY'],
+  ['Unexpected CA location', 'CA_OUTSIDE_DATA_ROOT'],
+  ['Unsafe CA file', 'CA_FILE_INTEGRITY'],
+  ['CA file changed while opening', 'CA_OPEN_RACE'],
+  ['CA file changed while reading', 'CA_READ_RACE'],
+  ['Expected one public certificate', 'CA_FORMAT'],
+  ['Invalid CA', 'CA_INVALID'],
+  ['Root certificate and key do not match', 'CA_KEY_MISMATCH'],
+]);
+server.on('error', error => listenerFailure('MAIN_LISTENER', error));
+denied.on('error', error => listenerFailure('DENIED_LISTENER', error));
 denied.listen(0, '127.0.0.1', () => {
   server.listen(port, '127.0.0.1', () => whistle({
     server, host:'127.0.0.1', port, baseDir:dataDir, rcPath:'none',
@@ -270,10 +289,12 @@ denied.listen(0, '127.0.0.1', () => {
       '/.*/ proxy://127.0.0.1:' + denied.address().port,
     ].join('\n'),
   }, proxy => {
-    if (config.rejectUnauthorized !== true) return die();
+    if (config.rejectUnauthorized !== true) return die('TLS_VERIFICATION_DISABLED');
     let caDer;
     try { ({caDer} = readVerifiedCa(dataDir, proxy.httpsUtil.getRootCAFile())); }
-    catch { return die(); }
+    catch (error) {
+      return die(caReasons.get(error?.message) || 'CA_READ_OR_PARSE_ERROR');
+    }
     ready = true;
     process.stdout.write('NETVERGE_MITM_READY ' + caDer + '\n');
   }));
