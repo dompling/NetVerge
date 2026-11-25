@@ -92,7 +92,13 @@ async fn scenario(credentials: &OwnerCredentials, proof: &OwnerSessionProof, wor
 #[tokio::main]
 async fn main() -> Result<()> {
     let core = PathBuf::from(std::env::args_os().nth(1).context("lab core path required")?).canonicalize()?;
-    let script = PathBuf::from(std::env::args_os().nth(2).context("worker path required")?).canonicalize()?;
+    // Node's Windows main-module resolution needs an ordinary drive path.
+    // Rust canonicalize() returns a verbatim path (\\\\?\\...) which the
+    // Node 22 entry-point resolver on this runner misinterprets.
+    let script = PathBuf::from(std::env::args_os().nth(2).context("worker path required")?);
+    ensure!(script.is_absolute() && script.is_file(), "worker must be an existing absolute script path");
+    ensure!(matches!(script.components().next(), Some(std::path::Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_))), "worker must use an ordinary Windows drive path");
+
     ensure!(cfg!(windows), "Windows runner required");
     let fixture = std::env::temp_dir().join(format!("netverge-service-rust-lab-{}", std::process::id()));
     std::fs::create_dir_all(&fixture)?;
