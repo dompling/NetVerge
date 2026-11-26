@@ -81,7 +81,7 @@ function validateLocalRule(rule, validHost, loadBlob) {
   if (!rule.enabled) return null;
   if (!validHost(rule.host) || !/^\/[^?#\s]*$/.test(rule.path)) throw new Error();
   const payload = loadBlob(rule.bodySha256, rule.bodyLen);
-  const out = {
+  return {
     enabled: true,
     host: rule.host,
     path: rule.path,
@@ -90,9 +90,8 @@ function validateLocalRule(rule, validHost, loadBlob) {
     headers,
     bodySha256: rule.bodySha256,
     bodyLen: rule.bodyLen,
+    payload,
   };
-  Object.defineProperty(out, 'payload', { value: payload });
-  return out;
 }
 
 function writeLocalResponse(req, res, localRule, onHit) {
