@@ -513,3 +513,5 @@ export const openMitmCertificateManager = commands.openMitmCertificateManager
 
 export const getMitmConfig = commands.getMitmConfig
 export const saveMitmConfig = commands.saveMitmConfig
+export const getMitmRecentRequests = commands.getMitmRecentRequests
+export const clearMitmRecentRequests = commands.clearMitmRecentRequests

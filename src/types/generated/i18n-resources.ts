@@ -970,10 +970,18 @@ export interface TranslationResources {
         noCa: string
         recent: {
           all: string
+          clear: string
+          completed: string
+          details: string
           empty: string
+          hideDetails: string
+          limit: string
           matched: string
+          noHeaders: string
           noMatches: string
           none: string
+          requestHeaders: string
+          responseHeaders: string
           search: string
           title: string
         }

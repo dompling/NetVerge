@@ -226,6 +226,7 @@ pub(crate) fn url_path_hits() -> Option<u32> {
 #[derive(Clone, Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentRequest {
+    id: u32,
     method: String,
     host: String,
     path: String,
@@ -233,15 +234,35 @@ pub struct RecentRequest {
     response_rule: bool,
     path_rule: bool,
     status: u16,
+    completed_at: String,
+    duration_ms: u32,
+    request_headers: Vec<(String, String)>,
+    response_headers: Vec<(String, String)>,
 }
 
 static RECENT_REQUESTS: Mutex<Vec<RecentRequest>> = Mutex::new(Vec::new());
+static ACTIVE_WORKER: Mutex<Option<(u16, String)>> = Mutex::new(None);
+static CLEAR_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn recent_requests() -> Vec<RecentRequest> {
     if matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy) {
         return RECENT_REQUESTS.lock().clone();
     }
     Vec::new()
+}
+
+pub(crate) async fn clear_recent_requests() -> Result<()> {
+    ensure!(matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy), "MITM worker is unavailable");
+    let (port, secret) = ACTIVE_WORKER.lock().clone().context("MITM worker is unavailable")?;
+    tokio::task::spawn_blocking(move || {
+        CLEAR_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let auth = format!("Basic {}", STANDARD.encode(format!("netverge:{secret}")));
+        let (code, _) = request(port, "DELETE", "/__netverge_recent_requests", "Proxy-Authorization", &auth, &[])?;
+        ensure!(code == 204, "MITM worker refused clearing recent requests");
+        CLEAR_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        RECENT_REQUESTS.lock().clear();
+        Ok(())
+    }).await?
 }
 
 #[derive(Deserialize)]
@@ -303,12 +324,15 @@ impl Launch {
     }
 
     fn worker_ready(&self) -> Result<()> {
+        let epoch = CLEAR_EPOCH.load(std::sync::atomic::Ordering::Acquire);
         let auth = format!("Basic {}", STANDARD.encode(format!("netverge:{}", self.worker_secret)));
         let (code, body) = request(self.worker_port, "GET", "/__netverge_routes", "Proxy-Authorization", &auth, &[])?;
         ensure!(code == 200, "original-route worker authentication failed");
         let state: WorkerState = serde_json::from_slice(&body)?;
         ensure!(state.protocol == 1 && same_hosts(&state.hosts, &self.settings.hosts), "original-route worker scope mismatch");
-        *RECENT_REQUESTS.lock() = state.recent_requests;
+        if CLEAR_EPOCH.load(std::sync::atomic::Ordering::Acquire) == epoch {
+            *RECENT_REQUESTS.lock() = state.recent_requests;
+        }
         PATH_HITS.store(state.path_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         REQUEST_REWRITE_HITS.store(state.request_rewrite_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         REWRITE_HITS.store(state.rewrite_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
@@ -435,10 +459,13 @@ impl RouteSession {
         self.launch.expected_ca = Some(ca.sha256_fingerprint.clone());
         self.ca = Some(ca);
         self.child = Some(child);
+        *ACTIVE_WORKER.lock() = Some((self.launch.worker_port, self.launch.worker_secret.clone()));
         Ok(())
     }
 
     fn stop(&mut self) {
+        *ACTIVE_WORKER.lock() = None;
+        RECENT_REQUESTS.lock().clear();
         if let Some(mut child) = self.child.take() {
             super::stop(&mut child);
         }

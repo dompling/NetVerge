@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -199,6 +199,45 @@ switch ($Action) {
         $keys.SendKeys('{BACKSPACE}')
         Start-Sleep -Milliseconds 200
         if (Find-Element ("GET api.example.test/demo " + [char]0xb7 + " 200 " + [char]0xb7 + " URL path rewrite")) { 'OK' }
+    }
+    'InspectRecent' {
+        $limit = Find-Element 'Up to 20 completed requests (12 KB memory cap); sensitive headers redacted.'
+        $reqRedacted = Find-Element 'authorization: [redacted]'
+        $resRedacted = Find-Element 'set-cookie: [redacted]'
+        $resPath = Find-Element 'x-observed-path: /changed?id=7&id=8&raw=a%2Fb'
+        if ($limit -and $reqRedacted -and $resRedacted -and $resPath) {
+            $elements = $root.FindAll($scope, [Windows.Automation.Condition]::TrueCondition)
+            $leaked = $false
+            $timed = $false
+            $hasHost = $false
+            foreach ($element in $elements) {
+                $name = $element.Current.Name
+                if ($name -match 'client-sensitive-secret|origin-sensitive-secret') { $leaked = $true }
+                if ($name -match '^host: api\.example\.test(?::443)?$') { $hasHost = $true }
+                if ($name -match '^Completed\s*\u00b7\s*\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\s*\u00b7\s*(0|[1-9][0-9]*) ms$') { $timed = $true }
+            }
+            if (!$leaked -and $hasHost -and $timed) { 'OK'; break }
+        }
+        $details = Find-Element ("Details GET api.example.test/demo " + [char]0xb7 + " 200") ([Windows.Automation.ControlType]::Button)
+        if ($details -and !$reqRedacted) {
+            $keys = New-Object -ComObject WScript.Shell
+            if (!$keys.AppActivate($process.Id)) { break }
+            $details.SetFocus()
+            if ($details.Current.HasKeyboardFocus) { $keys.SendKeys(' '); Start-Sleep -Milliseconds 400 }
+        }
+    }
+    'ClearRecent' {
+        if (Find-Element 'No completed requests in this worker session.') { 'OK'; break }
+        $button = Find-Element 'Clear requests' ([Windows.Automation.ControlType]::Button)
+        if ($button -and $button.Current.IsEnabled) {
+            $keys = New-Object -ComObject WScript.Shell
+            if (!$keys.AppActivate($process.Id)) { break }
+            $button.SetFocus()
+            if ($button.Current.HasKeyboardFocus) { $keys.SendKeys(' '); Start-Sleep -Milliseconds 400 }
+        }
+    }
+    'RecentEmpty' {
+        if (Find-Element 'No completed requests in this worker session.') { 'OK' }
     }
     'Healthy' {
         if (Find-Element 'Local link healthy') { 'OK'; break }

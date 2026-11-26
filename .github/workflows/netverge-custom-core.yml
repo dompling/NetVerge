@@ -4,6 +4,7 @@ on:
     branches: [feat/mitm-route-integration]
     paths:
       - 'engines/mihomo-route/**'
+      - 'src/components/mitm/recent-requests.tsx'
       - 'src/components/mitm/response-rule-editor.tsx'
       - 'src-tauri/src/core/mitm/rewrite.rs'
       - 'src-tauri/src/core/mitm/service_generation.rs'
@@ -252,4 +253,4 @@ jobs:
             $package = Join-Path $env:RUNNER_TEMP 'netverge-rewrite-editor'
             Expand-Archive -LiteralPath $zip.FullName -DestinationPath $package
           }
-          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package editor-filters
+          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package editor-inspector

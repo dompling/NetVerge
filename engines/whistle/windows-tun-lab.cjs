@@ -32,6 +32,7 @@ async function serve(dir) {
     res.setHeader('X-Observed-Path', req.url);
     res.setHeader('X-NetVerge-Test', 'origin');
     res.setHeader('X-NetVerge-Observed-Request', req.headers['x-custom-netverge-test'] ?? 'missing');
+    res.setHeader('Set-Cookie', 'nv_session=origin-sensitive-secret; HttpOnly');
     res.end(body);
   });
   const originPort = await listen(origin);

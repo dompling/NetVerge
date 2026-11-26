@@ -216,7 +216,9 @@ async function main() {
       }
     }
 
-    const editor = ['editor', 'editor-filters'].includes(process.argv[3]);
+    const editor = ['editor', 'editor-filters', 'editor-inspector'].includes(process.argv[3]);
+    const hasFilters = ['editor-filters', 'editor-inspector'].includes(process.argv[3]);
+    const hasInspector = process.argv[3] === 'editor-inspector';
     for (const direction of editor ? ['response', 'request', 'path'] : []) {
       const request = direction === 'request';
       const pathRule = direction === 'path';
@@ -237,9 +239,16 @@ async function main() {
         execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', (pathRule ? 'path-' : request ? 'request-' : '') + (enabled ? 'on' : 'off')],
           { stdio: 'inherit', timeout: 75000 });
         if (enabled && pathRule) await until('recent request shows exact path, status and matched rule', () => automation(app, 'RecentRequests') === 'OK');
-        if (enabled && pathRule && process.argv[3] === 'editor-filters') {
+        if (enabled && pathRule && hasFilters) {
           await until('filter recent requests by path and matched rule', () => automation(app, 'FilterRecent') === 'OK');
           console.log('PASS: recent request search, rule filter, no-match result and clearing search');
+        }
+        if (enabled && pathRule && hasInspector) {
+          await until('inspect recent request details, timing and header redaction', () => automation(app, 'InspectRecent') === 'OK');
+          await until('clear recent requests and confirm empty session state', () => automation(app, 'ClearRecent') === 'OK');
+          await sleep(2500);
+          assert.equal(automation(app, 'RecentEmpty'), 'OK');
+          console.log('PASS: recent request detail disclosure, timing, header redaction and clear');
         }
         if (index === 0) await until('visible zero rewrite hits before enabling', () => automation(app, 'RuleHitsZero') === 'OK');
         if (enabled) await until('visible positive rewrite hits after matching TLS request', () => automation(app, 'RuleHits') === 'OK');

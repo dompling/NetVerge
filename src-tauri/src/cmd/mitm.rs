@@ -81,6 +81,13 @@ pub fn get_mitm_recent_requests() -> Vec<mitm::route_runtime::RecentRequest> {
     mitm::route_runtime::recent_requests()
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn clear_mitm_recent_requests() -> super::CmdResult<()> {
+    use super::StringifyErr as _;
+    mitm::route_runtime::clear_recent_requests().await.stringify_err()
+}
+
 /// Returns the last verified public CA only. Never installs trust or exports a private key.
 #[tauri::command]
 #[specta::specta]

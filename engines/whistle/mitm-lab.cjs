@@ -222,8 +222,9 @@ function dialTun(ip, host, originPort, ca, deadlineMs = 15000, requestPath = '/n
       secured.on('data', chunk => { response += chunk; });
       secured.once('end', () => { clearTimeout(timer); resolve({ fingerprint, response }); });
       secured.once('close', () => { if (!response) fail(new Error('TUN closed without response')); });
+      const authFixture = requestPath.startsWith('/demo') ? 'Authorization: Bearer client-sensitive-secret\r\n' : '';
       const fixture = requestHeaderFixture ? 'X-Custom-NetVerge-Test: client\r\nx-custom-netverge-test: duplicate\r\n' : '';
-      secured.write('GET ' + requestPath + ' HTTP/1.1\r\nHost: ' + host + ':' + originPort + '\r\n' + fixture + 'Connection: close\r\n\r\n');
+      secured.write('GET ' + requestPath + ' HTTP/1.1\r\nHost: ' + host + ':' + originPort + '\r\n' + authFixture + fixture + 'Connection: close\r\n\r\n');
     });
   });
 }

@@ -72,12 +72,49 @@ loadRequestRule();
 fs.watchFile(requestRewriteFile, { interval: 500, persistent: false }, loadRequestRule);
 
 const pathFile = path.join(dataDir, 'url-path-rule.json');
-let pathRule;
-let pathHits = 0;
-const recentRequests = [];
+let pathRule, pathHits = 0, nextRequestId = 1;
+const recentRequests = [], REDACTED = '[redacted]';
+const isSensitiveHeader = name =>
+  /^(?:authorization|proxy-authorization|cookie|set-cookie|www-authenticate|proxy-authenticate)$/i.test(name) ||
+  /(?:^|[-_])(?:auth|token|secret|password|passwd|api[-_]?key|access[-_]?key|private[-_]?key|client[-_]?secret|cookie|session|credential|jwt|bearer)(?:$|[-_])/i.test(name);
+function cleanHeaderValue(name, raw) {
+  if (isSensitiveHeader(name)) return REDACTED;
+  const text = (Array.isArray(raw) ? raw.join(', ') : String(raw ?? '')).replace(/[\x00-\x08\x0b-\x1f\x7f\r\n]+/g, ' ');
+  return text.length > 160 ? text.slice(0, 159) + '…' : text;
+}
+function sanitizeHeaders(headers, explicit) {
+  const map = new Map();
+  const put = (k, v, append) => {
+    const lower = String(k).toLowerCase();
+    if (v === undefined || lower.startsWith('x-whistle-')) return;
+    const next = cleanHeaderValue(lower, v);
+    map.set(lower, append && map.has(lower) && next !== REDACTED ? cleanHeaderValue(lower, map.get(lower) + ', ' + next) : next);
+  };
+  for (const [k, v] of Object.entries(headers || {})) put(k, v, false);
+  if (Array.isArray(explicit)) {
+    const seen = new Set();
+    for (let i = 0; i + 1 < explicit.length; i += 2) {
+      const lower = String(explicit[i]).toLowerCase();
+      put(lower, explicit[i + 1], seen.has(lower));
+      seen.add(lower);
+    }
+  } else if (explicit && typeof explicit === 'object') {
+    for (const [k, v] of Object.entries(explicit)) put(k, v, false);
+  }
+  const pairs = [];
+  for (const [name, value] of map) {
+    const pair = [name.slice(0, 64), value];
+    if (pairs.length >= 16 || Buffer.byteLength(JSON.stringify([...pairs, pair])) > 1200) break;
+    pairs.push(pair);
+  }
+  return pairs;
+}
 // Reserve room for the maximum hostname allowlist within the 32 KiB control frame.
-function recordResponse(entry, status) {
-  entry.status = status;
+function recordResponse(entry, res, startedAt) {
+  entry.status = res.statusCode;
+  entry.durationMs = Math.min(Math.max(0, Date.now() - startedAt), 0xfffffffe);
+  entry.completedAt = new Date().toISOString();
+  if (!entry.responseHeaders.length) entry.responseHeaders = sanitizeHeaders(res.getHeaders());
   recentRequests.unshift(entry);
   recentRequests.splice(20);
   while (Buffer.byteLength(JSON.stringify(recentRequests)) > 12000) recentRequests.pop();
@@ -158,6 +195,7 @@ const routes = new Map();
 const maxRoutes = 128;
 const controlAuthority = '127.0.0.1:' + port;
 const controlPath = '/__netverge_routes';
+const recentPath = '/__netverge_recent_requests';
 const authValue = secret => Buffer.from('Basic ' + Buffer.from('netverge:' + secret).toString('base64'));
 const controlAuth = authValue(controlSecret);
 const matchesAuth = (auth, expected) => auth.length === expected.length && timingSafeEqual(auth, expected);
@@ -194,10 +232,17 @@ function reply(res,status) {
   res.end();
 }
 function control(req,res) {
-  if (req.url !== controlPath || req.headers.host !== controlAuthority) return false;
+  if ((req.url !== controlPath && req.url !== recentPath) || req.headers.host !== controlAuthority) return false;
   const auth = Buffer.from(req.headers['proxy-authorization'] || '');
   if (!ready || req.headers[TUNNEL] || !matchesAuth(auth,controlAuth)) {
     reply(res,403); return true;
+  }
+  if (req.url === recentPath) {
+    if (req.method === 'DELETE' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
+      recentRequests.length = 0;
+      reply(res,204);
+    } else reply(res,400);
+    return true;
   }
   if (req.method === 'GET' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
     const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],rewriteHits,requestRewriteHits,pathHits,recentRequests});
@@ -315,11 +360,21 @@ server.emit = function(event, ...args) {
     // header; route identity lives only on the admitted request object.
     admissions.set(req, admission);
     const authority = admission.route.authority;
+    const startedAt = Date.now();
     const pathname = new URL(req.url, 'https://' + authority).pathname;
-    const entry = { method: req.method.slice(0, 32), host: authority.slice(0, -4), path: pathname.length > 256 ? pathname.slice(0, 255) + '…' : pathname,
-      requestRule: false, responseRule: false, pathRule: false, status: 0 };
-    res.once('finish', () => recordResponse(entry, res.statusCode));
+    const id = nextRequestId < 0xfffffffe ? nextRequestId++ : (nextRequestId = 1);
+    const entry = { id, method: req.method.slice(0, 32), host: authority.slice(0, -4),
+      path: pathname.length > 256 ? pathname.slice(0, 255) + '…' : pathname,
+      requestRule: false, responseRule: false, pathRule: false, status: 0,
+      completedAt: '', durationMs: 0, requestHeaders: [], responseHeaders: [] };
+    const rawWriteHead = res.writeHead;
+    res.writeHead = function(status, reason, fields) {
+      entry.responseHeaders = sanitizeHeaders(this.getHeaders(), typeof reason === 'string' ? fields : reason);
+      return rawWriteHead.apply(this, arguments);
+    };
+    res.once('finish', () => recordResponse(entry, res, startedAt));
     applyRequestRule(req, authority, entry);
+    entry.requestHeaders = sanitizeHeaders(req.headers);
     applyResponseRule(req, res, authority, entry);
     applyPathRule(req, authority, entry);
   }
