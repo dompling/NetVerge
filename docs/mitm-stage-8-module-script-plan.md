@@ -202,19 +202,29 @@ bypass the original MITM scope. Explicit blocking actions need separate validati
 
 ## Delivery sequence and exit criteria
 
-- 8.1: centralized matching plan, typed model, bounded matcher and migration.
-- 8.2: header operations, query and URL rewrite; same-authority only; redirect separate.
-- 8.3: bounded request and response body operations; encoding/framing correctness,
-  invalid data and oversize pass-through, no stream buffering.
-- 8.4: Mock / Map Local, scoped local file access and terminal-action precedence;
-  prove local response does not send application request upstream (the original lease may
-  already have opened a connection under the existing architecture).
-- 8.5: inspector detail, optional bounded body preview, redacted HAR/cURL, explicit replay.
-- 8.6: isolated script runner, compatibility APIs, timeout/crash tests, permission review.
-- 8.7: per-profile workspace migration, native module.yaml discovery/parser preview,
-  profile-relative assets, activation, profile switching, source update and rollback;
-  foreign-format conversion adapters only after native semantics are stable.
-- 8.8: Windows real TUN/TLS, route identity, existing service/Sidecar lifecycle,
+Work in small independently reviewed increments, reusing existing production code
+and tests. Verify actual GitHub Actions results for the exact tested source revision
+and artifact before claiming completion or starting the next increment. Documentation-only
+commits do not invalidate source-code CI evidence; note the tested code SHA separately.
+A failed or cancelled relevant run is not a pass. Fix/revalidate the current gate first.
+Do not create unused alternative implementations, speculative adapters or duplicate helpers.
+
+- 8.1: centralized matching plan, typed rule model, bounded matcher and migration.
+- 8.2: independent profile workspace and module management foundation, reusing existing
+  profile UID and validated activation/rollback mechanisms.
+- 8.3: native module.yaml discovery and strict parsing, typed configuration compiler,
+  profile-relative asset validation, non-destructive preview and approved snapshot.
+- 8.4: advanced header, URL/query and bounded body operations; encoding/framing,
+  oversize pass-through, stream preservation; same-authority only, redirects separate.
+- 8.5: Mock / Map Local, scoped asset access and terminal-action precedence;
+  prove no application request goes upstream for local responses (the original lease
+  may already have opened a connection under the existing architecture).
+- 8.6: inspector, optional bounded body preview, redacted HAR/cURL, explicit replay.
+- 8.7: isolated script runner and Surge-compatible APIs, timeout/crash tests,
+  permission review.
+- 8.8: module subscriptions, reviewed updates and rollback; foreign-format import
+  adapters only after native semantics are stable.
+- 8.9: Windows real TUN/TLS, route identity, existing service/Sidecar lifecycle,
   packaging/rollback, stress and safety tests. macOS follows as Stage 9.
 
 Maintain existing development-only gate and Windows-first testing. No production release
