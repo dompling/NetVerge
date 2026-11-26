@@ -10,6 +10,8 @@ on:
       - 'src-tauri/src/core/mitm/rewrite.rs'
       - 'src-tauri/src/core/mitm/url_regex.rs'
       - 'src-tauri/src/core/mitm/route_runtime.rs'
+      - 'src-tauri/src/cmd/mitm.rs'
+      - 'src-tauri/src/core/mitm/route_runtime/installed_service.rs'
       - 'src-tauri/src/core/mitm/service_generation.rs'
       - 'src-tauri/src/core/mitm/service_pipe.rs'
       - 'src-tauri/src/core/mitm/control_http.rs'

@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,26 +50,52 @@ switch ($Action) {
     }
     { $_ -in 'EnableService', 'DisableService' } {
         $element = Find-Element 'Windows MITM service mode' ([Windows.Automation.ControlType]::Button)
-        if ($element -and $element.Current.IsEnabled) {
-            # Each transition starts from a persisted, verified state. WebView2 exposes
-            # this switch as a button, so activate it once and verify the saved result.
-            if ($Action -eq 'DisableService') {
-                $keys = New-Object -ComObject WScript.Shell
-                if (!$keys.AppActivate($process.Id)) { break }
-                $element.SetFocus()
-                if (!$element.Current.HasKeyboardFocus) { break }
-                $keys.SendKeys(' ')
-                'OK'
-                break
-            }
-            $toggle = $null
-            if ($element.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) {
-                $toggle.Toggle()
-            } else {
-                $element.GetCurrentPattern($invoke).Invoke()
-            }
-            'OK'
+        if (!$element -or !$element.Current.IsEnabled) { break }
+
+        # Use a real pointer activation of the visible WebView control, not an
+        # InvokePattern/SendKeys result that may never reach the DOM. Foreground
+        # and clickable point must both belong to the current desktop window.
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class NetVergeServiceSwitchInput {
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+}
+'@
+        $keys = New-Object -ComObject WScript.Shell
+        if (!$keys.AppActivate($process.Id)) { break }
+        $element.SetFocus()
+        Start-Sleep -Milliseconds 150
+        if ([NetVergeServiceSwitchInput]::GetForegroundWindow() -ne $process.MainWindowHandle) { break }
+        $element = Find-Element 'Windows MITM service mode' ([Windows.Automation.ControlType]::Button)
+        if (!$element -or !$element.Current.IsEnabled -or $element.Current.IsOffscreen) { break }
+
+        $point = New-Object System.Windows.Point
+        if (!$element.TryGetClickablePoint([ref]$point)) { break }
+        $bounds = $element.Current.BoundingRectangle
+        if (!$bounds.Contains($point)) { break }
+        $hit = [Windows.Automation.AutomationElement]::FromPoint($point)
+        # Accept the element itself or a descendant exposed by WebView2.
+        $walker = [Windows.Automation.TreeWalker]::RawViewWalker
+        $owned = $false
+        for ($i = 0; $hit -and $i -lt 12; $i++) {
+            if ([Windows.Automation.Automation]::Compare($hit, $element)) { $owned = $true; break }
+            $hit = $walker.GetParent($hit)
         }
+        if (!$owned) { break }
+        if (![NetVergeServiceSwitchInput]::SetCursorPos([int][Math]::Round($point.X), [int][Math]::Round($point.Y))) { break }
+        if ([NetVergeServiceSwitchInput]::GetForegroundWindow() -ne $process.MainWindowHandle) { break }
+        [NetVergeServiceSwitchInput]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+        [NetVergeServiceSwitchInput]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        # This means input was dispatched, NOT that the preference was saved.
+        'DISPATCHED mouse'
+    }
+    'ServicePending' {
+        $button = Find-Element 'Restart' ([Windows.Automation.ControlType]::Button)
+        if ($button -and $button.Current.IsEnabled) { 'OK' }
     }
     'Restart' {
         $button = Find-Element 'Restart'

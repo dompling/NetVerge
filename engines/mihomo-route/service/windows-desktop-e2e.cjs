@@ -77,6 +77,25 @@ function automation(app, action) {
   ], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true }).trim();
 }
 
+async function changeServiceMode(app, mitm, enabled, coreDigest) {
+  const action = enabled ? 'EnableService' : 'DisableService';
+  const file = path.join(mitm, 'guarded-service.yaml');
+  // Retry only while input has not been dispatched. Once delivered, never
+  // blindly click a toggle again; verify the real application save instead.
+  const dispatch = await until(action + ' input dispatch', () => {
+    const output = automation(app, action);
+    return output.startsWith('DISPATCHED ') ? output : false;
+  });
+  console.log(action + ': ' + dispatch);
+  await until(action + ' preference persisted', () => {
+    if (!fs.existsSync(file)) return false;
+    const value = fs.readFileSync(file, 'utf8').trim();
+    return enabled ? value === coreDigest : value === 'null';
+  });
+  console.log('PASS: ' + action + ' preference persisted by the application');
+  await until(action + ' restart prompt', () => automation(app, 'ServicePending') === 'OK');
+}
+
 function desktopPid(app) {
   return Number(powershell("(Get-Process -Name 'NetVerge-MITM' -ErrorAction SilentlyContinue | Where-Object Path -eq " + q(app) + " | Select-Object -First 1).Id; exit 0"));
 }
@@ -189,11 +208,7 @@ async function main() {
       stream.on('data', chunk => { desktopOutput = (desktopOutput + chunk).slice(-24000); });
     }
     await until('MITM navigation', () => automation(app, 'Open') === 'OK', 70000);
-    await until('enabled service mode switch', () => automation(app, 'EnableService') === 'OK');
-    await until('service mode checkbox persisted', () => {
-      const file = path.join(mitm, 'guarded-service.yaml');
-      return fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes(coreDigest);
-    });
+    await changeServiceMode(app, mitm, true, coreDigest);
     await restartDesktop(app, desktop.pid);
     const processPath = await until('guarded service core startup', () =>
       powershell("(Get-Process -Name 'netverge-mihomo-service' -ErrorAction SilentlyContinue).Path; exit 0"), 90000);
@@ -394,9 +409,7 @@ async function main() {
     }
 
     const serviceDesktopPid = desktopPid(app);
-    await until('disable service mode switch', () => automation(app, 'DisableService') === 'OK');
-    await until('disabled service preference persisted', () =>
-      fs.readFileSync(path.join(mitm, 'guarded-service.yaml'), 'utf8').trim() === 'null');
+    await changeServiceMode(app, mitm, false, coreDigest);
     await restartDesktop(app, serviceDesktopPid);
     await until('restored Sidecar MITM state', () => automation(app, 'Healthy') === 'OK', 90000);
     const sidecarPath = powershell("(Get-Process -Name 'verge-mihomo').Path");

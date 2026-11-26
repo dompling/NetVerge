@@ -1,4 +1,5 @@
 use crate::core::mitm::{self, MitmPublicCa, MitmStatus};
+use clash_verge_logging::{Type, logging};
 
 /// Read-only MITM state; no configuration or process changes.
 #[tauri::command]
@@ -12,7 +13,13 @@ pub fn get_mitm_status() -> MitmStatus {
 #[specta::specta]
 pub async fn set_mitm_service_mode(enabled: bool) -> super::CmdResult<()> {
     use super::StringifyErr as _;
-    mitm::route_runtime::set_service_preference(enabled).await.stringify_err()
+    logging!(info, Type::Cmd, "[MITM] service preference requested: {enabled}");
+    let result = mitm::route_runtime::set_service_preference(enabled).await;
+    match &result {
+        Ok(()) => { logging!(info, Type::Cmd, "[MITM] service preference persisted: {enabled}"); }
+        Err(error) => { logging!(warn, Type::Cmd, "[MITM] service preference save failed ({enabled}): {error:#}"); }
+    }
+    result.stringify_err()
 }
 
 #[tauri::command]
