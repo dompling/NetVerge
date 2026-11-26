@@ -602,6 +602,14 @@ fn validate_candidate(candidate: &MitmSettings) -> Result<()> {
     Ok(())
 }
 
+pub(super) async fn configured_hostnames() -> Result<Vec<String>> {
+    #[cfg(all(windows, feature = "verge-dev"))]
+    if service_requested() {
+        return Ok(installed_service::configured_hostnames().await);
+    }
+    Ok(inspect().await?.map_or_else(Vec::new, |(selection, _)| selection.hostname))
+}
+
 pub(super) async fn inspect() -> Result<Option<(MitmSettings, String)>> {
     let current = crate::core::CoreManager::global().current_core_readiness_generation();
     tokio::task::spawn_blocking(move || {

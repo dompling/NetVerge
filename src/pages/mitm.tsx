@@ -127,7 +127,7 @@ const MitmPage = () => {
               <Typography variant="subtitle2">{t('settings.mitm.serviceMode')}</Typography>
               <Switch
                 checked={status.serviceModeNextStart}
-                disabled={busy || isValidating}
+                disabled={busy}
                 onChange={(_, checked) => void toggleService(checked)}
                 slotProps={{ input: { 'aria-label': t('settings.mitm.serviceMode') } }}
               />

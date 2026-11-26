@@ -5,6 +5,8 @@ on:
     branches: [feat/mitm-route-integration]
     paths:
       - '.github/workflows/netverge-windows-desktop-e2e.yml'
+      - 'src-tauri/src/core/mitm/module_manager.rs'
+      - 'src/pages/mitm.tsx'
       - 'engines/mihomo-route/service/windows-desktop-e2e.cjs'
       - 'engines/mihomo-route/service/windows-desktop-uia.ps1'
       - 'engines/whistle/route-worker.cjs'

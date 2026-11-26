@@ -53,6 +53,12 @@ pub(super) fn requested() -> bool {
     !matches!(startup().digest, Ok(None))
 }
 
+pub(super) async fn configured_hostnames() -> Vec<String> {
+    ROUTE.lock().await.as_ref().map_or_else(Vec::new, |state| {
+        state.worker.selection().hostname
+    })
+}
+
 pub(super) fn next_start() -> Option<bool> {
     let next = startup().next.load(Ordering::Acquire);
     (requested() || next || (std::env::var_os(ENV).is_some() && std::env::var_os(DIGEST_ENV).is_some())).then_some(next)

@@ -333,11 +333,14 @@ pub(crate) fn sync_for_workspace_snapshot(snapshot: &WorkspaceSnapshot) {
     }
 }
 
-pub fn get_profile_modules() -> Result<ProfileModulesView> {
+pub async fn get_profile_modules() -> Result<ProfileModulesView> {
     let mitm_dir = mitm_data_dir()?;
     let snap = active_workspace_snapshot();
-    let hosts = super::settings::get()?.active.map_or_else(Vec::new, |s| s.hostname);
-    preview_modules_in_dirs(&mitm_dir, snap.uid.as_deref(), snap.root.as_deref(), &hosts)
+    let hosts = super::route_runtime::configured_hostnames().await?;
+    tokio::task::spawn_blocking(move || {
+        preview_modules_in_dirs(&mitm_dir, snap.uid.as_deref(), snap.root.as_deref(), &hosts)
+    })
+    .await?
 }
 
 pub async fn set_module_approval(
@@ -350,7 +353,7 @@ pub async fn set_module_approval(
     let snap = active_workspace_snapshot();
     ensure!(snap.uid.as_deref() == Some(profile_uid.as_str()), "active profile changed; reload modules");
     let ws_root = snap.root.context("active profile has no dedicated workspace")?;
-    let hosts = super::settings::get()?.active.map_or_else(Vec::new, |s| s.hostname);
+    let hosts = super::route_runtime::configured_hostnames().await?;
     tokio::task::spawn_blocking(move || {
         set_module_approval_in_dirs(
             &mitm_dir,

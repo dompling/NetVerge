@@ -116,9 +116,9 @@ pub fn get_mitm_rewrite_diagnostics() -> Vec<mitm::route_runtime::RewritePhaseDi
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_mitm_profile_modules() -> super::CmdResult<mitm::module_manager::ProfileModulesView> {
+pub async fn get_mitm_profile_modules() -> super::CmdResult<mitm::module_manager::ProfileModulesView> {
     use super::StringifyErr as _;
-    mitm::module_manager::get_profile_modules().stringify_err()
+    mitm::module_manager::get_profile_modules().await.stringify_err()
 }
 
 #[tauri::command]
