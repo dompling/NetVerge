@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -296,6 +296,15 @@ switch ($Action) {
             $button.SetFocus()
             if ($button.Current.HasKeyboardFocus) { $keys.SendKeys(' '); Start-Sleep -Milliseconds 400 }
         }
+    }
+    { $_ -in 'PauseRecent', 'ResumeRecent' } {
+        $source, $target = if ($Action -eq 'PauseRecent') { 'Pause updates', 'Resume updates' } else { 'Resume updates', 'Pause updates' }
+        if (Find-Element $target ([Windows.Automation.ControlType]::Button)) { 'OK'; break }
+        $button = Find-Element $source ([Windows.Automation.ControlType]::Button)
+        if ($button -and $button.Current.IsEnabled) { $button.GetCurrentPattern($invoke).Invoke() }
+    }
+    'RecentPathVisible' {
+        if (Find-Element ("GET api.example.test/demo " + [char]0xb7 + " 200 " + [char]0xb7 + " URL path rewrite")) { 'OK' }
     }
     'RecentEmpty' {
         if (Find-Element 'No completed requests in this worker session.') { 'OK' }

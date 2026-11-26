@@ -873,6 +873,8 @@ export const translationKeys = [
   'settings.search.empty',
   'settings.mitm.recent.search',
   'settings.mitm.recent.all',
+  'settings.mitm.recent.pause',
+  'settings.mitm.recent.resume',
   'settings.mitm.recent.noMatches',
   'settings.mitm.recent.clear',
   'settings.mitm.recent.limit',

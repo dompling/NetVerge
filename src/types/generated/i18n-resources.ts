@@ -980,8 +980,10 @@ export interface TranslationResources {
           noHeaders: string
           noMatches: string
           none: string
+          pause: string
           requestHeaders: string
           responseHeaders: string
+          resume: string
           search: string
           title: string
         }

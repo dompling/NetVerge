@@ -268,6 +268,16 @@ async function main() {
           await until('clear recent requests and confirm empty session state', () => automation(app, 'ClearRecent') === 'OK');
           await sleep(2500);
           assert.equal(automation(app, 'RecentEmpty'), 'OK');
+          if (hasBody) {
+            await until('pause the empty recent request list', () => automation(app, 'PauseRecent') === 'OK');
+            execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', probeKind],
+              { stdio: 'inherit', timeout: 75000 });
+            await sleep(2500);
+            assert.equal(automation(app, 'RecentEmpty'), 'OK');
+            await until('resume recent request updates', () => automation(app, 'ResumeRecent') === 'OK');
+            await until('show the matching request completed while paused', () => automation(app, 'RecentPathVisible') === 'OK');
+            console.log('PASS: paused recent requests stayed frozen and resumed with matching TLS traffic');
+          }
           console.log('PASS: recent request detail disclosure, timing, header redaction and clear');
         }
         if (index === 0) await until('visible zero rewrite hits before enabling', () => automation(app, 'RuleHitsZero') === 'OK');

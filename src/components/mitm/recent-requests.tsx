@@ -10,8 +10,9 @@ import {
 } from '@mui/material'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import useSWR from 'swr'
+import useSWR, { useSWRConfig } from 'swr'
 
+import type { RecentRequest } from '@/services/bindings'
 import { clearMitmRecentRequests, getMitmRecentRequests } from '@/services/cmds'
 
 function HeaderList({
@@ -62,18 +63,22 @@ export function RecentRequests() {
   const [clearing, setClearing] = useState(false)
   const [actionError, setActionError] = useState(false)
   const needle = query.trim().toLowerCase()
-  const { data, error, mutate } = useSWR(
-    open ? 'mitm-recent-requests' : null,
+  const [snapshot, setSnapshot] = useState<RecentRequest[] | null>(null)
+  const { mutate } = useSWRConfig()
+  const { data: live, error } = useSWR(
+    open && snapshot === null ? 'mitm-recent-requests' : null,
     getMitmRecentRequests,
     { refreshInterval: 2000 },
   )
+  const data = snapshot ?? live
   const clear = async () => {
     setClearing(true)
     setActionError(false)
     try {
       await clearMitmRecentRequests()
       setExpandedId(null)
-      await mutate([], { revalidate: false })
+      setSnapshot((current) => (current === null ? null : []))
+      await mutate('mitm-recent-requests', [], { revalidate: false })
     } catch {
       setActionError(true)
     } finally {
@@ -105,7 +110,13 @@ export function RecentRequests() {
   })
   return (
     <Card variant="outlined" sx={{ p: 1 }}>
-      <Button aria-expanded={open} onClick={() => setOpen(!open)}>
+      <Button
+        aria-expanded={open}
+        onClick={() => {
+          setOpen(!open)
+          setSnapshot(null)
+        }}
+      >
         {t('settings.mitm.recent.title')}
       </Button>
       {open && (
@@ -127,13 +138,26 @@ export function RecentRequests() {
             >
               {t('settings.mitm.recent.limit')}
             </Typography>
-            <Button
-              size="small"
-              disabled={clearing || !data?.length}
-              onClick={() => void clear()}
-            >
-              {t('settings.mitm.recent.clear')}
-            </Button>
+            <Stack direction="row" spacing={1}>
+              <Button
+                size="small"
+                disabled={clearing || !data}
+                onClick={() => setSnapshot(snapshot === null ? (live ?? []) : null)}
+              >
+                {t(
+                  snapshot === null
+                    ? 'settings.mitm.recent.pause'
+                    : 'settings.mitm.recent.resume',
+                )}
+              </Button>
+              <Button
+                size="small"
+                disabled={clearing || !data?.length}
+                onClick={() => void clear()}
+              >
+                {t('settings.mitm.recent.clear')}
+              </Button>
+            </Stack>
           </Stack>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
             <TextField

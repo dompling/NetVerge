@@ -728,6 +728,8 @@
     "recent": {
       "search": "Search hostname or path",
       "all": "All requests",
+      "pause": "Pause updates",
+      "resume": "Resume updates",
       "noMatches": "No requests match these filters.",
       "clear": "Clear requests",
       "limit": "Up to 20 completed requests (12 KB memory cap); sensitive headers redacted.",
