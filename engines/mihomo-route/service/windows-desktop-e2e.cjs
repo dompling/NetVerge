@@ -235,6 +235,7 @@ async function main() {
         await sleep(1200);
         execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', (pathRule ? 'path-' : request ? 'request-' : '') + (enabled ? 'on' : 'off')],
           { stdio: 'inherit', timeout: 75000 });
+        if (enabled && pathRule) await until('recent request shows exact path, status and matched rule', () => automation(app, 'RecentRequests') === 'OK');
         if (index === 0) await until('visible zero rewrite hits before enabling', () => automation(app, 'RuleHitsZero') === 'OK');
         if (enabled) await until('visible positive rewrite hits after matching TLS request', () => automation(app, 'RuleHits') === 'OK');
       }

@@ -725,6 +725,12 @@
     "empty": "找不到設定"
   },
   "mitm": {
+    "recent": {
+      "title": "最近請求",
+      "empty": "本次執行尚無已完成的請求。",
+      "matched": "命中規則",
+      "none": "未命中"
+    },
     "rewrite": {
       "pathTitle": "URL 路徑重寫",
       "targetPath": "目標路徑",

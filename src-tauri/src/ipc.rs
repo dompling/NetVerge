@@ -34,6 +34,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
             cmd::get_url_path_rule,
             cmd::save_url_path_rule,
             cmd::get_url_path_hits,
+            cmd::get_mitm_recent_requests,
             cmd::get_mitm_public_ca,
             cmd::get_mitm_trust_status,
             cmd::export_mitm_public_ca,

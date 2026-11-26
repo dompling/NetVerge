@@ -75,6 +75,12 @@ pub fn get_url_path_hits() -> Option<u32> {
     mitm::route_runtime::url_path_hits()
 }
 
+#[tauri::command]
+#[specta::specta]
+pub fn get_mitm_recent_requests() -> Vec<mitm::route_runtime::RecentRequest> {
+    mitm::route_runtime::recent_requests()
+}
+
 /// Returns the last verified public CA only. Never installs trust or exports a private key.
 #[tauri::command]
 #[specta::specta]

@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -161,6 +161,14 @@ switch ($Action) {
                     break
                 }
             }
+        }
+    }
+    'RecentRequests' {
+        $row = Find-Element ("GET api.example.test/demo " + [char]0xb7 + " 200 " + [char]0xb7 + " URL path rewrite")
+        if ($row) { 'OK'; break }
+        $button = Find-Element 'Recent requests' ([Windows.Automation.ControlType]::Button)
+        if ($button -and !(Find-Element ("GET api.example.test/demo " + [char]0xb7 + " 200"))) {
+            $button.GetCurrentPattern($invoke).Invoke()
         }
     }
     'Healthy' {

@@ -725,6 +725,12 @@
     "empty": "未找到设置"
   },
   "mitm": {
+    "recent": {
+      "title": "最近请求",
+      "empty": "本次运行暂无已完成的请求。",
+      "matched": "命中规则",
+      "none": "未命中"
+    },
     "rewrite": {
       "pathTitle": "URL 路径重写",
       "targetPath": "目标路径",

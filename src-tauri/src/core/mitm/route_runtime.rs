@@ -223,6 +223,27 @@ pub(crate) fn url_path_hits() -> Option<u32> {
     (value != u32::MAX && matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy)).then_some(value)
 }
 
+#[derive(Clone, Deserialize, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentRequest {
+    method: String,
+    host: String,
+    path: String,
+    request_rule: bool,
+    response_rule: bool,
+    path_rule: bool,
+    status: u16,
+}
+
+static RECENT_REQUESTS: Mutex<Vec<RecentRequest>> = Mutex::new(Vec::new());
+
+pub(crate) fn recent_requests() -> Vec<RecentRequest> {
+    if matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy) {
+        return RECENT_REQUESTS.lock().clone();
+    }
+    Vec::new()
+}
+
 #[derive(Deserialize)]
 struct WorkerState {
     #[serde(default, rename = "rewriteHits")]
@@ -231,6 +252,8 @@ struct WorkerState {
     request_rewrite_hits: Option<u32>,
     #[serde(default, rename = "pathHits")]
     path_hits: Option<u32>,
+    #[serde(default, rename = "recentRequests")]
+    recent_requests: Vec<RecentRequest>,
     protocol: u32,
     hosts: Vec<String>,
 }
@@ -285,6 +308,7 @@ impl Launch {
         ensure!(code == 200, "original-route worker authentication failed");
         let state: WorkerState = serde_json::from_slice(&body)?;
         ensure!(state.protocol == 1 && same_hosts(&state.hosts, &self.settings.hosts), "original-route worker scope mismatch");
+        *RECENT_REQUESTS.lock() = state.recent_requests;
         PATH_HITS.store(state.path_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         REQUEST_REWRITE_HITS.store(state.request_rewrite_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         REWRITE_HITS.store(state.rewrite_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);

@@ -55,6 +55,7 @@ export const commands = {
   saveUrlPathRule: (expected: UrlPathRule | null, rule: UrlPathRule | null) =>
     __TAURI_INVOKE<null>('save_url_path_rule', { expected, rule }),
   getUrlPathHits: () => __TAURI_INVOKE<number | null>('get_url_path_hits'),
+  getMitmRecentRequests: () => __TAURI_INVOKE<RecentRequest[]>('get_mitm_recent_requests'),
   /**  Returns the last verified public CA only. Never installs trust or exports a private key. */
   getMitmPublicCa: () =>
     __TAURI_INVOKE<MitmPublicCa | null>('get_mitm_public_ca'),
@@ -662,6 +663,16 @@ export type MitmConfigView_Serialize = {
   revision: string | null
   restartRequired: boolean
   policies: string[]
+}
+
+export type RecentRequest = {
+  method: string
+  host: string
+  path: string
+  requestRule: boolean
+  responseRule: boolean
+  pathRule: boolean
+  status: number
 }
 
 export type UrlPathRule = { enabled: boolean; host: string; path: string; target: string }

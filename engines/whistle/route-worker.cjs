@@ -74,6 +74,14 @@ fs.watchFile(requestRewriteFile, { interval: 500, persistent: false }, loadReque
 const pathFile = path.join(dataDir, 'url-path-rule.json');
 let pathRule;
 let pathHits = 0;
+const recentRequests = [];
+// Reserve room for the maximum hostname allowlist within the 32 KiB control frame.
+function recordResponse(entry, status) {
+  entry.status = status;
+  recentRequests.unshift(entry);
+  recentRequests.splice(20);
+  while (Buffer.byteLength(JSON.stringify(recentRequests)) > 12000) recentRequests.pop();
+}
 function validPath(value) {
   return typeof value === 'string' && /^\/(?!\/)[A-Za-z0-9/._~%-]*$/.test(value) &&
     !/%(?![0-9a-f]{2})/i.test(value) && new URL(value, 'https://example.test').pathname === value;
@@ -93,17 +101,18 @@ function loadPathRule() {
 }
 loadPathRule();
 fs.watchFile(pathFile, { interval: 500, persistent: false }, loadPathRule);
-function applyPathRule(req, authority) {
+function applyPathRule(req, authority, entry) {
   if (!pathRule || authority !== pathRule.host + ':443') return;
   const url = new URL(req.url, 'https://' + authority);
   if (url.pathname !== pathRule.path) return;
   const query = req.url.indexOf('?');
   const target = pathRule.target + (query < 0 ? '' : req.url.slice(query));
   req.url = req.url.startsWith('/') ? target : url.origin + target;
+  entry.pathRule = true;
   pathHits = Math.min(pathHits + 1, 0xfffffffe);
 }
 
-function applyRequestRule(req, authority) {
+function applyRequestRule(req, authority, entry) {
   const rule = requestRule;
   if (!rule || authority !== rule.host + ':443' ||
       new URL(req.url, 'https://' + authority).pathname !== rule.path) return;
@@ -113,15 +122,17 @@ function applyRequestRule(req, authority) {
   strip(req, rule.header);
   req.headers[rule.header] = rule.value;
   if (Array.isArray(req.rawHeaders)) req.rawHeaders.push(rule.header, rule.value);
+  entry.requestRule = true;
   requestRewriteHits = Math.min(requestRewriteHits + 1, 0xfffffffe);
 }
 
-function applyResponseRule(req, res, authority) {
+function applyResponseRule(req, res, authority, entry) {
   const rule = responseRule;
   if (!rule || authority !== rule.host + ':443' ||
       new URL(req.url, 'https://' + authority).pathname !== rule.path) return;
   const writeHead = res.writeHead;
   res.writeHead = function(status, reason, fields) {
+    entry.responseRule = true;
     rewriteHits = Math.min(rewriteHits + 1, 0xfffffffe);
     const headers = typeof reason === 'string' ? fields : reason;
     // Explicit writeHead fields take precedence over setHeader, including
@@ -189,7 +200,7 @@ function control(req,res) {
     reply(res,403); return true;
   }
   if (req.method === 'GET' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
-    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],rewriteHits,requestRewriteHits,pathHits});
+    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],rewriteHits,requestRewriteHits,pathHits,recentRequests});
     res.writeHead(200, {Connection:'close','Cache-Control':'no-store','Content-Type':'application/json','Content-Length':Buffer.byteLength(body)});
     res.end(body);
     return true;
@@ -303,9 +314,14 @@ server.emit = function(event, ...args) {
     // After the internal TLS bridge, do not trust any user-supplied route
     // header; route identity lives only on the admitted request object.
     admissions.set(req, admission);
-    applyRequestRule(req, admission.route.authority);
-    applyResponseRule(req, res, admission.route.authority);
-    applyPathRule(req, admission.route.authority);
+    const authority = admission.route.authority;
+    const pathname = new URL(req.url, 'https://' + authority).pathname;
+    const entry = { method: req.method.slice(0, 32), host: authority.slice(0, -4), path: pathname.length > 256 ? pathname.slice(0, 255) + '…' : pathname,
+      requestRule: false, responseRule: false, pathRule: false, status: 0 };
+    res.once('finish', () => recordResponse(entry, res.statusCode));
+    applyRequestRule(req, authority, entry);
+    applyResponseRule(req, res, authority, entry);
+    applyPathRule(req, authority, entry);
   }
   if (event === 'upgrade') { args[1].destroy(); return true; }
   return emit.call(this, event, ...args);

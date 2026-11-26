@@ -968,6 +968,12 @@ export interface TranslationResources {
         manual: string
         no: string
         noCa: string
+        recent: {
+          empty: string
+          matched: string
+          none: string
+          title: string
+        }
         recovery: string
         refresh: string
         removeHost: string

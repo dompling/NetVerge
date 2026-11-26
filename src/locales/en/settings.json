@@ -725,6 +725,12 @@
     "empty": "No settings found"
   },
   "mitm": {
+    "recent": {
+      "title": "Recent requests",
+      "empty": "No completed requests in this worker session.",
+      "matched": "Matched rules",
+      "none": "No match"
+    },
     "rewrite": {
       "pathTitle": "URL path rewrite",
       "targetPath": "Target path",
