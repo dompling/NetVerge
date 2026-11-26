@@ -12,6 +12,7 @@ on:
       - 'src-tauri/src/core/mitm/controller_state.rs'
       - 'src-tauri/src/core/mitm/service_restore.rs'
       - 'engines/mihomo-route-lab/install-adapter-type-lab.cjs'
+      - 'engines/whistle/windows-tun-lab.cjs'
       - 'engines/whistle/route-worker.cjs'
       - 'engines/whistle/ca-integrity.cjs'
       - 'engines/whistle/package.json'
