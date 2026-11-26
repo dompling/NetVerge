@@ -172,6 +172,7 @@ async function probe(dir, port, mode, rewrite) {
       } else if (rewrite === 'body-on' && intercepted && requestPath === '/demo') {
         assert.ok(!/^content-encoding:/im.test(decoded.head), 'rewritten body must clear Content-Encoding');
         assert.ok(!/^etag:/im.test(decoded.head), 'rewritten body must clear stale ETag');
+        assert.ok(decoded.body.length > 0, 'rewritten body was empty: ' + JSON.stringify(decoded.head));
         assert.deepEqual(JSON.parse(decoded.body.toString('utf8')), { marker: 'netverge-body-rewritten', path: '/demo' });
       } else {
         assert.match(decoded.head, /^content-encoding:\s*gzip\s*$/im, 'untouched gzip response must retain encoding');

@@ -118,7 +118,7 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
     res.writeHead = function(status, reason, fields) {
       entry.responseRule = true;
       rewriteHits = Math.min(rewriteHits + 1, 0xfffffffe);
-      const headers = typeof reason === 'string' ? fields : reason;
+      const headers = typeof reason === 'string' ? fields : (reason ?? fields);
       if (Array.isArray(headers)) {
         let pairs = headers.slice();
         for (const rule of matched) {

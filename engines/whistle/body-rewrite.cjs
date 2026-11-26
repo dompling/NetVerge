@@ -120,6 +120,10 @@ function installBodyRewrite(req, res, matched, onHit) {
   let total = 0;
   const chunks = [];
 
+  function finishEnd(buf, cb) {
+    return typeof cb === 'function' ? rawEnd.call(res, buf, cb) : rawEnd.call(res, buf);
+  }
+
   function flushHead(explicitFields) {
     return typeof savedReason === 'string'
       ? rawWriteHead.call(res, savedStatus, savedReason, explicitFields)
@@ -138,7 +142,7 @@ function installBodyRewrite(req, res, matched, onHit) {
   res.writeHead = function(status, reason, fields) {
     if (passthrough || buffering) return rawWriteHead.apply(this, arguments);
     const code = Number(status) || 200;
-    const explicit = typeof reason === 'string' ? fields : reason;
+    const explicit = typeof reason === 'string' ? fields : (reason ?? fields);
     const ct = getHeader(this, explicit, 'content-type');
     const ce = supportedEncoding(getHeader(this, explicit, 'content-encoding'));
     const clRaw = getHeader(this, explicit, 'content-length').trim();
@@ -194,31 +198,32 @@ function installBodyRewrite(req, res, matched, onHit) {
     }
     buffering = false;
     const rawBody = Buffer.concat(chunks.splice(0), total);
+    let originalText;
     try {
       const decompressed = decompressBody(rawBody, encoding);
       if (decompressed.length > MAX_BODY_BYTES) throw new Error('Body exceeds decoded limit');
-      const originalText = decodeText(decompressed, charset);
-      let text = originalText;
-      let hit = false;
-      for (const rule of matched) {
-        if (text.includes(rule.search)) {
-          text = text.replaceAll(rule.search, rule.value);
-          hit = true;
-        }
-      }
-      if (!hit) {
-        flushHead(savedExplicit);
-        return rawEnd.call(this, rawBody, cb);
-      }
-      const out = Buffer.from(text, 'utf8');
-      const updated = rewriteHeadersForBody(this, savedExplicit, out.length, charset !== 'utf-8');
-      onHit();
-      flushHead(updated);
-      return rawEnd.call(this, out, cb);
+      originalText = decodeText(decompressed, charset);
     } catch {
       flushHead(savedExplicit);
-      return rawEnd.call(this, rawBody, cb);
+      return finishEnd(rawBody, cb);
     }
+    let text = originalText;
+    let hit = false;
+    for (const rule of matched) {
+      if (text.includes(rule.search)) {
+        text = text.replaceAll(rule.search, rule.value);
+        hit = true;
+      }
+    }
+    if (!hit) {
+      flushHead(savedExplicit);
+      return finishEnd(rawBody, cb);
+    }
+    const out = Buffer.from(text, 'utf8');
+    const updated = rewriteHeadersForBody(this, savedExplicit, out.length, charset !== 'utf-8');
+    onHit();
+    flushHead(updated);
+    return finishEnd(out, cb);
   };
 }
 

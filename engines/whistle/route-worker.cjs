@@ -245,7 +245,7 @@ server.emit = function(event, ...args) {
       completedAt: '', durationMs: 0, requestHeaders: [], responseHeaders: [] };
     const rawWriteHead = res.writeHead;
     res.writeHead = function(status, reason, fields) {
-      entry.responseHeaders = sanitizeHeaders(this.getHeaders(), typeof reason === 'string' ? fields : reason);
+      entry.responseHeaders = sanitizeHeaders(this.getHeaders(), typeof reason === 'string' ? fields : (reason ?? fields));
       return rawWriteHead.apply(this, arguments);
     };
     res.once('finish', () => recordResponse(entry, res, startedAt));

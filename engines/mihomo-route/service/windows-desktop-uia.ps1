@@ -86,11 +86,21 @@ switch ($Action) {
             default { 'Request header rewrite' }
         }
         $button = Find-Element $label ([Windows.Automation.ControlType]::Button)
-        if ($button) {
+        if ($button -and $button.Current.IsEnabled) {
+            $toggle = $null
+            if ($button.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) {
+                if ($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On) { 'OK'; break }
+                $toggle.Toggle()
+                Start-Sleep -Milliseconds 200
+                if ($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On) { 'OK'; break }
+            }
             $keys = New-Object -ComObject WScript.Shell
             if (!$keys.AppActivate($process.Id)) { break }
             $button.SetFocus()
+            Start-Sleep -Milliseconds 150
+            if (!$button.Current.HasKeyboardFocus) { break }
             $keys.SendKeys(' ')
+            Start-Sleep -Milliseconds 200
             'OK'
         }
     }
