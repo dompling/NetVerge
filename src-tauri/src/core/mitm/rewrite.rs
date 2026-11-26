@@ -18,6 +18,9 @@ pub struct ResponseHeaderRule {
     pub enabled: bool,
     pub host: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub method: Option<String>,
     pub header: String,
     pub value: String,
 }
@@ -59,9 +62,15 @@ fn read_rules<T: serde::de::DeserializeOwned>(filename: &str) -> Result<Vec<T>> 
     decode_rules(&bytes)
 }
 
+fn validate_method(method: Option<&str>) -> Result<()> {
+    ensure!(method.is_none_or(|value| matches!(value, "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS")), "Unsupported HTTP method");
+    Ok(())
+}
+
 pub async fn save(direction: Direction, expected: Vec<ResponseHeaderRule>, rules: Vec<ResponseHeaderRule>) -> Result<()> {
     ensure!(rules.len() <= MAX_RULES, "At most 16 rewrite rules are supported per type");
     for rule in &rules {
+        validate_method(rule.method.as_deref())?;
         ensure!(super::valid_host(&rule.host), "Invalid MITM hostname");
         ensure!(rule.path.starts_with('/') && !rule.path.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#')), "Expected an exact URL path");
         let name = rule.header.to_ascii_lowercase();
@@ -81,6 +90,9 @@ pub struct UrlPathRule {
     pub enabled: bool,
     pub host: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub method: Option<String>,
     pub target: String,
 }
 const PATH_FILE: &str = "url-path-rule.json";
@@ -94,6 +106,7 @@ fn valid_path(path: &str) -> bool {
 pub async fn save_path(expected: Vec<UrlPathRule>, rules: Vec<UrlPathRule>) -> Result<()> {
     ensure!(rules.len() <= MAX_RULES, "At most 16 rewrite rules are supported per type");
     for rule in &rules {
+        validate_method(rule.method.as_deref())?;
         ensure!(super::valid_host(&rule.host), "Invalid MITM hostname");
         ensure!(valid_path(&rule.path) && valid_path(&rule.target), "Expected two same-host URL paths without query or fragment");
     }
@@ -106,6 +119,9 @@ pub struct ResponseBodyRule {
     pub enabled: bool,
     pub host: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub method: Option<String>,
     pub search: String,
     pub value: String,
 }
@@ -115,6 +131,7 @@ pub fn read_body() -> Result<Vec<ResponseBodyRule>> { read_rules(BODY_FILE) }
 pub async fn save_body(expected: Vec<ResponseBodyRule>, rules: Vec<ResponseBodyRule>) -> Result<()> {
     ensure!(rules.len() <= MAX_RULES, "At most 16 rewrite rules are supported per type");
     for rule in &rules {
+        validate_method(rule.method.as_deref())?;
         ensure!(super::valid_host(&rule.host), "Invalid MITM hostname");
         ensure!(rule.path.starts_with('/') && !rule.path.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#')), "Expected an exact URL path");
         ensure!(!rule.search.is_empty() && rule.search.len() <= 1024, "Expected non-empty search text up to 1024 bytes");
@@ -146,11 +163,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn optional_method_conditions_validate_and_round_trip() -> Result<()> {
+        for value in ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+            validate_method(Some(value))?;
+        }
+        validate_method(None)?;
+        for value in ["", "get", "*", "CONNECT", "TRACE", "GET\nPOST"] {
+            assert!(validate_method(Some(value)).is_err());
+        }
+        let rule = br#"{"enabled":true,"host":"api.example.test","path":"/demo","target":"/changed","method":"POST"}"#;
+        let decoded = decode_rules::<UrlPathRule>(rule)?;
+        assert_eq!(decoded[0].method.as_deref(), Some("POST"));
+        let encoded = serde_json::to_vec(&RuleFile { version: 2, rules: decoded.clone() })?;
+        assert_eq!(decode_rules::<UrlPathRule>(&encoded)?, decoded);
+        Ok(())
+    }
+
+    #[test]
     fn migrates_legacy_single_rule_and_validates_v2_lists() -> Result<()> {
         let single = br#"{"enabled":true,"host":"api.example.test","path":"/demo","header":"X-NetVerge-Test","value":"1"}"#;
         let migrated = decode_rules::<ResponseHeaderRule>(single)?;
         assert_eq!(migrated.len(), 1);
         assert_eq!(migrated[0].header, "X-NetVerge-Test");
+        assert_eq!(migrated[0].method, None);
+        assert!(!serde_json::to_value(&migrated[0])?.as_object().unwrap().contains_key("method"));
 
         let encoded = serde_json::to_vec(&RuleFile { version: 2, rules: migrated.clone() })?;
         assert_eq!(decode_rules::<ResponseHeaderRule>(&encoded)?, migrated);

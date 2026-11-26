@@ -704,16 +704,18 @@ export type ResponseBodyRule = {
   enabled: boolean
   host: string
   path: string
+  method?: string | null
   search: string
   value: string
 }
 
-export type UrlPathRule = { enabled: boolean; host: string; path: string; target: string }
+export type UrlPathRule = { enabled: boolean; host: string; path: string; method?: string | null; target: string }
 
 export type ResponseHeaderRule = {
   enabled: boolean
   host: string
   path: string
+  method?: string | null
   header: string
   value: string
 }

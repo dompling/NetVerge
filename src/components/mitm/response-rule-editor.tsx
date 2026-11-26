@@ -69,6 +69,7 @@ type Direction = 'request' | 'response' | 'path' | 'body'
 const isBlank = (rule: ResponseHeaderRule) =>
   !rule.enabled &&
   !rule.host &&
+  !rule.method &&
   rule.path === '/' &&
   !rule.header &&
   !rule.value
@@ -85,6 +86,7 @@ const toPath = (rules: ResponseHeaderRule[]): UrlPathRule[] =>
     enabled: rule.enabled,
     host: rule.host,
     path: rule.path,
+    method: rule.method,
     target: rule.value,
   }))
 
@@ -93,6 +95,7 @@ const toBody = (rules: ResponseHeaderRule[]): ResponseBodyRule[] =>
     enabled: rule.enabled,
     host: rule.host,
     path: rule.path,
+    method: rule.method,
     search: rule.header,
     value: rule.value,
   }))
@@ -105,6 +108,7 @@ const editors = {
         enabled: rule.enabled,
         host: rule.host,
         path: rule.path,
+        method: rule.method,
         header: rule.search,
         value: rule.value,
       }))
@@ -120,6 +124,7 @@ const editors = {
         enabled: rule.enabled,
         host: rule.host,
         path: rule.path,
+        method: rule.method,
         value: rule.target,
         header: '',
       }))
@@ -373,6 +378,28 @@ function RuleListForm({
                         )
                       })}
                   </Stack>
+                  <TextField
+                    select
+                    size="small"
+                    label={`HTTP Method${suffix}`}
+                    value={item.method ?? ''}
+                    sx={{ alignSelf: 'flex-start', minWidth: 140 }}
+                    slotProps={{ select: { native: true }, htmlInput: { 'aria-label': `HTTP Method${suffix}` } }}
+                    onChange={(event) => {
+                      const next = draftRef.current.map((row) =>
+                        row.uid === item.uid
+                          ? { ...row, method: event.target.value || undefined }
+                          : row,
+                      )
+                      updateDraft(next)
+                      commitRows(next)
+                    }}
+                  >
+                    <option value="">*</option>
+                    {['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].map((method) => (
+                      <option key={method} value={method}>{method}</option>
+                    ))}
+                  </TextField>
                   <Stack
                     direction="row"
                     spacing={1}

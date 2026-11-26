@@ -9,6 +9,7 @@ const { installBodyRewrite, validateBodyRule } = require('./body-rewrite.cjs');
 const MAX_FILE_BYTES = 8192;
 const MAX_BODY_RULE_FILE_BYTES = 16384;
 const MAX_RULES = 16;
+const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
 
 const validHost = v => typeof v === 'string' && v.length <= 253 && v.includes('.') &&
   !net.isIP(v) && v.split('.').every(s => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(s));
@@ -28,8 +29,13 @@ function parseRuleFile(filePath, validateRule, maxBytes = MAX_FILE_BYTES) {
   })() : [raw];
   const active = [];
   for (const item of list) {
-    const parsed = validateRule(item);
-    if (parsed) active.push(parsed);
+    // All four existing action validators share the same optional method
+    // condition, without changing their legacy action schemas.
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error();
+    const { method, ...action } = item;
+    if (method != null && !METHODS.has(method)) throw new Error();
+    const parsed = validateRule(action);
+    if (parsed) active.push(method == null ? parsed : { ...parsed, method });
   }
   return active;
 }
@@ -60,7 +66,7 @@ function validatePathRule(rule) {
 // A request gets one ordered match plan before any rewrite mutates its URL.
 // Match only the already admitted HTTPS authority and the original URL path.
 // This is a pure planning boundary, not a replacement for route admission.
-function planRequest(allowedHosts, lists, rawTarget, authority) {
+function planRequest(allowedHosts, lists, rawTarget, authority, method) {
   const empty = { request: [], response: [], body: [], pathTarget: null };
   if (typeof authority !== 'string' || !authority.endsWith(':443') ||
       typeof rawTarget !== 'string') return empty;
@@ -72,7 +78,8 @@ function planRequest(allowedHosts, lists, rawTarget, authority) {
     url = new URL(rawTarget, origin);
     if (url.origin !== origin || url.username || url.password || url.hash) return empty;
   } catch { return empty; }
-  const matches = rule => rule.host === host && rule.path === url.pathname;
+  const matches = rule => rule.host === host && rule.path === url.pathname &&
+    (rule.method == null || rule.method === method);
   const pathRule = lists.path.find(matches);
   // Preserve the original raw query bytes, including an empty query.
   const query = rawTarget.indexOf('?');
@@ -126,7 +133,7 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
   function plan(req, authority) {
     return planRequest(allowedHosts, {
       request: requestRules, response: responseRules, body: bodyRules, path: pathRules,
-    }, req.url, authority);
+    }, req.url, authority, req.method);
   }
 
   function applyRequestRules(req, matched, entry) {
@@ -196,4 +203,4 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
   };
 }
 
-module.exports = { createRewriteEngine, validHost, planRequest };
+module.exports = { createRewriteEngine, validHost, planRequest, parseRuleFile };

@@ -15,7 +15,14 @@ path rule wins. Preserve the raw query without reparsing. No implicit recursive 
 Response wrappers retain their existing order. Recent request flags and counters retain their
 existing semantics. This change does not introduce wildcard, method or regex matching.
 
-Next 8.1b: typed rule model with stable IDs, explicit source and revision, request/response
+8.1b increment 1: add an optional exact HTTP method condition to the existing four
+rule types and shared editor, preserving legacy JSON and same original-path semantics.
+Absent/null means any method. Supported explicit values: GET, HEAD, POST, PUT, PATCH,
+DELETE, OPTIONS. Unknown values fail validation; no widening to an unrestricted match.
+Validate via Rust round trip, JavaScript planner/file tests and native Windows TLS
+GET positive/negative method-condition probes. No regex engine in this increment.
+
+Next 8.1b increments: typed rule model with stable IDs, explicit source and revision, request/response
 match phases, bounded URL patterns, method conditions and per-rule diagnostics. Keep the
 outer MITM admission allowlist exact until a separate reviewed scope change. Prefer a
 linear-time regex subset (evaluate RE2 compatibility); never run unbounded arbitrary JS

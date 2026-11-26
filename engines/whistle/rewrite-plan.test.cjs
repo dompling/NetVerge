@@ -1,7 +1,10 @@
 'use strict';
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { planRequest } = require('./rewrite-rules.cjs');
+const { planRequest, parseRuleFile } = require('./rewrite-rules.cjs');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const host = 'api.example.test';
 const authority = host + ':443';
@@ -48,4 +51,44 @@ test('non-admitted scope, wrong port, userinfo and cross-host URLs cannot match'
 test('no authority can match if the allowed MITM scope is empty', () => {
   assert.deepEqual(planRequest(new Set(), lists, '/v1', authority),
     { request: [], response: [], body: [], pathTarget: null });
+});
+
+test('method conditions share original host/path matching and preserve order', () => {
+  const common = [rule('any'), rule('get', '/v1', { method: 'GET' }), rule('post', '/v1', { method: 'POST' })];
+  const byMethod = {
+    request: common, response: common, body: common,
+    path: [rule('post-path', '/v1', { method: 'POST', target: '/post' }),
+      rule('get-path', '/v1', { method: 'GET', target: '/get' })],
+  };
+  for (const [method, expected, target] of [
+    ['GET', ['any', 'get'], '/get?q=%2f'],
+    ['POST', ['any', 'post'], '/post?q=%2f'],
+    ['PUT', ['any'], null],
+    [undefined, ['any'], null],
+  ]) {
+    const p = planRequest(scope, byMethod, '/v1?q=%2f', authority, method);
+    for (const phase of ['request', 'response', 'body']) assert.deepEqual(ids(p[phase]), expected);
+    assert.equal(p.pathTarget, target);
+  }
+});
+
+test('legacy and v2 files normalize optional methods without broadening invalid rules', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nv-method-rule-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'rule.json');
+  const action = { enabled: true, host, path: '/v1', header: 'X-Test', value: '1' };
+  const validate = item => {
+    assert.deepEqual(item, action);
+    return item;
+  };
+  for (const method of [undefined, null, 'GET', 'POST']) {
+    fs.writeFileSync(file, JSON.stringify({ version: 2, rules: [{ ...action, method }] }));
+    assert.deepEqual(parseRuleFile(file, validate), [method == null ? action : { ...action, method }]);
+  }
+  fs.writeFileSync(file, JSON.stringify(action));
+  assert.deepEqual(parseRuleFile(file, validate), [action]);
+  for (const method of ['get', '', '*', 'CONNECT', 'TRACE', 42, ['GET']]) {
+    fs.writeFileSync(file, JSON.stringify({ version: 2, rules: [{ ...action, method }] }));
+    assert.throws(() => parseRuleFile(file, validate));
+  }
 });

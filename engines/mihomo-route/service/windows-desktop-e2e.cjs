@@ -214,6 +214,17 @@ async function main() {
           { stdio: 'inherit', timeout: 75000 });
         console.log('PASS: response header rewrite ' + (enabled ? 'enabled' : 'disabled') + ', exact path, bypass and exit verified');
       }
+      // Same original GET request, same host/path and same native TLS/exit
+      // assertions; changing only the method condition must change the outcome.
+      for (const [method, expected] of [['GET', 'on'], ['POST', 'off']]) {
+        const rule = { enabled: true, host: selected, path: '/demo', method, header: 'X-NetVerge-Test', value: '1' };
+        fs.writeFileSync(file + '.tmp', JSON.stringify({ version: 2, rules: [rule] }));
+        fs.renameSync(file + '.tmp', file);
+        await sleep(1200);
+        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', expected],
+          { stdio: 'inherit', timeout: 75000 });
+        console.log('PASS: HTTP method ' + method + ' condition against original GET, TLS and original exit verified');
+      }
       fs.unlinkSync(file);
       const bodyFile = path.join(mitm, 'response-body-rule.json');
       for (const enabled of [true, false]) {
