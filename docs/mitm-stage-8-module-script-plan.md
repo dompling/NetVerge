@@ -22,54 +22,102 @@ linear-time regex subset (evaluate RE2 compatibility); never run unbounded arbit
 regex in the network worker. Reject unsupported syntax explicitly. Keep migration and
 rollback fixtures for the existing JSON lists.
 
-## Module source format: Surge-compatible subset
+## Native module format: NetVerge YAML (.nvmodule)
 
-Reference: https://manual.nssurge.com/profile/module.html
-Reference: https://manual.nssurge.com/scripting/overview.html
-Reference: https://manual.nssurge.com/scripting/api.html
-Reference: https://manual.nssurge.com/http/body-rewrite.html
+Decision: NetVerge owns its module syntax. Script API compatibility is independent
+of module syntax. Surge .sgmodule is a future import/conversion format, never the
+native runtime configuration format. No runtime INI interpreter or mandatory
+Surge module compatibility. Preserve original imported source when available.
 
-Use .sgmodule INI-style source as an interchange format, not an executable config.
-Preserve original text for export and show line-numbered diagnostics. Normalize parsed
-rules to a typed NetVerge model with source module ID, rule ID, stable order, activation
-state and revision. Never eval module text. Initial import is preview-only and disabled.
-No unsupported line can silently become a more general rule.
+Use a single UTF-8 YAML document with explicit integer schema version, unique stable
+reverse-domain module ID, independent module version, name, optional description/author,
+optional typed parameters, proposed MITM scope, ordered rewrite and script lists,
+and explicit permissions. Store activation and approved content digest in separate
+local state, not in downloadable module text. Normalize the validated manifest to the
+same typed intermediate rule model used by the local editor. No eval, YAML custom
+tags, aliases, merge keys, duplicate keys or unknown fields. Bound file size, nesting,
+scalar length and list counts before activation. Reject unsupported schema versions.
+Show line-numbered diagnostics; do not silently broaden conditions or drop actions.
 
-Illustrative target syntax (NOT executable in this increment):
-```ini
-#!name=API Debug
-#!desc=Example API module
-#!version=1.0.0
-#!arguments=host:api.example.test
-[MITM]
-hostname = %APPEND% {{{host}}}
-[Script]
-debug = type=http-response,pattern=^https://api\.example\.test/,requires-body=true,script-path=debug.js,timeout=5
+Illustrative native schema target (not implemented or accepted by the current runtime):
+```yaml
+schema: 1
+id: com.example.api-debug
+name: API debug
+description: Inspect and modify a test API
+version: 1.0.0
+author: NetVerge
+mitm:
+  hostnames:
+    - api.example.com
+rewrite:
+  - id: redirect-api
+    type: url
+    match:
+      host: api.example.com
+      path: /v1
+    action:
+      replace: /v2
+  - id: add-header
+    type: request-header
+    match:
+      host: api.example.com
+    action:
+      set:
+        X-Custom-Debug: "true"
+scripts:
+  - id: modify-response
+    type: http-response
+    match:
+      host: api.example.com
+    script: scripts/debug.js
+    requires-body: true
+    timeout: 5
 ```
 
-Planned support: metadata name/desc/version/author, comments, MITM hostname proposals,
-URL Rewrite, Header Rewrite, Body Rewrite, Map Local and Script sections, then arguments
-and explicit append/insert semantics. A module hostname is a proposal only; approval uses
-the existing MITM scope transaction. No wildcard expansion without separate approval.
-Unrecognized sections, platform requirements and arguments must be reported, not ignored.
-[Rule] integration is separate and needs existing Mihomo policy validation. Do not allow
-General, Proxy, Proxy Group, CA replacement, certificate-verification disable, or implicit
-outbound changes through the first module implementation.
+Proposed semantics:
+- A match may contain an exact host, exact path, bounded pattern, method or other
+  typed conditions supported by the selected request/response phase. Conditions are
+  ANDed; omitted path means any path for the explicit admitted host. No implicit
+  unrestricted host or scope expansion. Wildcards require a separately reviewed
+  MITM admission design.
+- List order is explicit. Stable rule identity is module ID plus local rule ID.
+  Header conflicts retain last matching assignment within a phase; URL replacement
+  takes the first matching terminal URL action. Match the original admitted request,
+  without recursively matching the rewritten URL. Define local/module priority before
+  enabling cross-source conflicts. Do not silently override local rules.
+- Typed parameters with defaults and validation are proposed. Expand only permitted
+  scalar value positions after parsing; never splice arbitrary YAML syntax or executable
+  code. Permissions are declarations, not grants. User approval remains separate.
+- Module enable/disable affects only that module's rules. Hostnames are proposals;
+  activation requiring wider MITM scope goes through the existing consent transaction.
+  [Rule] equivalent routing additions, if developed, use a separately reviewed Mihomo
+  integration. Do not allow proxy/core settings, CA replacement, disabled TLS verification
+  or arbitrary egress selection from the module.
 
-Source import: local file first, later HTTPS source with size limits, no automatic execution,
-review diff before update/activation, snapshot content digest and last-known approved
-version, rollback. Relative script paths and Map Local files must resolve inside an
-approved module directory; reject traversal, symlinks/reparse escape and arbitrary OS
-paths. Remote script downloads are a separate user-approved action with a pinned digest.
-Resolve cross-module order explicitly; no silent conflict resolution across source
-priorities. Module disable removes only its rules, not unrelated local configuration.
+Asset and lifecycle plan: local manifest plus relative JS/data files first; later support
+portable module bundles and HTTPS subscriptions. Relative paths resolve strictly inside
+the approved module directory. Reject traversal, symlinks/reparse escape and arbitrary
+OS paths. Remote script downloads are a separate user-approved action with pinned digest.
+Import and update are preview-only until explicitly approved; imported modules default
+disabled. Validate complete manifests and assets, review diff, commit atomically, retain
+last-known approved version and support rollback. Asset hashes must identify the exact
+reviewed bytes. No automatic execution after import.
+
+Future compatibility adapters may parse a supported subset of .sgmodule, Loon or
+Quantumult X into native YAML/typed rules, with an explicit list of unsupported entries
+and a user-reviewed conversion. Never treat imported INI directives as trusted
+configuration or permission grants. Initial stage prioritizes the native manifest,
+not compatibility adapters.
 
 ## Script syntax and execution contract
 
-Target compatibility first: named [Script] entries with type=http-request or http-response,
-pattern, script-path, requires-body, max-size, timeout, argument. First matching enabled
-script per phase, explicit ordering. Later consider generic/cron; routing, event and system
-control APIs are outside this stage.
+Keep Surge-style JavaScript runtime APIs, independently of the native module format.
+Native scripts entries use type: http-request or http-response, typed match conditions,
+script (relative asset path), requires-body, max-size, timeout (seconds), and argument.
+First matching enabled script per phase, explicit ordering. Later consider generic/cron;
+routing, event and system control APIs are outside this stage. For script API reference:
+https://manual.nssurge.com/scripting/overview.html and https://manual.nssurge.com/scripting/api.html.
 
 Minimum globals: read-only copies of $request and $response (phase-specific), $argument,
 console.log, and $done(result). Support $done() as unchanged, header/body changes only
@@ -105,7 +153,8 @@ bypass the original MITM scope. Explicit blocking actions need separate validati
   already have opened a connection under the existing architecture).
 - 8.5: inspector detail, optional bounded body preview, redacted HAR/cURL, explicit replay.
 - 8.6: isolated script runner, compatibility APIs, timeout/crash tests, permission review.
-- 8.7: module parser preview, activation, migration, source update and rollback.
+- 8.7: native .nvmodule YAML parser preview, activation, migration, source update and rollback;
+  foreign-format conversion adapters only after native semantics are stable.
 - 8.8: Windows real TUN/TLS, route identity, existing service/Sidecar lifecycle,
   packaging/rollback, stress and safety tests. macOS follows as Stage 9.
 
