@@ -781,6 +781,7 @@ export type UrlPathRule = {
   method?: string | null
   regex?: string | null
   target: string
+  remove_query?: string[] | null
 }
 
 export type ResponseHeaderRule = {

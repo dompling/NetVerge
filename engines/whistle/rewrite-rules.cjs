@@ -111,7 +111,7 @@ function parseModuleBundle(filePath) {
     revision: raw.revision,
     request: normalizeRuleItems(raw.request, raw.revision, r => validateHeaderRule(r, /^x-custom-[a-z0-9-]{1,91}$/i, true), 'request-header', true),
     response: normalizeRuleItems(raw.response, raw.revision, r => validateHeaderRule(r, /^x-[a-z0-9-]{1,100}$/i, true), 'response-header', true),
-    path: normalizeRuleItems(raw.path, raw.revision, validatePathRule, 'url-path', true),
+    path: normalizeRuleItems(raw.path, raw.revision, r => validatePathRule(r, true), 'url-path', true),
     body: normalizeRuleItems(raw.body, raw.revision, r => validateBodyRule(r, validHost), 'response-body', true),
   };
 }
@@ -139,14 +139,37 @@ function validateHeaderRule(rule, pattern, allowRemove = false) {
   return { ...rule, header: rule.header.toLowerCase() };
 }
 
-function validatePathRule(rule) {
-  if (!rule || typeof rule !== 'object' || Array.isArray(rule) ||
-      Object.keys(rule).sort().join(',') !== 'enabled,host,path,target' ||
+function validatePathRule(rule, allowQueryRemoval = false) {
+  const keys = Object.keys(rule).sort().join(',');
+  const removeQuery = keys === 'enabled,host,path,remove_query,target';
+  if ((keys !== 'enabled,host,path,target' && !(allowQueryRemoval && removeQuery)) ||
       typeof rule.enabled !== 'boolean' || typeof rule.host !== 'string' ||
       typeof rule.path !== 'string' || typeof rule.target !== 'string') throw new Error();
   if (!rule.enabled) return null;
-  if (!validHost(rule.host) || !validPath(rule.path) || !validPath(rule.target)) throw new Error();
+  if (!validHost(rule.host) || !validPath(rule.path)) throw new Error();
+  if (removeQuery) {
+    const names = rule.remove_query;
+    if (rule.target !== '' || !Array.isArray(names) || names.length < 1 || names.length > 8 ||
+        new Set(names).size !== names.length ||
+        !names.every(name => typeof name === 'string' && /^[A-Za-z0-9._~-]{1,64}$/.test(name))) throw new Error();
+  } else if (!validPath(rule.target)) {
+    throw new Error();
+  }
   return rule;
+}
+
+function removeQueryParams(rawQuery, names) {
+  if (!rawQuery) return rawQuery;
+  const kept = rawQuery.slice(1).split('&').filter(pair => {
+    const eq = pair.indexOf('=');
+    const rawName = eq < 0 ? pair : pair.slice(0, eq);
+    try {
+      return !names.includes(decodeURIComponent(rawName));
+    } catch {
+      return true;
+    }
+  });
+  return kept.length ? '?' + kept.join('&') : '';
 }
 
 // A request gets one ordered match plan before any rewrite mutates its URL.
@@ -179,16 +202,20 @@ function planRequest(allowedHosts, lists, rawTarget, authority, method) {
     return true;
   };
   const pathRule = lists.path.find(matches);
-  const pathTarget = pathRule
-    ? (rawTarget.startsWith('/') ? '' : url.origin) + pathRule.target + rawQuery
-    : null;
+  let pathTarget = null;
+  if (pathRule?.remove_query) {
+    const kept = removeQueryParams(rawQuery, pathRule.remove_query);
+    if (kept !== rawQuery) pathTarget = rawTarget.slice(0, query) + kept;
+  } else if (pathRule) {
+    pathTarget = (rawTarget.startsWith('/') ? '' : url.origin) + pathRule.target + rawQuery;
+  }
   const planned = {
     request: lists.request.filter(matches),
     response: lists.response.filter(matches),
     body: lists.body.filter(matches),
     pathTarget,
   };
-  if (pathRule?.id != null) {
+  if (pathTarget !== null && pathRule?.id != null) {
     Object.defineProperty(planned, 'pathRuleId', { value: pathRule.id });
   }
   return planned;

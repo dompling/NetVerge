@@ -161,7 +161,10 @@ async function probe(dir, port, mode, rewrite) {
     const removeHeaders = rewrite === 'module-remove';
     const requestRewrite = removeHeaders || rewrite === 'request-on' || rewrite === 'request-off';
     const pathRewrite = rewrite === 'path-on' || rewrite === 'path-off';
-    const query = pathRewrite ? '?id=7&id=8&raw=a%2Fb' : '';
+    const queryProbe = removeHeaders || rewrite === 'module-pending';
+    const keptQuery = '?id=7&id=8&raw=a%2Fb+%2f&Debug=keep';
+    const query = queryProbe ? keptQuery + '&debug=1&%64ebug=2&debug' :
+      pathRewrite ? '?id=7&id=8&raw=a%2Fb' : '';
     const extraHeaders = bodyRewrite && !requestPath.includes('?') ? 'X-NetVerge-Body-Probe: gzip\r\n' : '';
     const result = await dialTun(ip, host, 443, ca, 15000, requestPath + query, requestRewrite, extraHeaders);
     assert.match(result.response, /^HTTP\/1\.[01] 200 /);
@@ -185,7 +188,7 @@ async function probe(dir, port, mode, rewrite) {
       assert.ok(result.response.includes(body), 'missing controlled origin response');
     }
     if (rewrite && !bodyRewrite) {
-      const expected = activeDemo && (rewrite === 'on' || rewrite === 'multi-both') ? '1' :
+      const expected = activeDemo && (rewrite === 'on' || rewrite === 'multi-both' || rewrite === 'module-pending') ? '1' :
         activeDemo && rewrite === 'multi-override' ? 'override' : 'origin';
       const rawHeaders = result.response.split('\r\n\r\n')[0].split('\r\n');
       const fields = rawHeaders.filter(line => /^x-netverge-test:/i.test(line));
@@ -193,10 +196,10 @@ async function probe(dir, port, mode, rewrite) {
       const extras = rawHeaders.filter(line => /^x-netverge-extra:/i.test(line)).map(line => line.slice(line.indexOf(':') + 1).trim());
       assert.deepEqual(extras, activeDemo && rewrite === 'multi-both' ? ['second'] : [], 'extra response header: ' + host + requestPath);
     }
-    if (pathRewrite) {
+    if (pathRewrite || queryProbe) {
       const expected = rewrite === 'path-on' && intercepted && requestPath === '/demo' ? '/changed' : requestPath;
       const observed = result.response.split('\r\n\r\n')[0].match(/^x-observed-path: ([^\r\n]+)/im);
-      assert.equal(observed?.[1], expected + query, 'path at origin');
+      assert.equal(observed?.[1], expected + (activeDemo && removeHeaders ? keptQuery : query), 'target at origin');
     }
     if (requestRewrite) {
       const expected = activeDemo && removeHeaders ? 'missing' : activeDemo && rewrite === 'request-on' ? 'rewritten' : 'client, duplicate';

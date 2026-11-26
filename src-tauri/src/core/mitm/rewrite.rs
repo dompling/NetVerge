@@ -190,6 +190,9 @@ pub struct UrlPathRule {
     #[specta(optional)]
     pub regex: Option<String>,
     pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub remove_query: Option<Vec<String>>,
 }
 
 impl RuleIdentity for UrlPathRule {
@@ -209,6 +212,7 @@ pub async fn save_path(expected: Vec<UrlPathRule>, rules: Vec<UrlPathRule>) -> R
     ensure!(rules.len() <= MAX_RULES, "At most 16 rewrite rules are supported per type");
     validate_identities(&rules)?;
     for rule in &rules {
+        ensure!(rule.remove_query.is_none(), "Query removal is available only in approved modules");
         validate_method(rule.method.as_deref())?;
         validate_regex(rule.regex.as_deref())?;
         ensure!(super::valid_host(&rule.host), "Invalid MITM hostname");

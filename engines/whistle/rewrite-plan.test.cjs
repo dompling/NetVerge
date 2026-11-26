@@ -35,6 +35,19 @@ test('one original-path plan retains list order and chooses only the first URL r
     'https://api.example.test/v2?x=%2F');
 });
 
+test('query removal drops repeated decoded names and preserves the rest of the wire target', () => {
+  const remove = rule('remove', '/v1', { target: '', remove_query: ['debug'] });
+  const queryLists = { ...lists, path: [remove, ...lists.path] };
+  const plan = target => planRequest(scope, queryLists, target, authority);
+  assert.equal(plan('/v1?debug=1&raw=+%2f&%64ebug=2&id=1&id=2&debug&Debug=3&bad%=x').pathTarget,
+    '/v1?raw=+%2f&id=1&id=2&Debug=3&bad%=x');
+  assert.equal(plan('https://api.example.test/v1?debug=1').pathTarget, 'https://api.example.test/v1');
+  assert.equal(plan('/v1?debug=1').pathRuleId, 'remove');
+  assert.equal(plan('/v1?Debug=1').pathTarget, null);
+  assert.equal(plan('/v1?').pathRuleId, undefined);
+  assert.equal(plan('/other?debug=1').pathTarget, null);
+});
+
 test('a target path never causes a second match within the original plan', () => {
   const p = planRequest(scope, lists, '/v1', authority);
   assert.ok(!ids(p.request).includes('target'));

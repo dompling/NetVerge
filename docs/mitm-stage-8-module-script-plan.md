@@ -240,8 +240,11 @@ approved rules on unapproved edits, and compiling active module rewrites to
 - 8.4: approved modules support `action: { remove: [X-Custom-Debug] }` for
   request headers and the same action with `X-*` names for response headers.
   Each action names one to four headers, uses case-insensitive names, and applies
-  in rule order. Local assignments retain precedence. Advanced URL/query and
-  body operations follow, with same-authority scope and stream preservation.
+  in rule order. Local assignments retain precedence. Native module URL rules can
+  use `action: { remove-query: [debug] }` to remove all occurrences of up to eight
+  case-sensitive names. Names use unreserved ASCII and match percent-encoded forms.
+  Surviving query pairs retain their original bytes and order. The first matching
+  URL rule takes precedence. Advanced body operations follow.
 - 8.5: Mock / Map Local, scoped asset access and terminal-action precedence;
   prove no application request goes upstream for local responses (the original lease
   may already have opened a connection under the existing architecture).

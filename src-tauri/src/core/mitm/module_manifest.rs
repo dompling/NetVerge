@@ -348,13 +348,27 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
         let (path, method, regex) = normalize_match_condition(&item.condition, is_url)?;
         match item.kind.as_str() {
             "url" => {
-                ensure!(item.action.len() == 1, "url action must contain only `replace`");
-                let target = item
-                    .action
-                    .get(serde_yaml_ng::Value::String("replace".into()))
-                    .and_then(serde_yaml_ng::Value::as_str)
-                    .unwrap_or("");
-                ensure!(valid_url_path(target), "invalid url replace target \"{target}\"");
+                ensure!(item.action.len() == 1, "url action requires either replace or remove-query");
+                let (target, remove_query) = if let Some(value) = item.action.get("replace") {
+                    let target = value.as_str().unwrap_or("");
+                    ensure!(valid_url_path(target), "invalid url replace target '{target}'");
+                    (target.to_owned(), None)
+                } else if let Some(value) = item.action.get("remove-query") {
+                    let names: Vec<String> = serde_yaml_ng::from_value(value.clone())?;
+                    ensure!((1..=8).contains(&names.len()), "remove-query requires 1..=8 names");
+                    let mut seen = BTreeSet::new();
+                    for name in &names {
+                        ensure!(
+                            (1..=64).contains(&name.len())
+                                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
+                                && seen.insert(name),
+                            "expected distinct unreserved ASCII query names"
+                        );
+                    }
+                    (String::new(), Some(names))
+                } else {
+                    bail!("url action requires either replace or remove-query");
+                };
                 compiled.path.push(UrlPathRule {
                     id: Some(format!("{}:{}", manifest.id, item.id)),
                     source: Some(source.clone()),
@@ -363,7 +377,8 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
                     path,
                     method,
                     regex,
-                    target: target.to_owned(),
+                    target,
+                    remove_query,
                 });
             }
             "request-header" | "response-header" => {
@@ -441,6 +456,38 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_query_removal_compiles_and_checks_names() -> Result<()> {
+        let manifest = r#"
+kind: netverge-module
+schema: 1
+id: com.example.query
+name: Query removal
+version: "1"
+rewrite:
+  - id: drop-debug
+    type: url
+    match:
+      host: api.example.test
+      path: /v1
+    action:
+      remove-query: [debug, trace.id]
+"#;
+        let (_, compiled) = parse_and_compile_manifest("module.yaml", manifest)
+            .map_err(|diag| anyhow::anyhow!(diag.message))?;
+        let rule = &compiled.path[0];
+        assert_eq!(rule.remove_query.as_ref().unwrap(), &["debug".to_owned(), "trace.id".to_owned()]);
+        assert!(rule.target.is_empty());
+
+        for names in ["[]", "[debug, debug]", "['raw=name']", "['debug%20']"] {
+            let invalid = manifest.replace("[debug, trace.id]", names);
+            assert!(parse_and_compile_manifest("module.yaml", &invalid).is_err(), "{names}");
+        }
+        let ambiguous = manifest.replace("      remove-query:", "      replace: /v2\n      remove-query:");
+        assert!(parse_and_compile_manifest("module.yaml", &ambiguous).is_err());
+        Ok(())
+    }
 
     #[test]
     fn header_removal_compiles_and_checks_names() -> Result<()> {
