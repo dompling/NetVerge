@@ -22,14 +22,15 @@ linear-time regex subset (evaluate RE2 compatibility); never run unbounded arbit
 regex in the network worker. Reject unsupported syntax explicitly. Keep migration and
 rollback fixtures for the existing JSON lists.
 
-## Native module format: NetVerge YAML (.nvmodule)
+## Native module format: NetVerge YAML (module.yaml)
 
 Decision: NetVerge owns its module syntax. Script API compatibility is independent
 of module syntax. Surge .sgmodule is a future import/conversion format, never the
 native runtime configuration format. No runtime INI interpreter or mandatory
 Surge module compatibility. Preserve original imported source when available.
 
-Use a single UTF-8 YAML document with explicit integer schema version, unique stable
+Use a single UTF-8 YAML document named module.yaml, with kind: netverge-module,
+explicit integer schema version, unique stable
 reverse-domain module ID, independent module version, name, optional description/author,
 optional typed parameters, proposed MITM scope, ordered rewrite and script lists,
 and explicit permissions. Store activation and approved content digest in separate
@@ -41,6 +42,7 @@ Show line-numbered diagnostics; do not silently broaden conditions or drop actio
 
 Illustrative native schema target (not implemented or accepted by the current runtime):
 ```yaml
+kind: netverge-module
 schema: 1
 id: com.example.api-debug
 name: API debug
@@ -70,7 +72,7 @@ scripts:
     type: http-response
     match:
       host: api.example.com
-    script: scripts/debug.js
+    script: modules/api-debug/debug.js
     requires-body: true
     timeout: 5
 ```
@@ -95,14 +97,69 @@ Proposed semantics:
   integration. Do not allow proxy/core settings, CA replacement, disabled TLS verification
   or arbitrary egress selection from the module.
 
-Asset and lifecycle plan: local manifest plus relative JS/data files first; later support
-portable module bundles and HTTPS subscriptions. Relative paths resolve strictly inside
-the approved module directory. Reject traversal, symlinks/reparse escape and arbitrary
-OS paths. Remote script downloads are a separate user-approved action with pinned digest.
-Import and update are preview-only until explicitly approved; imported modules default
-disabled. Validate complete manifests and assets, review diff, commit atomically, retain
-last-known approved version and support rollback. Asset hashes must identify the exact
-reviewed bytes. No automatic execution after import.
+## Active-profile discovery and path resolution
+
+Decision: use ordinary YAML files named exactly module.yaml, no .nvmodule extension.
+Identify manifests by kind: netverge-module and supported schema. Discover all
+module.yaml manifests recursively beneath the active configuration's dedicated root,
+including a root-level module.yaml if present. The modules/ subdirectory is a
+recommended convention, not a mandatory discovery boundary. Do not scan the
+application home, shared profiles/ parent, or another profile's root.
+
+Current source (config/profiles.rs and utils/dirs.rs) stores profile files under a
+shared profiles directory and resolves the current profile by UID. Before enabling
+module discovery, introduce a dedicated profile workspace keyed by stable validated
+profile UID. Proposed layout:
+
+```text
+profiles/
+  <profile-uid>/
+    config.yaml
+    modules/
+      api-debug/
+        module.yaml
+        debug.js
+      rewrite/
+        module.yaml
+    scripts/
+      common.js
+    assets/
+      mock.json
+```
+
+The directory containing the active profile's source config.yaml is the only base
+for module asset references, regardless of the declaring manifest's nesting.
+For example, modules/api-debug/debug.js, scripts/common.js, and assets/mock.json
+all resolve from the configuration root, not from the module.yaml directory,
+the process working directory, or the generated runtime configuration location.
+Use forward-slash relative paths in manifests on all platforms. Reject absolute
+paths, drive-relative paths, UNC paths, traversal components, symlinks/reparse
+points and canonical paths escaping the profile root. Shared scripts within a
+profile are allowed, but the approved digest must include every referenced asset.
+Use bounded directory scanning with deterministic normalized relative-path order;
+user-defined module order takes precedence, duplicate IDs are errors. Skip links
+and application-owned staging/backup locations. Bound depth, number and aggregate
+size of manifests/assets. Do not activate unknown or malformed manifests.
+
+Maintain a migration plan for flat legacy profile files without losing stable UID,
+subscription metadata, existing selected proxy state or rollback. A remote
+subscription refresh updates only the owned config file, not adjacent local modules.
+Do not treat a remote profile URL or its text as permission to download/execute
+neighboring files. Keep module activation and approved revisions per profile UID.
+On a validated profile switch, commit the new profile's approved module snapshot
+with the configuration transition, remove the prior profile's module rules and
+reject stale generation work; rollback restores both profile and module snapshot.
+Discovery is automatic, activation remains explicit; imports and changed assets
+are disabled/pending approval until validated and accepted. Preserve last-known
+approved bytes rather than silently executing edited assets. No global module loading
+in this phase; consider explicit global opt-in separately if requested.
+
+Asset and lifecycle plan: local manifests plus profile-relative JS/data files first;
+later portable profile/module bundles and HTTPS subscriptions. Remote script downloads
+are a separate user-approved action with pinned digest. Import and update are
+preview-only until explicitly approved. Validate complete manifests and assets,
+review diff, commit atomically, retain last-known approved version and support rollback.
+Asset hashes identify the exact reviewed bytes. No automatic execution after import.
 
 Future compatibility adapters may parse a supported subset of .sgmodule, Loon or
 Quantumult X into native YAML/typed rules, with an explicit list of unsupported entries
@@ -114,7 +171,8 @@ not compatibility adapters.
 
 Keep Surge-style JavaScript runtime APIs, independently of the native module format.
 Native scripts entries use type: http-request or http-response, typed match conditions,
-script (relative asset path), requires-body, max-size, timeout (seconds), and argument.
+script (relative to active configuration root), requires-body, max-size, timeout
+(seconds), and argument.
 First matching enabled script per phase, explicit ordering. Later consider generic/cron;
 routing, event and system control APIs are outside this stage. For script API reference:
 https://manual.nssurge.com/scripting/overview.html and https://manual.nssurge.com/scripting/api.html.
@@ -153,7 +211,8 @@ bypass the original MITM scope. Explicit blocking actions need separate validati
   already have opened a connection under the existing architecture).
 - 8.5: inspector detail, optional bounded body preview, redacted HAR/cURL, explicit replay.
 - 8.6: isolated script runner, compatibility APIs, timeout/crash tests, permission review.
-- 8.7: native .nvmodule YAML parser preview, activation, migration, source update and rollback;
+- 8.7: per-profile workspace migration, native module.yaml discovery/parser preview,
+  profile-relative assets, activation, profile switching, source update and rollback;
   foreign-format conversion adapters only after native semantics are stable.
 - 8.8: Windows real TUN/TLS, route identity, existing service/Sidecar lifecycle,
   packaging/rollback, stress and safety tests. macOS follows as Stage 9.
