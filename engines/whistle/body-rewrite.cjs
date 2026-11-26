@@ -4,7 +4,7 @@ const zlib = require('node:zlib');
 
 const MAX_BODY_BYTES = 262144;
 
-const TEXT_TYPES = /^(?:text\/|application\/(?:json|javascript|ecmascript|xml|xhtml\+xml|x-www-form-urlencoded|graphql|ld\+json|problem\+json|vnd\.[^;]+\+(?:json|xml)))(?:$|;|\s)/i;
+const TEXT_TYPES = /^(?:text\/[a-z0-9][a-z0-9!#$&^_.+\-]*|application\/(?:json|javascript|ecmascript|xml|xhtml\+xml|x-www-form-urlencoded|graphql|ld\+json|problem\+json|vnd\.[^;]+\+(?:json|xml)))(?:$|;|\s)/i;
 const STREAM_TYPES = /^(?:text\/event-stream|multipart\/x-mixed-replace|application\/grpc)(?:$|;|\s)/i;
 
 function readHeader(headers, target) {
