@@ -70,8 +70,15 @@ async function fakeAddress(port, host) {
   });
   assert.match(ip, /^198\.18\.17\.(?:[4-9]|[1-9][0-9]{1,2})$/);
   const route = execFileSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command',
-    `$ErrorActionPreference='Stop'; Find-NetRoute -RemoteIPAddress '${ip}' | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_NetRoute' } | ForEach-Object { $_.InterfaceAlias + ' ' + $_.DestinationPrefix }`,
-  ], { encoding: 'utf8', timeout: 12000, windowsHide: true }).trim();
+    `$ErrorActionPreference='Stop'
+     $deadline = [Diagnostics.Stopwatch]::StartNew()
+     do {
+       $route = Find-NetRoute -RemoteIPAddress '${ip}' | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_NetRoute' } | ForEach-Object { $_.InterfaceAlias + ' ' + $_.DestinationPrefix }
+       if ($route -eq 'NV-MITM-CI 198.18.17.0/24') { break }
+       Start-Sleep -Milliseconds 250
+     } while ($deadline.Elapsed.TotalSeconds -lt 10)
+     $route`,
+  ], { encoding: 'utf8', timeout: 15000, windowsHide: true }).trim();
   assert.equal(route, 'NV-MITM-CI 198.18.17.0/24', 'Windows must route the resolved fake IP through the CI TUN');
   return ip;
 }
