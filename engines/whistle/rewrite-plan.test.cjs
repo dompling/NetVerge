@@ -271,10 +271,12 @@ test('compiled module bundle applies with local-wins precedence and fails closed
     profileUid: 'prof-a',
     revision: 2,
     request: [
-      { id: 'com.example.mod:h1', source: 'module:com.example.mod', enabled: true, host, path: '/v1', header: 'X-Custom-Shared', value: 'from-module' },
+      { id: 'com.example.mod:h1', source: 'module:com.example.mod', enabled: true, host, path: '/v1', header: 'X-Custom-Shared', value: '', remove: true },
       { id: 'com.example.mod:h2', source: 'module:com.example.mod', enabled: true, host, path: '/v1', header: 'X-Custom-Mod-Only', value: 'yes' },
     ],
-    response: [],
+    response: [
+      { id: 'com.example.mod:h3', source: 'module:com.example.mod', enabled: true, host, path: '/v1', header: 'X-Debug', value: '', remove: true },
+    ],
     path: [
       { id: 'com.example.mod:p1', source: 'module:com.example.mod', enabled: true, host, path: '/v1', target: '/from-module' },
     ],
@@ -306,6 +308,21 @@ test('compiled module bundle applies with local-wins precedence and fails closed
     'local:request-header:1',
     'local:url-path:1',
   ]);
+
+  for (const fields of [
+    { 'X-Debug': 'origin', 'X-Keep': 'stay' },
+    ['X-Debug', 'origin', 'x-debug', 'duplicate', 'X-Keep', 'stay'],
+  ]) {
+    const stored = new Map([['x-debug', 'implicit']]);
+    const res = {
+      removeHeader: name => stored.delete(name),
+      writeHead: (status, result) => result,
+    };
+    engine.applyResponseRules(res, planned.response, entry);
+    const headers = res.writeHead(200, fields);
+    assert.deepEqual(headers, Array.isArray(fields) ? ['X-Keep', 'stay'] : { 'X-Keep': 'stay' });
+    assert.equal(stored.has('x-debug'), false);
+  }
 
   // A bundle containing a non-module source must fail closed.
   engine.close();

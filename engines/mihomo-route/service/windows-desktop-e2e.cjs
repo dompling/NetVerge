@@ -110,25 +110,24 @@ async function restartDesktop(app, previousPid) {
   await until('MITM navigation after restart', () => automation(app, 'Open') === 'OK', 70000);
 }
 
-function writeModuleManifest(file, version, value) {
-  // JSON is a subset of YAML and keeps the fixture values typed.
+function writeModuleManifest(file, version, changes) {
   fs.writeFileSync(file + '.tmp', JSON.stringify({
     kind: 'netverge-module',
     schema: 1,
     id: 'com.example.desktop-approval',
     name: 'Desktop Approval Fixture',
     version,
-    rewrite: [{
-      id: 'response-marker',
-      type: 'response-header',
+    rewrite: changes.map(([type, action]) => ({
+      id: type,
+      type,
       match: { host: selected, path: '/demo' },
-      action: { set: { 'X-NetVerge-Test': value } },
-    }],
+      action,
+    })),
   }));
   fs.renameSync(file + '.tmp', file);
 }
 
-async function verifyModuleApproval(app, manifest, netFixture, temp, dnsPort) {
+async function verifyModuleApproval(app, manifest, netFixture, temp, dnsPort, removesHeaders) {
   const probe = (expected) => {
     execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', expected],
       { stdio: 'inherit', timeout: 75000 });
@@ -142,14 +141,21 @@ async function verifyModuleApproval(app, manifest, netFixture, temp, dnsPort) {
   probe('on');
   console.log('PASS: desktop module approval enabled the scoped rewrite over TUN/TLS');
 
-  writeModuleManifest(manifest, '1.1', 'override');
+  const updatedActions = removesHeaders ? [
+    ['request-header', { remove: ['X-Custom-NetVerge-Test'] }],
+    ['response-header', { remove: ['X-NetVerge-Test'] }],
+  ] : [
+    ['response-header', { set: { 'X-NetVerge-Test': 'override' } }],
+  ];
+  writeModuleManifest(manifest, '1.1', updatedActions);
   await until('refresh module list after a manifest edit', () => automation(app, 'RefreshMitm') === 'OK');
   await until('updated module awaiting approval', () => automation(app, 'ModuleUpdatePending') === 'OK');
   probe('on');
   await until('click Approve for updated module', () => automation(app, 'ApproveModule') === 'OK');
   await until('updated module is active', () => automation(app, 'ModuleActive') === 'OK');
   await sleep(1200);
-  probe('multi-override');
+  probe(removesHeaders ? 'module-remove' : 'multi-override');
+  if (removesHeaders) console.log('PASS: approved module removed both headers only on the matched request');
   console.log('PASS: editing the manifest preserved the approved rewrite until the update was approved');
 }
 
@@ -161,7 +167,8 @@ async function main() {
   const launcher = path.join(root, 'NetVerge-MITM.ps1');
   const node = path.join(root, 'worker', 'node.exe');
   const rewriteTest = process.argv[3] === 'rewrite';
-  const moduleTest = process.argv[3] === 'modules';
+  const removesHeaders = process.argv[3] === 'modules-advanced';
+  const moduleTest = process.argv[3] === 'modules' || removesHeaders;
   const worker = rewriteTest ? path.resolve(__dirname, '../../whistle/route-worker.cjs') :
     path.join(root, 'worker', 'route-worker.cjs');
   const mitm = path.join(appRoot, 'netverge-mitm-dev');
@@ -237,7 +244,7 @@ async function main() {
     const moduleManifest = path.join(appRoot, 'profiles', 'desktop-fixture', 'modules', 'fixture', 'module.yaml');
     if (moduleTest) {
       fs.mkdirSync(path.dirname(moduleManifest), { recursive: true });
-      writeModuleManifest(moduleManifest, '1.0', '1');
+      writeModuleManifest(moduleManifest, '1.0', [['response-header', { set: { 'X-NetVerge-Test': '1' } }]]);
     }
 
     attemptedInstall = true;
@@ -267,7 +274,7 @@ async function main() {
     execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled'], { stdio: 'inherit', timeout: 75000 });
     console.log('PASS: clicked desktop MITM service switch and restarted into a protected service generation');
 
-    if (moduleTest) await verifyModuleApproval(app, moduleManifest, netFixture, temp, dnsPort);
+    if (moduleTest) await verifyModuleApproval(app, moduleManifest, netFixture, temp, dnsPort, removesHeaders);
 
     if (rewriteTest) {
       const file = path.join(mitm, 'response-header-rule.json');

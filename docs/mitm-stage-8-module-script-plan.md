@@ -237,8 +237,11 @@ verifying and hashing profile-root-relative script assets into `contentSha256`, 
 per-profile explicit approvals (`module-approvals/<uid>.json`) that preserve last-known
 approved rules on unapproved edits, and compiling active module rewrites to
 `compiled-module-rules.json` with local-wins precedence and atomic profile-switch sync.
-- 8.4: advanced header, URL/query and bounded body operations; encoding/framing,
-  oversize pass-through, stream preservation; same-authority only, redirects separate.
+- 8.4: approved modules support `action: { remove: [X-Custom-Debug] }` for
+  request headers and the same action with `X-*` names for response headers.
+  Each action names one to four headers, uses case-insensitive names, and applies
+  in rule order. Local assignments retain precedence. Advanced URL/query and
+  body operations follow, with same-authority scope and stream preservation.
 - 8.5: Mock / Map Local, scoped asset access and terminal-action precedence;
   prove no application request goes upstream for local responses (the original lease
   may already have opened a connection under the existing architecture).

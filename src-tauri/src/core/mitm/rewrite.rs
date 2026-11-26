@@ -41,6 +41,9 @@ pub struct ResponseHeaderRule {
     pub regex: Option<String>,
     pub header: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub remove: Option<bool>,
 }
 
 impl RuleIdentity for ResponseHeaderRule {
@@ -152,6 +155,7 @@ pub async fn save(direction: Direction, expected: Vec<ResponseHeaderRule>, rules
     ensure!(rules.len() <= MAX_RULES, "At most 16 rewrite rules are supported per type");
     validate_identities(&rules)?;
     for rule in &rules {
+        ensure!(rule.remove.is_none(), "Header removal is available only in approved modules");
         validate_method(rule.method.as_deref())?;
         validate_regex(rule.regex.as_deref())?;
         ensure!(super::valid_host(&rule.host), "Invalid MITM hostname");

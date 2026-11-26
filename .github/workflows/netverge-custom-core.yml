@@ -246,6 +246,10 @@ jobs:
           if-no-files-found: error
 
   windows-rewrite-editor:
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [editor-body, modules-advanced]
     needs: windows-test-package
     runs-on: windows-latest
     timeout-minutes: 12
@@ -273,4 +277,4 @@ jobs:
             $package = Join-Path $env:RUNNER_TEMP 'netverge-rewrite-editor'
             Expand-Archive -LiteralPath $zip.FullName -DestinationPath $package
           }
-          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package editor-body
+          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package ${{ matrix.scenario }}

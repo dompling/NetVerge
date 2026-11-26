@@ -109,8 +109,8 @@ function parseModuleBundle(filePath) {
   }
   return {
     revision: raw.revision,
-    request: normalizeRuleItems(raw.request, raw.revision, r => validateHeaderRule(r, /^x-custom-[a-z0-9-]{1,91}$/i), 'request-header', true),
-    response: normalizeRuleItems(raw.response, raw.revision, r => validateHeaderRule(r, /^x-[a-z0-9-]{1,100}$/i), 'response-header', true),
+    request: normalizeRuleItems(raw.request, raw.revision, r => validateHeaderRule(r, /^x-custom-[a-z0-9-]{1,91}$/i, true), 'request-header', true),
+    response: normalizeRuleItems(raw.response, raw.revision, r => validateHeaderRule(r, /^x-[a-z0-9-]{1,100}$/i, true), 'response-header', true),
     path: normalizeRuleItems(raw.path, raw.revision, validatePathRule, 'url-path', true),
     body: normalizeRuleItems(raw.body, raw.revision, r => validateBodyRule(r, validHost), 'response-body', true),
   };
@@ -124,9 +124,11 @@ function parseRuleSet(filePath, phase, validateRule, maxBytes = MAX_FILE_BYTES) 
   return parseRuleEntries(filePath, validateRule, maxBytes, phase);
 }
 
-function validateHeaderRule(rule, pattern) {
-  if (!rule || typeof rule !== 'object' || Array.isArray(rule) ||
-      Object.keys(rule).sort().join(',') !== 'enabled,header,host,path,value' ||
+function validateHeaderRule(rule, pattern, allowRemove = false) {
+  const keys = Object.keys(rule).sort().join(',');
+  if ((keys !== 'enabled,header,host,path,value' &&
+      !(allowRemove && keys === 'enabled,header,host,path,remove,value' &&
+        rule.remove === true && rule.value === '')) ||
       typeof rule.enabled !== 'boolean' || typeof rule.host !== 'string' ||
       typeof rule.path !== 'string' || typeof rule.header !== 'string' ||
       typeof rule.value !== 'string') throw new Error();
@@ -276,6 +278,7 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
     if (!matched.length) return;
     for (const rule of matched) {
       strip(req, rule.header);
+      if (rule.remove) continue;
       req.headers[rule.header] = rule.value;
       if (Array.isArray(req.rawHeaders)) req.rawHeaders.push(rule.header, rule.value);
     }
@@ -299,7 +302,8 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
           for (let i = 0; i + 1 < pairs.length; i += 2) {
             if (String(pairs[i]).toLowerCase() !== rule.header) next.push(pairs[i], pairs[i + 1]);
           }
-          next.push(rule.header, rule.value);
+          if (rule.remove) this.removeHeader(rule.header);
+          else next.push(rule.header, rule.value);
           pairs = next;
         }
         return typeof reason === 'string' ? writeHead.call(this, status, reason, pairs) : writeHead.call(this, status, pairs);
@@ -309,7 +313,8 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
         for (const name of Object.keys(updated)) {
           if (name.toLowerCase() === rule.header) delete updated[name];
         }
-        updated[rule.header] = rule.value;
+        if (rule.remove) this.removeHeader(rule.header);
+        else updated[rule.header] = rule.value;
       }
       return typeof reason === 'string' ? writeHead.call(this, status, reason, updated) : writeHead.call(this, status, updated);
     };

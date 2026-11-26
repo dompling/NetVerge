@@ -793,6 +793,7 @@ export type ResponseHeaderRule = {
   regex?: string | null
   header: string
   value: string
+  remove?: boolean | null
 }
 
 export type MitmPublicCa = {

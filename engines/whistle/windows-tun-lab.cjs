@@ -157,7 +157,9 @@ async function probe(dir, port, mode, rewrite) {
     const ca = intercepted
       ? new X509Certificate(fs.readFileSync(path.join(dir, 'whistle.der'))).toString()
       : originCA;
-    const requestRewrite = rewrite === 'request-on' || rewrite === 'request-off';
+    const activeDemo = intercepted && requestPath === '/demo';
+    const removeHeaders = rewrite === 'module-remove';
+    const requestRewrite = removeHeaders || rewrite === 'request-on' || rewrite === 'request-off';
     const pathRewrite = rewrite === 'path-on' || rewrite === 'path-off';
     const query = pathRewrite ? '?id=7&id=8&raw=a%2Fb' : '';
     const extraHeaders = bodyRewrite && !requestPath.includes('?') ? 'X-NetVerge-Body-Probe: gzip\r\n' : '';
@@ -183,12 +185,11 @@ async function probe(dir, port, mode, rewrite) {
       assert.ok(result.response.includes(body), 'missing controlled origin response');
     }
     if (rewrite && !bodyRewrite) {
-      const activeDemo = intercepted && requestPath === '/demo';
       const expected = activeDemo && (rewrite === 'on' || rewrite === 'multi-both') ? '1' :
         activeDemo && rewrite === 'multi-override' ? 'override' : 'origin';
       const rawHeaders = result.response.split('\r\n\r\n')[0].split('\r\n');
       const fields = rawHeaders.filter(line => /^x-netverge-test:/i.test(line));
-      assert.deepEqual(fields.map(line => line.slice(line.indexOf(':') + 1).trim()), [expected], host + requestPath);
+      assert.deepEqual(fields.map(line => line.slice(line.indexOf(':') + 1).trim()), activeDemo && removeHeaders ? [] : [expected], host + requestPath);
       const extras = rawHeaders.filter(line => /^x-netverge-extra:/i.test(line)).map(line => line.slice(line.indexOf(':') + 1).trim());
       assert.deepEqual(extras, activeDemo && rewrite === 'multi-both' ? ['second'] : [], 'extra response header: ' + host + requestPath);
     }
@@ -198,7 +199,7 @@ async function probe(dir, port, mode, rewrite) {
       assert.equal(observed?.[1], expected + query, 'path at origin');
     }
     if (requestRewrite) {
-      const expected = rewrite === 'request-on' && intercepted && requestPath === '/demo' ? 'rewritten' : 'client, duplicate';
+      const expected = activeDemo && removeHeaders ? 'missing' : activeDemo && rewrite === 'request-on' ? 'rewritten' : 'client, duplicate';
       const fields = result.response.split('\r\n\r\n')[0].split('\r\n').filter(line => /^x-netverge-observed-request:/i.test(line));
       assert.deepEqual(fields.map(line => line.slice(line.indexOf(':') + 1).trim()), [expected], 'upstream request header: ' + host + requestPath);
     }

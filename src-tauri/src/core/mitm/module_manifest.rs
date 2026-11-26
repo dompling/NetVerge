@@ -256,28 +256,38 @@ fn normalize_match_condition(cond: &RawMatchCondition, is_url_type: bool) -> Res
     }
 }
 
-fn parse_header_set_action(action: &serde_yaml_ng::Mapping, prefix: &str, limit: usize) -> Result<BTreeMap<String, String>> {
-    ensure!(action.len() == 1, "header rewrite action must contain only `set`");
-    let Some(set_val) = action.get(serde_yaml_ng::Value::String("set".into())) else {
-        bail!("header rewrite action requires `set` mapping");
+fn parse_header_action(action: &serde_yaml_ng::Mapping, prefix: &str, limit: usize) -> Result<Vec<(String, Option<String>)>> {
+    ensure!(action.len() == 1, "header rewrite action requires either `set` or `remove`");
+    let headers: Vec<(String, Option<String>)> = if let Some(value) = action.get("set") {
+        let map: BTreeMap<String, String> = serde_yaml_ng::from_value(value.clone())?;
+        map.into_iter().map(|(name, value)| (name, Some(value))).collect()
+    } else if let Some(value) = action.get("remove") {
+        let names: Vec<String> = serde_yaml_ng::from_value(value.clone())?;
+        names.into_iter().map(|name| (name, None)).collect()
+    } else {
+        bail!("header rewrite action requires either `set` or `remove`");
     };
-    let map: BTreeMap<String, String> = serde_yaml_ng::from_value(set_val.clone())?;
-    ensure!(!map.is_empty() && map.len() <= 4, "header `set` must specify 1..=4 headers");
-    for (name, value) in &map {
+    ensure!((1..=4).contains(&headers.len()), "header action must specify 1..=4 headers");
+    let mut seen = BTreeSet::new();
+    for (name, value) in &headers {
         let lower = name.to_ascii_lowercase();
         ensure!(
             lower.strip_prefix(prefix).is_some_and(|rest| {
                 !rest.is_empty() && rest.len() <= limit && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
             }),
-            "unsupported header name \"{name}\" (expected {prefix}*)"
+            "unsupported header name "{name}" (expected {prefix}*)"
         );
-        ensure!(
-            value.chars().count() <= 1024
-                && value.chars().all(|c| c == '\t' || (' '..='~').contains(&c) || ('\u{80}'..='\u{ff}').contains(&c)),
-            "invalid header value for \"{name}\""
-        );
+        if let Some(value) = value {
+            ensure!(
+                value.chars().count() <= 1024
+                    && value.chars().all(|c| c == '\t' || (' '..='~').contains(&c) || ('\u{80}'..='\u{ff}').contains(&c)),
+                "invalid header value for "{name}""
+            );
+        } else {
+            ensure!(seen.insert(lower), "duplicate header removal "{name}"");
+        }
     }
-    Ok(map)
+    Ok(headers)
 }
 
 pub(crate) fn parse_and_compile_manifest(
@@ -358,7 +368,7 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
             }
             "request-header" | "response-header" => {
                 let is_req = item.kind == "request-header";
-                let headers = parse_header_set_action(&item.action, if is_req { "x-custom-" } else { "x-" }, if is_req { 91 } else { 100 })?;
+                let headers = parse_header_action(&item.action, if is_req { "x-custom-" } else { "x-" }, if is_req { 91 } else { 100 })?;
                 let multi = headers.len() > 1;
                 for (idx, (header, value)) in headers.into_iter().enumerate() {
                     let rule_id = if multi {
@@ -375,7 +385,8 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
                         method: method.clone(),
                         regex: regex.clone(),
                         header,
-                        value,
+                        remove: value.is_none().then_some(true),
+                        value: value.unwrap_or_default(),
                     };
                     if is_req { compiled.request.push(out); } else { compiled.response.push(out); }
                 }
@@ -430,6 +441,39 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_removal_compiles_and_checks_names() -> Result<()> {
+        let manifest = r#"
+kind: netverge-module
+schema: 1
+id: com.example.remove
+name: Remove diagnostic header
+version: "1"
+rewrite:
+  - id: drop-debug
+    type: request-header
+    match:
+      host: api.example.test
+      path: /v1
+    action:
+      remove: [X-Custom-Debug]
+"#;
+        let (_, compiled) = parse_and_compile_manifest("module.yaml", manifest)
+            .map_err(|diag| anyhow::anyhow!(diag.message))?;
+        let rule = &compiled.request[0];
+        assert_eq!(rule.remove, Some(true));
+        assert_eq!(rule.header, "X-Custom-Debug");
+        assert!(rule.value.is_empty());
+
+        for headers in ["[]", "[Host]", "[X-Custom-Debug, x-custom-debug]"] {
+            let invalid = manifest.replace("[X-Custom-Debug]", headers);
+            assert!(parse_and_compile_manifest("module.yaml", &invalid).is_err(), "{headers}");
+        }
+        let ambiguous = manifest.replace("      remove:", "      set: {X-Custom-Debug: '1'}\n      remove:");
+        assert!(parse_and_compile_manifest("module.yaml", &ambiguous).is_err());
+        Ok(())
+    }
 
     #[test]
     fn parses_native_manifest_and_rejects_unsafe_yaml_constructs() -> Result<()> {
