@@ -225,13 +225,29 @@ async function main() {
           { stdio: 'inherit', timeout: 75000 });
         console.log('PASS: HTTP method ' + method + ' condition against original GET, TLS and original exit verified');
       }
-      for (const [label, regex, expected] of [
-        ['matching RE2-subset URL regex', '^https://api\\.example\\.test/de[m]o$', 'on'],
-        ['non-matching RE2-subset URL regex', '^https://api\\.example\\.test/v[0-9]+/demo$', 'off'],
-        ['unsupported lookahead regex rejected', '^https://api\\.example\\.test/(?=demo)demo$', 'off'],
+      for (const [label, payload, expected] of [
+        ['matching RE2-subset URL regex with explicit rule ID/source/revision', {
+          version: 2,
+          revision: 2,
+          rules: [{ id: 'com.example.debug:demo-header', source: 'module:com.example.debug', enabled: true, host: selected, path: '', regex: '^https://api\\.example\\.test/de[m]o$', header: 'X-NetVerge-Test', value: '1' }],
+        }, 'on'],
+        ['non-matching RE2-subset URL regex', {
+          version: 2,
+          rules: [{ enabled: true, host: selected, path: '', regex: '^https://api\\.example\\.test/v[0-9]+/demo$', header: 'X-NetVerge-Test', value: '1' }],
+        }, 'off'],
+        ['unsupported lookahead regex rejected', {
+          version: 2,
+          rules: [{ enabled: true, host: selected, path: '', regex: '^https://api\\.example\\.test/(?=demo)demo$', header: 'X-NetVerge-Test', value: '1' }],
+        }, 'off'],
+        ['duplicate rule IDs rejected', {
+          version: 2,
+          rules: [
+            { id: 'dup-id', enabled: true, host: selected, path: '/demo', header: 'X-NetVerge-Test', value: '1' },
+            { id: 'dup-id', enabled: false, host: selected, path: '/demo/other', header: 'X-NetVerge-Extra', value: '2' },
+          ],
+        }, 'off'],
       ]) {
-        const rule = { enabled: true, host: selected, path: '', regex, header: 'X-NetVerge-Test', value: '1' };
-        fs.writeFileSync(file + '.tmp', JSON.stringify({ version: 2, rules: [rule] }));
+        fs.writeFileSync(file + '.tmp', JSON.stringify(payload));
         fs.renameSync(file + '.tmp', file);
         await sleep(1200);
         execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', expected],

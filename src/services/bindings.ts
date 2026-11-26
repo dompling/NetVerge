@@ -73,6 +73,8 @@ export const commands = {
   getResponseBodyHits: () =>
     __TAURI_INVOKE<number | null>('get_response_body_hits'),
   getMitmRecentRequests: () => __TAURI_INVOKE<RecentRequest[]>('get_mitm_recent_requests'),
+  getMitmRewriteDiagnostics: () =>
+    __TAURI_INVOKE<RewritePhaseDiagnostic[]>('get_mitm_rewrite_diagnostics'),
   clearMitmRecentRequests: () =>
     __TAURI_INVOKE<null>('clear_mitm_recent_requests'),
   /**  Returns the last verified public CA only. Never installs trust or exports a private key. */
@@ -693,6 +695,7 @@ export type RecentRequest = {
   responseRule: boolean
   pathRule: boolean
   bodyRule: boolean
+  matchedRuleIds?: string[] | null
   status: number
   completedAt: string
   durationMs: number
@@ -700,7 +703,17 @@ export type RecentRequest = {
   responseHeaders: [string, string][]
 }
 
+export type RewritePhaseDiagnostic = {
+  phase: string
+  revision: number
+  activeRules: number
+  error: string | null
+  ruleHits: Partial<{ [key in string]: number }>
+}
+
 export type ResponseBodyRule = {
+  id?: string | null
+  source?: string | null
   enabled: boolean
   host: string
   path: string
@@ -711,6 +724,8 @@ export type ResponseBodyRule = {
 }
 
 export type UrlPathRule = {
+  id?: string | null
+  source?: string | null
   enabled: boolean
   host: string
   path: string
@@ -720,6 +735,8 @@ export type UrlPathRule = {
 }
 
 export type ResponseHeaderRule = {
+  id?: string | null
+  source?: string | null
   enabled: boolean
   host: string
   path: string

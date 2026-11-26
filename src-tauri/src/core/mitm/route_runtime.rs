@@ -240,6 +240,9 @@ pub struct RecentRequest {
     response_rule: bool,
     path_rule: bool,
     body_rule: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    matched_rule_ids: Option<Vec<String>>,
     status: u16,
     completed_at: String,
     duration_ms: u32,
@@ -247,13 +250,31 @@ pub struct RecentRequest {
     response_headers: Vec<(String, String)>,
 }
 
+#[derive(Clone, Deserialize, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RewritePhaseDiagnostic {
+    phase: String,
+    revision: u32,
+    active_rules: u32,
+    error: Option<String>,
+    rule_hits: std::collections::BTreeMap<String, u32>,
+}
+
 static RECENT_REQUESTS: Mutex<Vec<RecentRequest>> = Mutex::new(Vec::new());
+static REWRITE_DIAGNOSTICS: Mutex<Vec<RewritePhaseDiagnostic>> = Mutex::new(Vec::new());
 static ACTIVE_WORKER: Mutex<Option<(u16, String)>> = Mutex::new(None);
 static CLEAR_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn recent_requests() -> Vec<RecentRequest> {
     if matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy) {
         return RECENT_REQUESTS.lock().clone();
+    }
+    Vec::new()
+}
+
+pub(crate) fn rewrite_diagnostics() -> Vec<RewritePhaseDiagnostic> {
+    if matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy) {
+        return REWRITE_DIAGNOSTICS.lock().clone();
     }
     Vec::new()
 }
@@ -282,6 +303,8 @@ struct WorkerState {
     path_hits: Option<u32>,
     #[serde(default, rename = "bodyHits")]
     body_hits: Option<u32>,
+    #[serde(default)]
+    diagnostics: Vec<RewritePhaseDiagnostic>,
     #[serde(default, rename = "recentRequests")]
     recent_requests: Vec<RecentRequest>,
     protocol: u32,
@@ -342,6 +365,7 @@ impl Launch {
         if CLEAR_EPOCH.load(std::sync::atomic::Ordering::Acquire) == epoch {
             *RECENT_REQUESTS.lock() = state.recent_requests;
         }
+        *REWRITE_DIAGNOSTICS.lock() = state.diagnostics;
         BODY_HITS.store(state.body_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         PATH_HITS.store(state.path_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         REQUEST_REWRITE_HITS.store(state.request_rewrite_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);

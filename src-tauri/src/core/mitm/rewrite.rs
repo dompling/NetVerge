@@ -1,24 +1,35 @@
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{io::ErrorKind, path::PathBuf};
+use std::{collections::BTreeSet, io::ErrorKind, path::PathBuf};
 use tokio::sync::Mutex;
 
+use super::url_regex::validate_regex;
+
 const MAX_RULES: usize = 16;
-const MAX_REGEX_LEN: usize = 256;
-const MAX_REGEX_STATES: usize = 128;
-const MAX_REGEX_DEPTH: usize = 8;
-const MAX_REGEX_REPEAT: usize = 16;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuleFile<T> {
     version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revision: Option<u32>,
     rules: Vec<T>,
+}
+
+trait RuleIdentity {
+    fn rule_id(&self) -> Option<&str>;
+    fn rule_source(&self) -> Option<&str>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct ResponseHeaderRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub source: Option<String>,
     pub enabled: bool,
     pub host: String,
     pub path: String,
@@ -30,6 +41,11 @@ pub struct ResponseHeaderRule {
     pub regex: Option<String>,
     pub header: String,
     pub value: String,
+}
+
+impl RuleIdentity for ResponseHeaderRule {
+    fn rule_id(&self) -> Option<&str> { self.id.as_deref() }
+    fn rule_source(&self) -> Option<&str> { self.source.as_deref() }
 }
 
 static WRITE: Mutex<()> = Mutex::const_new(());
@@ -48,19 +64,72 @@ fn file(filename: &str) -> Result<PathBuf> {
     Ok(crate::utils::dirs::app_home_dir()?.join("netverge-mitm-dev").join(filename))
 }
 
-fn decode_rules<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<Vec<T>> {
+fn validate_rule_id(id: Option<&str>) -> Result<()> {
+    let Some(raw) = id else { return Ok(()); };
+    let mut bytes = raw.bytes();
+    let Some(first) = bytes.next() else { anyhow::bail!("Empty MITM rule ID"); };
+    ensure!(
+        raw.len() <= 64
+            && (first.is_ascii_lowercase() || first.is_ascii_digit())
+            && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b':' | b'-')),
+        "Invalid MITM rule ID"
+    );
+    Ok(())
+}
+
+fn validate_source(source: Option<&str>) -> Result<()> {
+    let Some(raw) = source else { return Ok(()); };
+    if raw == "local" {
+        return Ok(());
+    }
+    let Some(module_id) = raw.strip_prefix("module:") else {
+        anyhow::bail!("Unsupported MITM rule source");
+    };
+    let valid_module = raw.len() <= 96
+        && module_id.contains('.')
+        && module_id.split('.').all(|seg| {
+            let mut chars = seg.bytes();
+            chars.next().is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+                && chars.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                && !seg.ends_with('-')
+        });
+    ensure!(valid_module, "Invalid module rule source");
+    Ok(())
+}
+
+fn validate_identities<T: RuleIdentity>(rules: &[T]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for rule in rules {
+        validate_rule_id(rule.rule_id())?;
+        validate_source(rule.rule_source())?;
+        if let Some(id) = rule.rule_id() {
+            ensure!(seen.insert(id), "Duplicate MITM rewrite rule ID");
+        }
+    }
+    Ok(())
+}
+
+fn decode_rules<T: serde::de::DeserializeOwned + RuleIdentity>(bytes: &[u8]) -> Result<Vec<T>> {
     let value: serde_json::Value = serde_json::from_slice(bytes)?;
     if value.get("version").is_some() {
         let parsed: RuleFile<T> = serde_json::from_value(value)?;
-        ensure!(parsed.version == 2 && parsed.rules.len() <= MAX_RULES, "Unsupported MITM rewrite rule list");
+        ensure!(
+            parsed.version == 2
+                && parsed.revision.is_none_or(|rev| rev >= 1)
+                && parsed.rules.len() <= MAX_RULES,
+            "Unsupported MITM rewrite rule list"
+        );
+        validate_identities(&parsed.rules)?;
         return Ok(parsed.rules);
     }
-    Ok(vec![serde_json::from_value::<T>(value)?])
+    let single = vec![serde_json::from_value::<T>(value)?];
+    validate_identities(&single)?;
+    Ok(single)
 }
 
 pub fn read(direction: Direction) -> Result<Vec<ResponseHeaderRule>> { read_rules(direction.filename()) }
 
-fn read_rules<T: serde::de::DeserializeOwned>(filename: &str) -> Result<Vec<T>> {
+fn read_rules<T: serde::de::DeserializeOwned + RuleIdentity>(filename: &str) -> Result<Vec<T>> {
     let bytes = match super::settings::read_bounded(&file(filename)?) {
         Ok(bytes) => bytes,
         Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == ErrorKind::NotFound) => return Ok(Vec::new()),
@@ -74,191 +143,6 @@ fn validate_method(method: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-struct RegexParser<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl RegexParser<'_> {
-    const fn peek(&self) -> Option<u8> {
-        if self.pos < self.bytes.len() { Some(self.bytes[self.pos]) } else { None }
-    }
-
-    fn next_byte(&mut self) -> Result<u8> {
-        let Some(&byte) = self.bytes.get(self.pos) else {
-            bail!("Unexpected end of URL regex");
-        };
-        self.pos += 1;
-        Ok(byte)
-    }
-
-    fn parse_alt(&mut self, depth: usize, in_group: bool) -> Result<(bool, usize)> {
-        let (mut nullable, mut cost) = self.parse_seq(depth, in_group)?;
-        while self.peek() == Some(b'|') {
-            self.pos += 1;
-            let (branch_null, branch_cost) = self.parse_seq(depth, in_group)?;
-            nullable |= branch_null;
-            cost = cost.saturating_add(1).saturating_add(branch_cost);
-            ensure!(cost < MAX_REGEX_STATES, "URL regex exceeds bounded NFA state limit");
-        }
-        Ok((nullable, cost))
-    }
-
-    fn parse_seq(&mut self, depth: usize, in_group: bool) -> Result<(bool, usize)> {
-        let mut nullable = true;
-        let mut cost = 0usize;
-        let mut has_item = false;
-        while let Some(byte) = self.peek() {
-            if byte == b'|' || (in_group && byte == b')') {
-                break;
-            }
-            ensure!(in_group || byte != b')', "Unmatched closing parenthesis in URL regex");
-            let (atom_null, atom_cost, quantifiable) = self.parse_atom(depth)?;
-            let (item_null, item_cost) = self.parse_quantifier(atom_null, atom_cost, quantifiable)?;
-            has_item = true;
-            nullable &= item_null;
-            cost = cost.saturating_add(item_cost);
-            ensure!(cost < MAX_REGEX_STATES, "URL regex exceeds bounded NFA state limit");
-        }
-        ensure!(has_item, "Empty expression in URL regex");
-        Ok((nullable, cost))
-    }
-
-    fn parse_atom(&mut self, depth: usize) -> Result<(bool, usize, bool)> {
-        let byte = self.next_byte()?;
-        match byte {
-            b'^' | b'$' => Ok((true, 1, false)),
-            b'.' => Ok((false, 1, true)),
-            b'*' | b'+' | b'?' | b'{' | b'}' => bail!("Unexpected quantifier or brace in URL regex"),
-            b'(' => {
-                ensure!(depth < MAX_REGEX_DEPTH, "URL regex exceeds group nesting limit");
-                if self.peek() == Some(b'?') {
-                    self.pos += 1;
-                    ensure!(self.next_byte()? == b':', "Unsupported group modifier in URL regex");
-                }
-                let (nullable, cost) = self.parse_alt(depth + 1, true)?;
-                ensure!(self.next_byte()? == b')', "Unclosed group in URL regex");
-                Ok((nullable, cost, true))
-            }
-            b'[' => {
-                self.parse_class()?;
-                Ok((false, 1, true))
-            }
-            b'\\' => {
-                let esc = self.next_byte()?;
-                ensure!(matches!(esc, b'd' | b'D' | b'w' | b'W' | b's' | b'S') || !esc.is_ascii_alphanumeric(), "Unsupported escape in URL regex");
-                Ok((false, 1, true))
-            }
-            _ => Ok((false, 1, true)),
-        }
-    }
-
-    fn parse_class(&mut self) -> Result<()> {
-        if self.peek() == Some(b'^') {
-            self.pos += 1;
-        }
-        ensure!(self.peek().is_some_and(|b| b != b']'), "Empty or unclosed character class in URL regex");
-        while self.peek().is_some_and(|b| b != b']') {
-            let first = self.read_class_atom()?;
-            if self.bytes.get(self.pos) == Some(&b'-') && self.bytes.get(self.pos + 1).is_some_and(|&b| b != b']') {
-                self.pos += 1;
-                let second = self.read_class_atom()?;
-                let (Some(lo), Some(hi)) = (first, second) else {
-                    bail!("Character class range requires literal bounds");
-                };
-                ensure!(lo <= hi, "Reversed character class range in URL regex");
-            }
-        }
-        ensure!(self.next_byte()? == b']', "Unclosed character class in URL regex");
-        Ok(())
-    }
-
-    fn read_class_atom(&mut self) -> Result<Option<u8>> {
-        let byte = self.next_byte()?;
-        ensure!(byte != b'[', "Unescaped '[' in character class");
-        if byte != b'\\' {
-            return Ok(Some(byte));
-        }
-        let esc = self.next_byte()?;
-        if matches!(esc, b'd' | b'D' | b'w' | b'W' | b's' | b'S') {
-            return Ok(None);
-        }
-        ensure!(!esc.is_ascii_alphanumeric(), "Unsupported escape in character class");
-        Ok(Some(esc))
-    }
-
-    fn parse_quantifier(&mut self, atom_null: bool, atom_cost: usize, quantifiable: bool) -> Result<(bool, usize)> {
-        let Some(op) = self.peek() else {
-            return Ok((atom_null, atom_cost));
-        };
-        if !matches!(op, b'*' | b'+' | b'?' | b'{') {
-            return Ok((atom_null, atom_cost));
-        }
-        ensure!(quantifiable && !atom_null, "Cannot quantify anchor or nullable expression in URL regex");
-        self.pos += 1;
-        let (min, max) = match op {
-            b'*' => (0, None),
-            b'+' => (1, None),
-            b'?' => (0, Some(1)),
-            _ => self.parse_counted_repeat()?,
-        };
-        if self.peek() == Some(b'?') {
-            self.pos += 1;
-        }
-        ensure!(!self.peek().is_some_and(|b| matches!(b, b'*' | b'+' | b'?' | b'{')), "Chained quantifiers are unsupported in URL regex");
-        let cost = match max {
-            None => min.max(1).saturating_mul(atom_cost).saturating_add(1),
-            Some(hi) => hi.saturating_mul(atom_cost).saturating_add(hi - min),
-        };
-        ensure!(cost < MAX_REGEX_STATES, "URL regex exceeds bounded NFA state limit");
-        Ok((min == 0, cost))
-    }
-
-    fn parse_counted_repeat(&mut self) -> Result<(usize, Option<usize>)> {
-        let min = self.parse_repeat_bound()?;
-        match self.next_byte()? {
-            b'}' => {
-                ensure!(min >= 1, "Zero repetition is unsupported in URL regex");
-                Ok((min, Some(min)))
-            }
-            b',' => {
-                if self.peek() == Some(b'}') {
-                    self.pos += 1;
-                    return Ok((min, None));
-                }
-                let max = self.parse_repeat_bound()?;
-                ensure!(self.next_byte()? == b'}' && min <= max && max >= 1, "Invalid bounded repetition in URL regex");
-                Ok((min, Some(max)))
-            }
-            _ => bail!("Invalid repetition syntax in URL regex"),
-        }
-    }
-
-    fn parse_repeat_bound(&mut self) -> Result<usize> {
-        let start = self.pos;
-        let mut value = 0usize;
-        while let Some(digit) = self.peek().filter(u8::is_ascii_digit) {
-            self.pos += 1;
-            value = value.saturating_mul(10).saturating_add(usize::from(digit - b'0'));
-            ensure!(value <= MAX_REGEX_REPEAT, "Repetition bound exceeds 16 in URL regex");
-        }
-        ensure!(self.pos > start, "Expected integer bound in URL regex");
-        Ok(value)
-    }
-}
-
-fn validate_regex(pattern: Option<&str>) -> Result<()> {
-    let Some(raw) = pattern else {
-        return Ok(());
-    };
-    let bytes = raw.as_bytes();
-    ensure!(!bytes.is_empty() && bytes.len() <= MAX_REGEX_LEN && bytes.iter().all(|b| (0x20..=0x7e).contains(b)), "URL regex must be 1..=256 printable ASCII bytes");
-    let mut parser = RegexParser { bytes, pos: 0 };
-    let (_, cost) = parser.parse_alt(0, false)?;
-    ensure!(parser.pos == bytes.len() && cost + 1 <= MAX_REGEX_STATES, "Invalid or overly complex URL regex");
-    Ok(())
-}
-
 fn valid_exact_or_omitted_path(path: &str, has_regex: bool) -> bool {
     (has_regex && path.is_empty())
         || (path.starts_with('/') && !path.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#')))
@@ -266,6 +150,7 @@ fn valid_exact_or_omitted_path(path: &str, has_regex: bool) -> bool {
 
 pub async fn save(direction: Direction, expected: Vec<ResponseHeaderRule>, rules: Vec<ResponseHeaderRule>) -> Result<()> {
     ensure!(rules.len() <= MAX_RULES, "At most 16 rewrite rules are supported per type");
+    validate_identities(&rules)?;
     for rule in &rules {
         validate_method(rule.method.as_deref())?;
         validate_regex(rule.regex.as_deref())?;
@@ -285,6 +170,12 @@ pub async fn save(direction: Direction, expected: Vec<ResponseHeaderRule>, rules
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct UrlPathRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub source: Option<String>,
     pub enabled: bool,
     pub host: String,
     pub path: String,
@@ -296,6 +187,12 @@ pub struct UrlPathRule {
     pub regex: Option<String>,
     pub target: String,
 }
+
+impl RuleIdentity for UrlPathRule {
+    fn rule_id(&self) -> Option<&str> { self.id.as_deref() }
+    fn rule_source(&self) -> Option<&str> { self.source.as_deref() }
+}
+
 const PATH_FILE: &str = "url-path-rule.json";
 pub fn read_path() -> Result<Vec<UrlPathRule>> { read_rules(PATH_FILE) }
 
@@ -306,6 +203,7 @@ fn valid_path(path: &str) -> bool {
 }
 pub async fn save_path(expected: Vec<UrlPathRule>, rules: Vec<UrlPathRule>) -> Result<()> {
     ensure!(rules.len() <= MAX_RULES, "At most 16 rewrite rules are supported per type");
+    validate_identities(&rules)?;
     for rule in &rules {
         validate_method(rule.method.as_deref())?;
         validate_regex(rule.regex.as_deref())?;
@@ -318,6 +216,12 @@ pub async fn save_path(expected: Vec<UrlPathRule>, rules: Vec<UrlPathRule>) -> R
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct ResponseBodyRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub source: Option<String>,
     pub enabled: bool,
     pub host: String,
     pub path: String,
@@ -330,11 +234,18 @@ pub struct ResponseBodyRule {
     pub search: String,
     pub value: String,
 }
+
+impl RuleIdentity for ResponseBodyRule {
+    fn rule_id(&self) -> Option<&str> { self.id.as_deref() }
+    fn rule_source(&self) -> Option<&str> { self.source.as_deref() }
+}
+
 const BODY_FILE: &str = "response-body-rule.json";
 pub fn read_body() -> Result<Vec<ResponseBodyRule>> { read_rules(BODY_FILE) }
 
 pub async fn save_body(expected: Vec<ResponseBodyRule>, rules: Vec<ResponseBodyRule>) -> Result<()> {
     ensure!(rules.len() <= MAX_RULES, "At most 16 rewrite rules are supported per type");
+    validate_identities(&rules)?;
     for rule in &rules {
         validate_method(rule.method.as_deref())?;
         validate_regex(rule.regex.as_deref())?;
@@ -346,12 +257,12 @@ pub async fn save_body(expected: Vec<ResponseBodyRule>, rules: Vec<ResponseBodyR
     save_rules(BODY_FILE, expected, rules, 16384).await
 }
 
-async fn save_rules<T: serde::de::DeserializeOwned + Serialize + PartialEq>(filename: &str, expected: Vec<T>, rules: Vec<T>, max_bytes: usize) -> Result<()> {
+async fn save_rules<T: serde::de::DeserializeOwned + Serialize + PartialEq + RuleIdentity>(filename: &str, expected: Vec<T>, rules: Vec<T>, max_bytes: usize) -> Result<()> {
     let _guard = WRITE.lock().await;
     ensure!(read_rules::<T>(filename)? == expected, "Rewrite rule changed. Reopen the MITM page to reload.");
     let path = file(filename)?;
     if !rules.is_empty() {
-        let json = serde_json::to_string(&RuleFile { version: 2, rules })?;
+        let json = serde_json::to_string(&RuleFile { version: 2, revision: None, rules })?;
         ensure!(json.len() <= max_bytes, "Rewrite rules exceed {max_bytes} bytes");
         crate::utils::help::save_yaml_str_private(&path, &json, None).await?;
     } else if !expected.is_empty() {
@@ -367,6 +278,7 @@ async fn save_rules<T: serde::de::DeserializeOwned + Serialize + PartialEq>(file
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::mitm::url_regex::MAX_REGEX_LEN;
 
     #[test]
     fn optional_method_conditions_validate_and_round_trip() -> Result<()> {
@@ -380,7 +292,7 @@ mod tests {
         let rule = br#"{"enabled":true,"host":"api.example.test","path":"/demo","target":"/changed","method":"POST"}"#;
         let decoded = decode_rules::<UrlPathRule>(rule)?;
         assert_eq!(decoded[0].method.as_deref(), Some("POST"));
-        let encoded = serde_json::to_vec(&RuleFile { version: 2, rules: decoded.clone() })?;
+        let encoded = serde_json::to_vec(&RuleFile { version: 2, revision: None, rules: decoded.clone() })?;
         assert_eq!(decode_rules::<UrlPathRule>(&encoded)?, decoded);
         Ok(())
     }
@@ -398,44 +310,12 @@ mod tests {
             validate_regex(Some(valid))?;
         }
         for invalid in [
-            "",
-            r"(a)\1",
-            r"\k<id>",
-            r"(?=demo)",
-            r"(?!demo)",
-            r"(?<=demo)",
-            r"(?<!demo)",
-            r"(?i)demo",
-            r"(?<name>demo)",
-            r"\bdemo\b",
-            r"\p{L}",
-            r"a++",
-            r"()",
-            r"(?:)",
-            r"demo|",
-            r"|demo",
-            r"a||b",
-            r"(a*)+",
-            r"(a?)+",
-            r"(^)+",
-            r"^*",
-            r"$?",
-            r"[]",
-            r"[^]",
-            r"[z-a]",
-            r"[\d-z]",
-            r"[abc",
-            r"(abc",
-            r"abc)",
-            r"{1,2}",
-            r"a{0}",
-            r"a{0,0}",
-            r"a{3,2}",
-            r"a{17}",
-            r"a}b",
-            r"(((((((((a)))))))))",
-            &"a".repeat(MAX_REGEX_LEN + 1),
-            "(abcdefghij){13}",
+            "", r"(a)\1", r"\k<id>", r"(?=demo)", r"(?!demo)", r"(?<=demo)", r"(?<!demo)",
+            r"(?i)demo", r"(?<name>demo)", r"\bdemo\b", r"\p{L}", r"a++", r"()", r"(?:)",
+            r"demo|", r"|demo", r"a||b", r"(a*)+", r"(a?)+", r"(^)+", r"^*", r"$?",
+            r"[]", r"[^]", r"[z-a]", r"[\d-z]", r"[abc", r"(abc", r"abc)", r"{1,2}",
+            r"a{0}", r"a{0,0}", r"a{3,2}", r"a{17}", r"a}b", r"(((((((((a)))))))))",
+            &"a".repeat(MAX_REGEX_LEN + 1), "(abcdefghij){13}",
         ] {
             assert!(validate_regex(Some(invalid)).is_err(), "expected rejection for {invalid}");
         }
@@ -444,27 +324,49 @@ mod tests {
         let rule = br#"{"enabled":true,"host":"api.example.test","path":"","regex":"^https://api\\.example\\.test/v1/[0-9]+$","search":"old","value":"new"}"#;
         let decoded = decode_rules::<ResponseBodyRule>(rule)?;
         assert_eq!(decoded[0].regex.as_deref(), Some(r"^https://api\.example\.test/v1/[0-9]+$"));
-        let encoded = serde_json::to_vec(&RuleFile { version: 2, rules: decoded.clone() })?;
+        let encoded = serde_json::to_vec(&RuleFile { version: 2, revision: Some(3), rules: decoded.clone() })?;
         assert_eq!(decode_rules::<ResponseBodyRule>(&encoded)?, decoded);
         Ok(())
     }
 
     #[test]
-    fn migrates_legacy_single_rule_and_validates_v2_lists() -> Result<()> {
+    fn validates_stable_ids_sources_revisions_and_preserves_legacy_migration() -> Result<()> {
+        for valid_id in ["redirect-v1", "com.example.api:rule_1"] {
+            validate_rule_id(Some(valid_id))?;
+        }
+        for invalid_id in ["", "Upper", "-bad", "bad space", &"a".repeat(65)] {
+            assert!(validate_rule_id(Some(invalid_id)).is_err());
+        }
+        for valid_source in ["local", "module:com.example.api-debug"] {
+            validate_source(Some(valid_source))?;
+        }
+        for invalid_source in ["", "remote", "module:bad", "module:Com.Example", "module:com.example-"] {
+            assert!(validate_source(Some(invalid_source)).is_err());
+        }
+
         let single = br#"{"enabled":true,"host":"api.example.test","path":"/demo","header":"X-NetVerge-Test","value":"1"}"#;
         let migrated = decode_rules::<ResponseHeaderRule>(single)?;
         assert_eq!(migrated.len(), 1);
-        assert_eq!(migrated[0].header, "X-NetVerge-Test");
+        assert_eq!(migrated[0].id, None);
+        assert_eq!(migrated[0].source, None);
         assert_eq!(migrated[0].method, None);
         assert_eq!(migrated[0].regex, None);
         let serialized = serde_json::to_value(&migrated[0])?;
-        assert!(!serialized.as_object().is_some_and(|obj| obj.contains_key("method") || obj.contains_key("regex")));
+        assert!(!serialized.as_object().is_some_and(|obj| {
+            ["id", "source", "method", "regex"].iter().any(|k| obj.contains_key(*k))
+        }));
 
-        let encoded = serde_json::to_vec(&RuleFile { version: 2, rules: migrated.clone() })?;
-        assert_eq!(decode_rules::<ResponseHeaderRule>(&encoded)?, migrated);
+        let with_meta = br#"{"version":2,"revision":4,"rules":[{"id":"mod.rule:1","source":"module:com.example.debug","enabled":true,"host":"api.example.test","path":"/demo","header":"X-NetVerge-Test","value":"1"}]}"#;
+        let parsed = decode_rules::<ResponseHeaderRule>(with_meta)?;
+        assert_eq!(parsed[0].id.as_deref(), Some("mod.rule:1"));
+        assert_eq!(parsed[0].source.as_deref(), Some("module:com.example.debug"));
+
+        let dup = br#"{"version":2,"rules":[{"id":"dup","enabled":true,"host":"api.example.test","path":"/a","target":"/b"},{"id":"dup","enabled":false,"host":"api.example.test","path":"/c","target":"/d"}]}"#;
+        assert!(decode_rules::<UrlPathRule>(dup).is_err());
+        assert!(decode_rules::<UrlPathRule>(br#"{"version":2,"revision":0,"rules":[]}"#).is_err());
         assert!(decode_rules::<ResponseHeaderRule>(br#"{"version":1,"rules":[]}"#).is_err());
         assert!(decode_rules::<ResponseHeaderRule>(br#"{"version":2,"rules":[],"extra":true}"#).is_err());
-        let oversized = serde_json::to_vec(&RuleFile { version: 2, rules: vec![migrated[0].clone(); MAX_RULES + 1] })?;
+        let oversized = serde_json::to_vec(&RuleFile { version: 2, revision: None, rules: vec![migrated[0].clone(); MAX_RULES + 1] })?;
         assert!(decode_rules::<ResponseHeaderRule>(&oversized).is_err());
         Ok(())
     }

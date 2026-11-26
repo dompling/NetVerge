@@ -19,6 +19,7 @@ use std::{
 pub(crate) mod trust;
 pub(crate) mod settings;
 pub(crate) mod rewrite;
+mod url_regex;
 pub(crate) mod route_runtime;
 pub(crate) mod service_generation;
 mod control_http;

@@ -29,6 +29,8 @@ import {
   isBlank,
   isComplete,
   MAX_RULES,
+  PHASE_BY_DIRECTION,
+  readRewriteDiagnostics,
   stripUid,
 } from './rewrite-rule-model'
 
@@ -135,6 +137,14 @@ function RuleListForm({
     visible ? 'mitm-' + direction + '-hits' : null,
     editors[direction].hits,
     { refreshInterval: 3000 },
+  )
+  const { data: diagnostics } = useSWR(
+    visible ? 'mitm-rewrite-diagnostics' : null,
+    readRewriteDiagnostics,
+    { refreshInterval: 3000 },
+  )
+  const phaseDiag = diagnostics?.find(
+    (item) => item.phase === PHASE_BY_DIRECTION[direction],
   )
   // Publish the label and count as one accessible status, not separate text nodes.
   const hitStatus =
@@ -394,6 +404,9 @@ function RuleListForm({
           <Typography variant="caption">
             {t('settings.mitm.rewrite.saving')}
           </Typography>
+        )}
+        {phaseDiag?.error && (
+          <Alert severity="warning">{phaseDiag.error}</Alert>
         )}
         {error && (
           <Alert

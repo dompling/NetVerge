@@ -103,6 +103,12 @@ pub fn get_mitm_recent_requests() -> Vec<mitm::route_runtime::RecentRequest> {
 
 #[tauri::command]
 #[specta::specta]
+pub fn get_mitm_rewrite_diagnostics() -> Vec<mitm::route_runtime::RewritePhaseDiagnostic> {
+    mitm::route_runtime::rewrite_diagnostics()
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn clear_mitm_recent_requests() -> super::CmdResult<()> {
     use super::StringifyErr as _;
     mitm::route_runtime::clear_recent_requests().await.stringify_err()

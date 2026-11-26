@@ -129,7 +129,7 @@ function control(req,res) {
     return true;
   }
   if (req.method === 'GET' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
-    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],...rewrites.counts(),recentRequests});
+    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],...rewrites.counts(),diagnostics:rewrites.diagnostics(),recentRequests});
     res.writeHead(200, {Connection:'close','Cache-Control':'no-store','Content-Type':'application/json','Content-Length':Buffer.byteLength(body)});
     res.end(body);
     return true;
@@ -241,7 +241,8 @@ server.emit = function(event, ...args) {
     const id = nextRequestId < 0xfffffffe ? nextRequestId++ : (nextRequestId = 1);
     const entry = { id, method: req.method.slice(0, 32), host: authority.slice(0, -4),
       path: pathname.length > 256 ? pathname.slice(0, 255) + '…' : pathname,
-      requestRule: false, responseRule: false, pathRule: false, bodyRule: false, status: 0,
+      requestRule: false, responseRule: false, pathRule: false, bodyRule: false,
+      matchedRuleIds: [], status: 0,
       completedAt: '', durationMs: 0, requestHeaders: [], responseHeaders: [] };
     const rawWriteHead = res.writeHead;
     res.writeHead = function(status, reason, fields) {
@@ -255,7 +256,7 @@ server.emit = function(event, ...args) {
     entry.requestHeaders = sanitizeHeaders(req.headers);
     rewrites.applyBodyRules(req, res, plan.body, entry);
     rewrites.applyResponseRules(res, plan.response, entry);
-    rewrites.applyPathRules(req, plan.pathTarget, entry);
+    rewrites.applyPathRules(req, plan.pathTarget, entry, plan.pathRuleId);
   }
   if (event === 'upgrade') { args[1].destroy(); return true; }
   return emit.call(this, event, ...args);

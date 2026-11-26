@@ -38,6 +38,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
             cmd::save_response_body_rules,
             cmd::get_response_body_hits,
             cmd::get_mitm_recent_requests,
+            cmd::get_mitm_rewrite_diagnostics,
             cmd::clear_mitm_recent_requests,
             cmd::get_mitm_public_ca,
             cmd::get_mitm_trust_status,

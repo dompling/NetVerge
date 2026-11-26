@@ -31,12 +31,11 @@ nullable quantifiers and chained quantifiers in both Rust and the Whistle worker
 Keep exact `host` and `allowedHosts` admission unchanged; allow `path: ""` only when
 `regex` is present, and AND `path`, `method`, and `regex` against the original URL.
 
-Next 8.1 increments: typed rule model with stable IDs, explicit source and revision, request/response
-match phases, bounded URL patterns, method conditions and per-rule diagnostics. Keep the
-outer MITM admission allowlist exact until a separate reviewed scope change. Prefer a
-linear-time regex subset (evaluate RE2 compatibility); never run unbounded arbitrary JS
-regex in the network worker. Reject unsupported syntax explicitly. Keep migration and
-rollback fixtures for the existing JSON lists.
+8.1d: normalize all four rewrite phases into typed rule descriptors with stable `id`
+(explicit unique `^[a-z0-9][a-z0-9._:-]{0,63}$` or deterministic `<source>:<phase>:<n>`),
+validated `source` (`local` or `module:<reverse-domain>`), positive `revision` metadata,
+per-phase worker diagnostics (`revision`, `activeRules`, `error`, per-rule `ruleHits`),
+and matched rule IDs on recent requests while preserving legacy v1/v2 JSON rollback.
 
 ## Native module format: NetVerge YAML (module.yaml)
 

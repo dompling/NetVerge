@@ -43,6 +43,7 @@ switch ($Action) {
             $node = Get-VerifiedFile 'worker/node.exe'
             $worker = Get-VerifiedFile 'worker/route-worker.cjs'
             $null = Get-VerifiedFile 'worker/rewrite-rules.cjs'
+            $null = Get-VerifiedFile 'worker/url-regex.cjs'
             $null = Get-VerifiedFile 'worker/body-rewrite.cjs'
             $null = Get-VerifiedFile 'worker/ca-integrity.cjs'
             $configPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Bootstrap)

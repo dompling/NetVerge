@@ -275,6 +275,15 @@ export function RecentRequests() {
                       >
                         {timing}
                       </Typography>
+                      {Boolean(entry.matchedRuleIds?.length) && (
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ fontFamily: 'monospace', overflowWrap: 'anywhere' }}
+                        >
+                          {`Rule IDs · ${entry.matchedRuleIds?.join(', ')}`}
+                        </Typography>
+                      )}
                       <HeaderList
                         title={t('settings.mitm.recent.requestHeaders')}
                         empty={t('settings.mitm.recent.noHeaders')}

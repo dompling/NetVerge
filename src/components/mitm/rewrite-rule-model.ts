@@ -6,6 +6,7 @@ import type {
   UrlPathRule,
 } from '@/services/bindings'
 import {
+  getMitmRewriteDiagnostics,
   getRequestHeaderHits,
   getRequestHeaderRules,
   getResponseBodyHits,
@@ -86,9 +87,20 @@ export const isComplete = (rule: ResponseHeaderRule, direction: Direction) =>
       (direction === 'path' ? rule.value : rule.header),
   )
 
+export const PHASE_BY_DIRECTION: Record<Direction, string> = {
+  response: 'response-header',
+  request: 'request-header',
+  path: 'url-path',
+  body: 'response-body',
+}
+
+export const readRewriteDiagnostics = getMitmRewriteDiagnostics
+
 // Adapt path and body forms to the shared autosave editor. Only native schemas cross IPC.
 const toPath = (rules: ResponseHeaderRule[]): UrlPathRule[] =>
   rules.map((rule) => ({
+    id: rule.id,
+    source: rule.source,
     enabled: rule.enabled,
     host: rule.host,
     path: rule.path,
@@ -99,6 +111,8 @@ const toPath = (rules: ResponseHeaderRule[]): UrlPathRule[] =>
 
 const toBody = (rules: ResponseHeaderRule[]): ResponseBodyRule[] =>
   rules.map((rule) => ({
+    id: rule.id,
+    source: rule.source,
     enabled: rule.enabled,
     host: rule.host,
     path: rule.path,
@@ -112,6 +126,8 @@ export const editors = {
   body: {
     read: async (): Promise<ResponseHeaderRule[]> =>
       (await getResponseBodyRules()).map((rule) => ({
+        id: rule.id,
+        source: rule.source,
         enabled: rule.enabled,
         host: rule.host,
         path: rule.path,
@@ -127,6 +143,8 @@ export const editors = {
   path: {
     read: async (): Promise<ResponseHeaderRule[]> =>
       (await getUrlPathRules()).map((rule) => ({
+        id: rule.id,
+        source: rule.source,
         enabled: rule.enabled,
         host: rule.host,
         path: rule.path,

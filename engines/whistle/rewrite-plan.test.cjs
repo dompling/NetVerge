@@ -1,7 +1,13 @@
 'use strict';
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { planRequest, parseRuleFile, compileUrlRegex } = require('./rewrite-rules.cjs');
+const {
+  createRewriteEngine,
+  planRequest,
+  parseRuleFile,
+  parseRuleSet,
+  compileUrlRegex,
+} = require('./rewrite-rules.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -164,4 +170,91 @@ test('compileUrlRegex enforces RE2-subset syntax, state bounds and linear-time e
   assert.throws(() => parseRuleFile(file, validate));
   fs.writeFileSync(file, JSON.stringify({ version: 2, rules: [{ ...base, regex: '(?=v1)' }] }));
   assert.throws(() => parseRuleFile(file, validate));
+});
+
+test('typed rule set normalizes stable IDs, source, revision, per-rule hits and diagnostics', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nv-rule-diag-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const reqFile = path.join(dir, 'request-header-rule.json');
+  const pathFile = path.join(dir, 'url-path-rule.json');
+
+  // Legacy single-rule migrates to deterministic local ID and revision 1.
+  fs.writeFileSync(reqFile, JSON.stringify({
+    enabled: true, host, path: '/v1', header: 'X-Custom-Legacy', value: '1',
+  }));
+  const migrated = parseRuleSet(reqFile, 'request-header', item => item);
+  assert.equal(migrated.revision, 1);
+  assert.equal(migrated.rules[0].id, 'local:request-header:1');
+  assert.equal(migrated.rules[0].source, 'local');
+  assert.equal(migrated.rules[0].phase, 'request-header');
+
+  // Explicit module source, stable IDs and revision round-trip; duplicates/invalid fail closed.
+  fs.writeFileSync(reqFile, JSON.stringify({
+    version: 2,
+    revision: 7,
+    rules: [
+      { id: 'com.example.debug:req-1', source: 'module:com.example.debug', enabled: true, host, path: '/v1', header: 'X-Custom-Debug', value: 'on' },
+      { enabled: true, host, path: '/v1', header: 'X-Custom-Second', value: 'two' },
+    ],
+  }));
+  fs.writeFileSync(pathFile, JSON.stringify({
+    version: 2,
+    revision: 3,
+    rules: [{ id: 'redirect-v1', enabled: true, host, path: '/v1', target: '/v2' }],
+  }));
+
+  const engine = createRewriteEngine({ dataDir: dir, hosts: [host], strip: (r, k) => { delete r.headers[k]; } });
+  t.after(() => engine.close());
+
+  const req = { url: '/v1?x=1', method: 'GET', headers: {}, rawHeaders: [] };
+  const entry = { matchedRuleIds: [] };
+  const planned = engine.plan(req, authority);
+  engine.applyRequestRules(req, planned.request, entry);
+  engine.applyPathRules(req, planned.pathTarget, entry, planned.pathRuleId);
+  assert.deepEqual(entry.matchedRuleIds, [
+    'com.example.debug:req-1',
+    'local:request-header:2',
+    'redirect-v1',
+  ]);
+  const reqDiag = engine.diagnostics().find(d => d.phase === 'request-header');
+  assert.deepEqual(reqDiag, {
+    phase: 'request-header',
+    revision: 7,
+    activeRules: 2,
+    error: null,
+    ruleHits: { 'com.example.debug:req-1': 1, 'local:request-header:2': 1 },
+  });
+
+  // Reject duplicate IDs, fallback collisions, invalid sources and zero revision.
+  for (const bad of [
+    { version: 2, revision: 0, rules: [] },
+    { version: 2, rules: [
+      { id: 'dup', enabled: true, host, path: '/v1', target: '/v2' },
+      { id: 'dup', enabled: false, host, path: '/v2', target: '/v3' },
+    ] },
+    { version: 2, rules: [
+      { enabled: true, host, path: '/v1', target: '/v2' },
+      { id: 'local:url-path:1', enabled: true, host, path: '/v2', target: '/v3' },
+    ] },
+    { version: 2, rules: [
+      { id: 'bad', source: 'module:Invalid_Upper', enabled: true, host, path: '/v1', target: '/v2' },
+    ] },
+  ]) {
+    fs.writeFileSync(pathFile, JSON.stringify(bad));
+    assert.throws(() => parseRuleSet(pathFile, 'url-path', item => item));
+  }
+
+  // Corrupting a watched file surfaces INVALID_RULE_FILE diagnostic and fails closed.
+  engine.close();
+  fs.writeFileSync(pathFile, '{broken');
+  const brokenEngine = createRewriteEngine({ dataDir: dir, hosts: [host], strip: () => {} });
+  t.after(() => brokenEngine.close());
+  const pathDiag = brokenEngine.diagnostics().find(d => d.phase === 'url-path');
+  assert.deepEqual(pathDiag, {
+    phase: 'url-path',
+    revision: 0,
+    activeRules: 0,
+    error: 'INVALID_RULE_FILE',
+    ruleHits: {},
+  });
 });
