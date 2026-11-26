@@ -275,16 +275,16 @@ fn parse_header_action(action: &serde_yaml_ng::Mapping, prefix: &str, limit: usi
             lower.strip_prefix(prefix).is_some_and(|rest| {
                 !rest.is_empty() && rest.len() <= limit && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
             }),
-            "unsupported header name "{name}" (expected {prefix}*)"
+            "unsupported header name '{name}' (expected {prefix}*)"
         );
         if let Some(value) = value {
             ensure!(
                 value.chars().count() <= 1024
                     && value.chars().all(|c| c == '\t' || (' '..='~').contains(&c) || ('\u{80}'..='\u{ff}').contains(&c)),
-                "invalid header value for "{name}""
+                "invalid header value for '{name}'"
             );
         } else {
-            ensure!(seen.insert(lower), "duplicate header removal "{name}"");
+            ensure!(seen.insert(lower), "duplicate header removal '{name}'");
         }
     }
     Ok(headers)
