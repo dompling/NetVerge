@@ -216,13 +216,26 @@ function installBodyRewrite(req, res, matched, onHit) {
     }
     let text = originalText;
     let hit = false;
-    for (const rule of matched) {
-      if (text.includes(rule.search)) {
-        text = text.replaceAll(rule.search, rule.value);
-        hit = true;
+    for (const { search, value } of matched) {
+      let index = text.indexOf(search);
+      if (index === -1) continue;
+      const growth = Buffer.byteLength(value) - Buffer.byteLength(search);
+      let size = Buffer.byteLength(text);
+      if (growth > 0) {
+        while (index !== -1 && size <= MAX_BODY_BYTES) {
+          size += growth;
+          index = text.indexOf(search, index + search.length);
+        }
+        if (size > MAX_BODY_BYTES) {
+          flushHead(savedExplicit);
+          return finishEnd(rawBody, cb);
+        }
       }
+      // The editor stores literal text, including dollar signs.
+      text = text.replaceAll(search, () => value);
+      hit = true;
     }
-    if (!hit) {
+    if (!hit || Buffer.byteLength(text) > MAX_BODY_BYTES) {
       flushHead(savedExplicit);
       return finishEnd(rawBody, cb);
     }
