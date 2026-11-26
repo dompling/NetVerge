@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -173,6 +173,32 @@ switch ($Action) {
             $button.SetFocus()
             if ($button.Current.HasKeyboardFocus) { $keys.SendKeys(' '); Start-Sleep -Milliseconds 500 }
         }
+    }
+    'FilterRecent' {
+        $search = Find-Element 'Search hostname or path' ([Windows.Automation.ControlType]::Edit)
+        $select = Find-Element 'Matched rules' ([Windows.Automation.ControlType]::ComboBox)
+        if (!$search -or !$select) { break }
+        $keys = New-Object -ComObject WScript.Shell
+        if (!$keys.AppActivate($process.Id)) { break }
+        $search.SetFocus()
+        $keys.SendKeys('^a')
+        $keys.SendKeys('/demo/other')
+        Start-Sleep -Milliseconds 200
+        $select.SetFocus()
+        # The last option shows requests with no matched rule.
+        $keys.SendKeys('{END}')
+        Start-Sleep -Milliseconds 200
+        $row = Find-Element ("GET api.example.test/demo/other " + [char]0xb7 + " 200 " + [char]0xb7 + " No match")
+        if (!$row) { break }
+        # Move up to URL path rewrite: /demo/other must now disappear.
+        $keys.SendKeys('{UP}')
+        Start-Sleep -Milliseconds 200
+        if (!(Find-Element 'No requests match these filters.')) { break }
+        $search.SetFocus()
+        $keys.SendKeys('^a')
+        $keys.SendKeys('{BACKSPACE}')
+        Start-Sleep -Milliseconds 200
+        if (Find-Element ("GET api.example.test/demo " + [char]0xb7 + " 200 " + [char]0xb7 + " URL path rewrite")) { 'OK' }
     }
     'Healthy' {
         if (Find-Element 'Local link healthy') { 'OK'; break }

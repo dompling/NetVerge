@@ -726,6 +726,9 @@
   },
   "mitm": {
     "recent": {
+      "search": "Search hostname or path",
+      "all": "All requests",
+      "noMatches": "No requests match these filters.",
       "title": "Recent requests",
       "empty": "No completed requests in this worker session.",
       "matched": "Matched rules",

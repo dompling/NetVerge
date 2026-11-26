@@ -251,4 +251,4 @@ jobs:
             $package = Join-Path $env:RUNNER_TEMP 'netverge-rewrite-editor'
             Expand-Archive -LiteralPath $zip.FullName -DestinationPath $package
           }
-          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package editor
+          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package editor-filters

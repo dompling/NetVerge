@@ -969,9 +969,12 @@ export interface TranslationResources {
         no: string
         noCa: string
         recent: {
+          all: string
           empty: string
           matched: string
+          noMatches: string
           none: string
+          search: string
           title: string
         }
         recovery: string

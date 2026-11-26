@@ -216,7 +216,8 @@ async function main() {
       }
     }
 
-    for (const direction of process.argv[3] === 'editor' ? ['response', 'request', 'path'] : []) {
+    const editor = ['editor', 'editor-filters'].includes(process.argv[3]);
+    for (const direction of editor ? ['response', 'request', 'path'] : []) {
       const request = direction === 'request';
       const pathRule = direction === 'path';
       if (pathRule) await until('open URL path editor', () => automation(app, 'OpenPathRule') === 'OK');
@@ -236,6 +237,10 @@ async function main() {
         execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', (pathRule ? 'path-' : request ? 'request-' : '') + (enabled ? 'on' : 'off')],
           { stdio: 'inherit', timeout: 75000 });
         if (enabled && pathRule) await until('recent request shows exact path, status and matched rule', () => automation(app, 'RecentRequests') === 'OK');
+        if (enabled && pathRule && process.argv[3] === 'editor-filters') {
+          await until('filter recent requests by path and matched rule', () => automation(app, 'FilterRecent') === 'OK');
+          console.log('PASS: recent request search, rule filter, no-match result and clearing search');
+        }
         if (index === 0) await until('visible zero rewrite hits before enabling', () => automation(app, 'RuleHitsZero') === 'OK');
         if (enabled) await until('visible positive rewrite hits after matching TLS request', () => automation(app, 'RuleHits') === 'OK');
       }
@@ -244,7 +249,7 @@ async function main() {
       console.log('PASS: packaged ' + direction + ' editor autosave, toggle, TLS, hits and deletion');
     }
 
-    if (rewriteTest || process.argv[3] === 'editor') {
+    if (rewriteTest || editor) {
       // The editor acceptance runs the newly packaged worker, while the
       // independent rewrite scenario runs the current source worker.
       const file = path.join(mitm, 'request-header-rule.json');
