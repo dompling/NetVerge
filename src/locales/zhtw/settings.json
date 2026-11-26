@@ -726,6 +726,8 @@
   },
   "mitm": {
     "rewrite": {
+      "pathTitle": "URL 路徑重寫",
+      "targetPath": "目標路徑",
       "requestTitle": "請求標頭重寫",
       "requestHeader": "請求標頭名稱（X-Custom-…）",
       "title": "回應標頭重寫",

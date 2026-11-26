@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'OpenRequestRule', 'FillRequestRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,8 +79,9 @@ switch ($Action) {
             'OK'
         }
     }
-    'OpenRequestRule' {
-        $button = Find-Element 'Request header rewrite' ([Windows.Automation.ControlType]::Button)
+    { $_ -in 'OpenRequestRule', 'OpenPathRule' } {
+        $label = if ($Action -eq 'OpenPathRule') { 'URL path rewrite' } else { 'Request header rewrite' }
+        $button = Find-Element $label ([Windows.Automation.ControlType]::Button)
         if ($button) {
             $keys = New-Object -ComObject WScript.Shell
             if (!$keys.AppActivate($process.Id)) { break }
@@ -89,7 +90,7 @@ switch ($Action) {
             'OK'
         }
     }
-    { $_ -in 'FillRule', 'FillRequestRule' } {
+    { $_ -in 'FillRule', 'FillRequestRule', 'FillPathRule' } {
         $add = Find-Element 'Add rule' ([Windows.Automation.ControlType]::Button)
         if ($add) { $add.GetCurrentPattern($invoke).Invoke(); break }
         $keys = New-Object -ComObject WScript.Shell
@@ -97,6 +98,9 @@ switch ($Action) {
         $fields = [ordered]@{'MITM hostname'='api.example.test'; 'Exact path'='/demo'; 'X- header name'='X-NetVerge-Test'; 'Header value'='1'}
         if ($Action -eq 'FillRequestRule') {
             $fields = [ordered]@{'MITM hostname'='api.example.test'; 'Exact path'='/demo'; 'X-Custom- header name'='X-Custom-NetVerge-Test'; 'Header value'='rewritten'}
+        }
+        if ($Action -eq 'FillPathRule') {
+            $fields = [ordered]@{'MITM hostname'='api.example.test'; 'Exact path'='/demo'; 'Target path'='/changed'}
         }
         foreach ($label in $fields.Keys) {
             $field = Find-Element $label ([Windows.Automation.ControlType]::Edit)

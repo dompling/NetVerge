@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
 
-import { commands, type ResponseHeaderRule } from '@/services/bindings'
+import { commands, type ResponseHeaderRule, type UrlPathRule } from '@/services/bindings'
 
 const blank: ResponseHeaderRule = { enabled: false, host: '', path: '/', header: '', value: '' }
 
@@ -13,8 +13,22 @@ function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-type Direction = 'request' | 'response'
+type Direction = 'request' | 'response' | 'path'
+
+// Adapt the path-only form to the shared autosave editor. Only the native
+// path schema crosses IPC; header rules retain their existing format.
+const toPath = (rule: ResponseHeaderRule | null): UrlPathRule | null => rule && ({
+  enabled: rule.enabled, host: rule.host, path: rule.path, target: rule.value,
+})
 const editors = {
+  path: {
+    read: async () => {
+      const rule = await commands.getUrlPathRule()
+      return rule && { enabled: rule.enabled, host: rule.host, path: rule.path, value: rule.target, header: '' }
+    },
+    save: (expected: ResponseHeaderRule | null, rule: ResponseHeaderRule | null) => commands.saveUrlPathRule(toPath(expected), toPath(rule)),
+    hits: commands.getUrlPathHits,
+  },
   request: { read: commands.getRequestHeaderRule, save: commands.saveRequestHeaderRule, hits: commands.getRequestHeaderHits },
   response: { read: commands.getResponseHeaderRule, save: commands.saveResponseHeaderRule, hits: commands.getResponseHeaderHits },
 }
@@ -27,8 +41,9 @@ export function HeaderRuleEditor() {
       onChange={(_, next: Direction | null) => { if (next) setDirection(next) }}>
       <ToggleButton value="response">{t('settings.mitm.rewrite.title')}</ToggleButton>
       <ToggleButton value="request">{t('settings.mitm.rewrite.requestTitle')}</ToggleButton>
+      <ToggleButton value="path">{t('settings.mitm.rewrite.pathTitle')}</ToggleButton>
     </ToggleButtonGroup>
-    {(['response', 'request'] as const).map(kind => <div key={kind} hidden={direction !== kind}>
+    {(['response', 'request', 'path'] as const).map(kind => <div key={kind} hidden={direction !== kind}>
       <Editor direction={kind} visible={direction === kind} />
     </div>)}
   </Stack>
@@ -83,7 +98,7 @@ function RuleForm({ initial, changed, direction, visible }: { direction: Directi
   }
   const commit = () => {
     const next = draftRef.current
-    if (!next?.host || !next.header || !next.path) return
+    if (!next?.host || (direction === 'path' ? !next.value : !next.header) || !next.path) return
     persist(next)
   }
   return <Card variant="outlined" sx={{ p: 2 }}>
@@ -91,8 +106,8 @@ function RuleForm({ initial, changed, direction, visible }: { direction: Directi
       {!draft ? <Button size="small" sx={{ alignSelf: 'flex-start' }} onClick={() => updateDraft({ ...blank })}>{t('settings.mitm.rewrite.add')}</Button> : <>
         <Typography variant="caption">{t('settings.mitm.rewrite.hint')}</Typography>
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
-          {(['host', 'path', 'header', 'value'] as const).map(field =>
-            <TextField key={field} fullWidth size="small" label={t(field === 'header' && direction === 'request' ? 'settings.mitm.rewrite.requestHeader' : `settings.mitm.rewrite.${field}`)}
+          {(['host', 'path', 'header', 'value'] as const).filter(field => direction !== 'path' || field !== 'header').map(field =>
+            <TextField key={field} fullWidth size="small" label={t(direction === 'path' && field === 'value' ? 'settings.mitm.rewrite.targetPath' : field === 'header' && direction === 'request' ? 'settings.mitm.rewrite.requestHeader' : `settings.mitm.rewrite.${field}`)}
               value={draft[field]} onChange={event => {
                 if (draftRef.current) updateDraft({ ...draftRef.current, [field]: event.target.value })
               }}
@@ -100,7 +115,7 @@ function RuleForm({ initial, changed, direction, visible }: { direction: Directi
         </Stack>
         <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
           <FormControlLabel label={t('settings.mitm.rewrite.enable')} control={<Switch checked={draft.enabled}
-            disabled={!draft.host || !draft.path || !draft.header}
+            disabled={!draft.host || !draft.path || (direction === 'path' ? !draft.value : !draft.header)}
             onChange={(_, enabled) => {
               if (draftRef.current) { updateDraft({ ...draftRef.current, enabled }); commit() }
             }} />} />

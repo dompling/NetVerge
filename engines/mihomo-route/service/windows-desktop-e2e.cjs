@@ -216,12 +216,14 @@ async function main() {
       }
     }
 
-    for (const direction of process.argv[3] === 'editor' ? ['response', 'request'] : []) {
+    for (const direction of process.argv[3] === 'editor' ? ['response', 'request', 'path'] : []) {
       const request = direction === 'request';
+      const pathRule = direction === 'path';
+      if (pathRule) await until('open URL path editor', () => automation(app, 'OpenPathRule') === 'OK');
       if (request) await until('open request header editor', () => automation(app, 'OpenRequestRule') === 'OK');
-      const file = path.join(mitm, direction + '-header-rule.json');
-      await until('enter and verify all rewrite field values', () => automation(app, request ? 'FillRequestRule' : 'FillRule') === 'OK', 70000);
-      const rule = { enabled: false, host: selected, path: '/demo',
+      const file = path.join(mitm, pathRule ? 'url-path-rule.json' : direction + '-header-rule.json');
+      await until('enter and verify all rewrite field values', () => automation(app, pathRule ? 'FillPathRule' : request ? 'FillRequestRule' : 'FillRule') === 'OK', 70000);
+      const rule = pathRule ? { enabled: false, host: selected, path: '/demo', target: '/changed' } : { enabled: false, host: selected, path: '/demo',
         header: request ? 'X-Custom-NetVerge-Test' : 'X-NetVerge-Test', value: request ? 'rewritten' : '1' };
       for (const [index, enabled] of [false, true, false].entries()) {
         if (enabled !== rule.enabled) await until('toggle rewrite', () => automation(app, 'ToggleRule') === 'OK');
@@ -231,7 +233,7 @@ async function main() {
           return true;
         });
         await sleep(1200);
-        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', (request ? 'request-' : '') + (enabled ? 'on' : 'off')],
+        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', (pathRule ? 'path-' : request ? 'request-' : '') + (enabled ? 'on' : 'off')],
           { stdio: 'inherit', timeout: 75000 });
         if (index === 0) await until('visible zero rewrite hits before enabling', () => automation(app, 'RuleHitsZero') === 'OK');
         if (enabled) await until('visible positive rewrite hits after matching TLS request', () => automation(app, 'RuleHits') === 'OK');

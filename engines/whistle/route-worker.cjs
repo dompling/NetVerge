@@ -71,6 +71,38 @@ function loadRequestRule() {
 loadRequestRule();
 fs.watchFile(requestRewriteFile, { interval: 500, persistent: false }, loadRequestRule);
 
+const pathFile = path.join(dataDir, 'url-path-rule.json');
+let pathRule;
+let pathHits = 0;
+function validPath(value) {
+  return typeof value === 'string' && /^\/(?!\/)[A-Za-z0-9/._~%-]*$/.test(value) &&
+    !/%(?![0-9a-f]{2})/i.test(value) && new URL(value, 'https://example.test').pathname === value;
+}
+function loadPathRule() {
+  pathRule = undefined;
+  try {
+    const stat = fs.lstatSync(pathFile);
+    if (!stat.isFile() || stat.size > 8192) throw new Error();
+    const rule = JSON.parse(fs.readFileSync(pathFile, 'utf8'));
+    if (rule.enabled === false) return;
+    if (rule.enabled !== true || !hosts.includes(rule.host) || !validPath(rule.path) || !validPath(rule.target)) throw new Error();
+    pathRule = rule;
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Invalid local URL path rule; rewrite disabled');
+  }
+}
+loadPathRule();
+fs.watchFile(pathFile, { interval: 500, persistent: false }, loadPathRule);
+function applyPathRule(req, authority) {
+  if (!pathRule || authority !== pathRule.host + ':443') return;
+  const url = new URL(req.url, 'https://' + authority);
+  if (url.pathname !== pathRule.path) return;
+  const query = req.url.indexOf('?');
+  const target = pathRule.target + (query < 0 ? '' : req.url.slice(query));
+  req.url = req.url.startsWith('/') ? target : url.origin + target;
+  pathHits = Math.min(pathHits + 1, 0xfffffffe);
+}
+
 function applyRequestRule(req, authority) {
   const rule = requestRule;
   if (!rule || authority !== rule.host + ':443' ||
@@ -157,7 +189,7 @@ function control(req,res) {
     reply(res,403); return true;
   }
   if (req.method === 'GET' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
-    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],rewriteHits,requestRewriteHits});
+    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],rewriteHits,requestRewriteHits,pathHits});
     res.writeHead(200, {Connection:'close','Cache-Control':'no-store','Content-Type':'application/json','Content-Length':Buffer.byteLength(body)});
     res.end(body);
     return true;
@@ -273,6 +305,7 @@ server.emit = function(event, ...args) {
     admissions.set(req, admission);
     applyRequestRule(req, admission.route.authority);
     applyResponseRule(req, res, admission.route.authority);
+    applyPathRule(req, admission.route.authority);
   }
   if (event === 'upgrade') { args[1].destroy(); return true; }
   return emit.call(this, event, ...args);

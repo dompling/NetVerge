@@ -25,10 +25,11 @@ async function serve(dir) {
   const dns = await startLabDns(hosts);
   dns.on('error', err => { throw err; });
   const origin = https.createServer({ key: certs.key, cert: certs.cert }, (req, res) => {
-    if (!['/netverge-proof', '/demo', '/demo/other'].includes(req.url) || req.headers['proxy-authorization'] || req.headers['x-whistle-tunnel-data']) {
+    if (!['/netverge-proof', '/demo', '/demo/other', '/changed'].includes(req.url.split('?')[0]) || req.headers['proxy-authorization'] || req.headers['x-whistle-tunnel-data']) {
       res.writeHead(400).end();
       return;
     }
+    res.setHeader('X-Observed-Path', req.url);
     res.setHeader('X-NetVerge-Test', 'origin');
     res.setHeader('X-NetVerge-Observed-Request', req.headers['x-custom-netverge-test'] ?? 'missing');
     res.end(body);
@@ -95,13 +96,20 @@ async function probe(dir, port, mode, rewrite) {
       ? new X509Certificate(fs.readFileSync(path.join(dir, 'whistle.der'))).toString()
       : originCA;
     const requestRewrite = rewrite === 'request-on' || rewrite === 'request-off';
-    const result = await dialTun(ip, host, 443, ca, 15000, requestPath, requestRewrite);
+    const pathRewrite = rewrite === 'path-on' || rewrite === 'path-off';
+    const query = pathRewrite ? '?id=7&id=8&raw=a%2Fb' : '';
+    const result = await dialTun(ip, host, 443, ca, 15000, requestPath + query, requestRewrite);
     assert.match(result.response, /^HTTP\/1\.[01] 200 /);
     assert.ok(result.response.includes(body), 'missing controlled origin response');
     if (rewrite) {
       const expected = rewrite === 'on' && intercepted && requestPath === '/demo' ? '1' : 'origin';
       const fields = result.response.split('\r\n\r\n')[0].split('\r\n').filter(line => /^x-netverge-test:/i.test(line));
       assert.deepEqual(fields.map(line => line.slice(line.indexOf(':') + 1).trim()), [expected], host + requestPath);
+    }
+    if (pathRewrite) {
+      const expected = rewrite === 'path-on' && intercepted && requestPath === '/demo' ? '/changed' : requestPath;
+      const observed = result.response.split('\r\n\r\n')[0].match(/^x-observed-path: ([^\r\n]+)/im);
+      assert.equal(observed?.[1], expected + query, 'path at origin');
     }
     if (requestRewrite) {
       const expected = rewrite === 'request-on' && intercepted && requestPath === '/demo' ? 'rewritten' : 'client, duplicate';

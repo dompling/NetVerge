@@ -51,6 +51,10 @@ export const commands = {
   saveRequestHeaderRule: (expected: ResponseHeaderRule | null, rule: ResponseHeaderRule | null) =>
     __TAURI_INVOKE<null>('save_request_header_rule', { expected, rule }),
   getRequestHeaderHits: () => __TAURI_INVOKE<number | null>('get_request_header_hits'),
+  getUrlPathRule: () => __TAURI_INVOKE<UrlPathRule | null>('get_url_path_rule'),
+  saveUrlPathRule: (expected: UrlPathRule | null, rule: UrlPathRule | null) =>
+    __TAURI_INVOKE<null>('save_url_path_rule', { expected, rule }),
+  getUrlPathHits: () => __TAURI_INVOKE<number | null>('get_url_path_hits'),
   /**  Returns the last verified public CA only. Never installs trust or exports a private key. */
   getMitmPublicCa: () =>
     __TAURI_INVOKE<MitmPublicCa | null>('get_mitm_public_ca'),
@@ -659,6 +663,8 @@ export type MitmConfigView_Serialize = {
   restartRequired: boolean
   policies: string[]
 }
+
+export type UrlPathRule = { enabled: boolean; host: string; path: string; target: string }
 
 export type ResponseHeaderRule = {
   enabled: boolean

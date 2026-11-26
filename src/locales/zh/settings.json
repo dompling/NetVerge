@@ -726,6 +726,8 @@
   },
   "mitm": {
     "rewrite": {
+      "pathTitle": "URL 路径重写",
+      "targetPath": "目标路径",
       "requestTitle": "请求头重写",
       "requestHeader": "请求头名称（X-Custom-…）",
       "title": "响应头重写",

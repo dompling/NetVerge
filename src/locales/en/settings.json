@@ -726,6 +726,8 @@
   },
   "mitm": {
     "rewrite": {
+      "pathTitle": "URL path rewrite",
+      "targetPath": "Target path",
       "requestTitle": "Request header rewrite",
       "requestHeader": "X-Custom- header name",
       "title": "Response header rewrite",

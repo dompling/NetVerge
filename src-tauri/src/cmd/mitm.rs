@@ -55,6 +55,26 @@ pub fn get_request_header_hits() -> Option<u32> {
     mitm::route_runtime::request_header_hits()
 }
 
+#[tauri::command]
+#[specta::specta]
+pub fn get_url_path_rule() -> super::CmdResult<Option<mitm::rewrite::UrlPathRule>> {
+    use super::StringifyErr as _;
+    mitm::rewrite::read_path().stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn save_url_path_rule(expected: Option<mitm::rewrite::UrlPathRule>, rule: Option<mitm::rewrite::UrlPathRule>) -> super::CmdResult<()> {
+    use super::StringifyErr as _;
+    mitm::rewrite::save_path(expected, rule).await.stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_url_path_hits() -> Option<u32> {
+    mitm::route_runtime::url_path_hits()
+}
+
 /// Returns the last verified public CA only. Never installs trust or exports a private key.
 #[tauri::command]
 #[specta::specta]
