@@ -283,6 +283,7 @@ function RuleListForm({
             </Typography>
             {draft.map((item, index) => {
               const suffix = index === 0 ? '' : ` #${index + 1}`
+              const enableLabel = t('settings.mitm.rewrite.enable') + suffix
               return (
                 <Stack key={item.uid} spacing={1}>
                   {index > 0 && <Divider />}
@@ -299,12 +300,16 @@ function RuleListForm({
                               ? 'settings.mitm.rewrite.requestHeader'
                               : `settings.mitm.rewrite.${field}`,
                         )
+                        const fieldLabel = baseLabel + suffix
                         return (
                           <TextField
                             key={field}
                             fullWidth
                             size="small"
-                            label={baseLabel + suffix}
+                            label={fieldLabel}
+                            slotProps={{
+                              htmlInput: { 'aria-label': fieldLabel },
+                            }}
                             value={item[field]}
                             onChange={(event) => {
                               const value = event.target.value
@@ -334,11 +339,12 @@ function RuleListForm({
                     sx={{ alignItems: 'center', flexWrap: 'wrap' }}
                   >
                     <FormControlLabel
-                      label={t('settings.mitm.rewrite.enable') + suffix}
+                      label={enableLabel}
                       control={
                         <Switch
                           checked={item.enabled}
                           disabled={!isComplete(item, direction)}
+                          slotProps={{ input: { 'aria-label': enableLabel } }}
                           onChange={(_, enabled) => {
                             const next = draftRef.current.map((row) =>
                               row.uid === item.uid ? { ...row, enabled } : row,
