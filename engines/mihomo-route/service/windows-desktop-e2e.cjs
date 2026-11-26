@@ -214,6 +214,18 @@ async function main() {
           { stdio: 'inherit', timeout: 75000 });
         console.log('PASS: response header rewrite ' + (enabled ? 'enabled' : 'disabled') + ', exact path, bypass and exit verified');
       }
+      fs.unlinkSync(file);
+      const bodyFile = path.join(mitm, 'response-body-rule.json');
+      for (const enabled of [true, false]) {
+        const bodyRule = { version: 2, rules: [{ enabled, host: selected, path: '/demo', search: 'netverge-windows-tun-origin', value: 'netverge-body-rewritten' }] };
+        fs.writeFileSync(bodyFile + '.tmp', JSON.stringify(bodyRule));
+        fs.renameSync(bodyFile + '.tmp', bodyFile);
+        await sleep(1200);
+        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', enabled ? 'body-on' : 'body-off'],
+          { stdio: 'inherit', timeout: 75000 });
+        console.log('PASS: response body rewrite ' + (enabled ? 'enabled' : 'disabled') + ', gzip decode, Content-Length and streaming bounds verified');
+      }
+      fs.unlinkSync(bodyFile);
     }
 
     const editor = ['editor', 'editor-filters', 'editor-inspector', 'editor-rules', 'editor-body'].includes(process.argv[3]);

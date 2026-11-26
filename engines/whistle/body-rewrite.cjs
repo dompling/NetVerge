@@ -108,6 +108,7 @@ function validateBodyRule(rule, validHost) {
 function installBodyRewrite(req, res, matched, onHit) {
   if (!matched.length || req.method === 'HEAD') return;
   const rawWriteHead = res.writeHead;
+  const rawFlushHeaders = res.flushHeaders;
   const rawWrite = res.write;
   const rawEnd = res.end;
   let buffering = false;
@@ -162,6 +163,12 @@ function installBodyRewrite(req, res, matched, onHit) {
     charset = parsedCharset;
     return this;
   };
+
+  if (typeof rawFlushHeaders === 'function') {
+    res.flushHeaders = function() {
+      if (!buffering) return rawFlushHeaders.apply(this, arguments);
+    };
+  }
 
   res.write = function(chunk, enc, cb) {
     if (!buffering) return rawWrite.apply(this, arguments);
