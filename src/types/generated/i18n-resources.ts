@@ -990,12 +990,16 @@ export interface TranslationResources {
         removeHost: string
         rewrite: {
           add: string
+          addAnother: string
           enable: string
           header: string
           hint: string
           hits: string
           host: string
+          moveDown: string
+          moveUp: string
           path: string
+          pathHint: string
           pathTitle: string
           requestHeader: string
           requestTitle: string

@@ -8,6 +8,7 @@ on:
       - 'engines/mihomo-route/service/windows-desktop-e2e.cjs'
       - 'engines/mihomo-route/service/windows-desktop-uia.ps1'
       - 'engines/whistle/route-worker.cjs'
+      - 'engines/whistle/rewrite-rules.cjs'
       - 'engines/whistle/windows-tun-lab.cjs'
       - 'engines/whistle/windows-tun-dns-readiness*.cjs'
       - 'engines/whistle/mitm-lab.cjs'

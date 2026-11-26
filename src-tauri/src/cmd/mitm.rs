@@ -17,16 +17,16 @@ pub async fn set_mitm_service_mode(enabled: bool) -> super::CmdResult<()> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_response_header_rule() -> super::CmdResult<Option<mitm::rewrite::ResponseHeaderRule>> {
+pub fn get_response_header_rules() -> super::CmdResult<Vec<mitm::rewrite::ResponseHeaderRule>> {
     use super::StringifyErr as _;
     mitm::rewrite::read(mitm::rewrite::Direction::Response).stringify_err()
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn save_response_header_rule(expected: Option<mitm::rewrite::ResponseHeaderRule>, rule: Option<mitm::rewrite::ResponseHeaderRule>) -> super::CmdResult<()> {
+pub async fn save_response_header_rules(expected: Vec<mitm::rewrite::ResponseHeaderRule>, rules: Vec<mitm::rewrite::ResponseHeaderRule>) -> super::CmdResult<()> {
     use super::StringifyErr as _;
-    mitm::rewrite::save(mitm::rewrite::Direction::Response, expected, rule).await.stringify_err()
+    mitm::rewrite::save(mitm::rewrite::Direction::Response, expected, rules).await.stringify_err()
 }
 
 #[tauri::command]
@@ -37,16 +37,16 @@ pub fn get_response_header_hits() -> Option<u32> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_request_header_rule() -> super::CmdResult<Option<mitm::rewrite::ResponseHeaderRule>> {
+pub fn get_request_header_rules() -> super::CmdResult<Vec<mitm::rewrite::ResponseHeaderRule>> {
     use super::StringifyErr as _;
     mitm::rewrite::read(mitm::rewrite::Direction::Request).stringify_err()
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn save_request_header_rule(expected: Option<mitm::rewrite::ResponseHeaderRule>, rule: Option<mitm::rewrite::ResponseHeaderRule>) -> super::CmdResult<()> {
+pub async fn save_request_header_rules(expected: Vec<mitm::rewrite::ResponseHeaderRule>, rules: Vec<mitm::rewrite::ResponseHeaderRule>) -> super::CmdResult<()> {
     use super::StringifyErr as _;
-    mitm::rewrite::save(mitm::rewrite::Direction::Request, expected, rule).await.stringify_err()
+    mitm::rewrite::save(mitm::rewrite::Direction::Request, expected, rules).await.stringify_err()
 }
 
 #[tauri::command]
@@ -57,16 +57,16 @@ pub fn get_request_header_hits() -> Option<u32> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_url_path_rule() -> super::CmdResult<Option<mitm::rewrite::UrlPathRule>> {
+pub fn get_url_path_rules() -> super::CmdResult<Vec<mitm::rewrite::UrlPathRule>> {
     use super::StringifyErr as _;
     mitm::rewrite::read_path().stringify_err()
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn save_url_path_rule(expected: Option<mitm::rewrite::UrlPathRule>, rule: Option<mitm::rewrite::UrlPathRule>) -> super::CmdResult<()> {
+pub async fn save_url_path_rules(expected: Vec<mitm::rewrite::UrlPathRule>, rules: Vec<mitm::rewrite::UrlPathRule>) -> super::CmdResult<()> {
     use super::StringifyErr as _;
-    mitm::rewrite::save_path(expected, rule).await.stringify_err()
+    mitm::rewrite::save_path(expected, rules).await.stringify_err()
 }
 
 #[tauri::command]

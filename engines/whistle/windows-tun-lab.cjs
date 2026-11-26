@@ -110,9 +110,14 @@ async function probe(dir, port, mode, rewrite) {
     assert.match(result.response, /^HTTP\/1\.[01] 200 /);
     assert.ok(result.response.includes(body), 'missing controlled origin response');
     if (rewrite) {
-      const expected = rewrite === 'on' && intercepted && requestPath === '/demo' ? '1' : 'origin';
-      const fields = result.response.split('\r\n\r\n')[0].split('\r\n').filter(line => /^x-netverge-test:/i.test(line));
+      const activeDemo = intercepted && requestPath === '/demo';
+      const expected = activeDemo && (rewrite === 'on' || rewrite === 'multi-both') ? '1' :
+        activeDemo && rewrite === 'multi-override' ? 'override' : 'origin';
+      const rawHeaders = result.response.split('\r\n\r\n')[0].split('\r\n');
+      const fields = rawHeaders.filter(line => /^x-netverge-test:/i.test(line));
       assert.deepEqual(fields.map(line => line.slice(line.indexOf(':') + 1).trim()), [expected], host + requestPath);
+      const extras = rawHeaders.filter(line => /^x-netverge-extra:/i.test(line)).map(line => line.slice(line.indexOf(':') + 1).trim());
+      assert.deepEqual(extras, activeDemo && rewrite === 'multi-both' ? ['second'] : [], 'extra response header: ' + host + requestPath);
     }
     if (pathRewrite) {
       const expected = rewrite === 'path-on' && intercepted && requestPath === '/demo' ? '/changed' : requestPath;

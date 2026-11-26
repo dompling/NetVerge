@@ -216,9 +216,10 @@ async function main() {
       }
     }
 
-    const editor = ['editor', 'editor-filters', 'editor-inspector'].includes(process.argv[3]);
-    const hasFilters = ['editor-filters', 'editor-inspector'].includes(process.argv[3]);
-    const hasInspector = process.argv[3] === 'editor-inspector';
+    const editor = ['editor', 'editor-filters', 'editor-inspector', 'editor-rules'].includes(process.argv[3]);
+    const hasFilters = ['editor-filters', 'editor-inspector', 'editor-rules'].includes(process.argv[3]);
+    const hasInspector = ['editor-inspector', 'editor-rules'].includes(process.argv[3]);
+    const hasMultiRules = process.argv[3] === 'editor-rules';
     for (const direction of editor ? ['response', 'request', 'path'] : []) {
       const request = direction === 'request';
       const pathRule = direction === 'path';
@@ -232,7 +233,8 @@ async function main() {
         if (enabled !== rule.enabled) await until('toggle rewrite', () => automation(app, 'ToggleRule') === 'OK');
         rule.enabled = enabled;
         await until('autosaved rewrite (enabled=' + enabled + ')', () => {
-          assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), rule);
+          const expectedSaved = hasMultiRules ? { version: 2, rules: [rule] } : rule;
+          assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), expectedSaved);
           return true;
         });
         await sleep(1200);
@@ -252,6 +254,51 @@ async function main() {
         }
         if (index === 0) await until('visible zero rewrite hits before enabling', () => automation(app, 'RuleHitsZero') === 'OK');
         if (enabled) await until('visible positive rewrite hits after matching TLS request', () => automation(app, 'RuleHits') === 'OK');
+        if (enabled && direction === 'response' && hasMultiRules) {
+          const second = { enabled: true, host: selected, path: '/demo', header: 'X-NetVerge-Extra', value: 'second' };
+          await until('add and fill second response rule', () => automation(app, 'AddSecondRule') === 'OK', 70000);
+          await until('enable second response rule', () => automation(app, 'ToggleSecondRule') === 'OK');
+          await until('autosaved distinct two-rule list', () => {
+            assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { version: 2, rules: [rule, second] });
+            return true;
+          });
+          await sleep(1200);
+          execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', 'multi-both'], { stdio: 'inherit', timeout: 75000 });
+
+          const conflict = { ...second, header: 'X-NetVerge-Test', value: 'override' };
+          await until('edit second rule to conflicting header name', () => automation(app, 'ConflictSecondRule') === 'OK', 70000);
+          await until('autosaved conflicting two-rule list', () => {
+            assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { version: 2, rules: [rule, conflict] });
+            return true;
+          });
+          await sleep(1200);
+          execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', 'multi-override'], { stdio: 'inherit', timeout: 75000 });
+
+          await until('move second rule above first rule', () => automation(app, 'MoveUpSecondRule') === 'OK');
+          await until('autosaved reordered two-rule list', () => {
+            assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { version: 2, rules: [conflict, rule] });
+            return true;
+          });
+          await sleep(1200);
+          execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', 'on'], { stdio: 'inherit', timeout: 75000 });
+
+          await until('independently disable second rule', () => automation(app, 'ToggleSecondRule') === 'OK');
+          await until('autosaved independently disabled second rule', () => {
+            assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { version: 2, rules: [conflict, { ...rule, enabled: false }] });
+            return true;
+          });
+          await sleep(1200);
+          execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', 'multi-override'], { stdio: 'inherit', timeout: 75000 });
+
+          await until('restore original rule to top', () => automation(app, 'MoveUpSecondRule') === 'OK');
+          await until('re-enable restored top rule', () => automation(app, 'ToggleRule') === 'OK');
+          await until('delete second rule', () => automation(app, 'DeleteSecondRule') === 'OK');
+          await until('autosaved restored single-rule list', () => {
+            assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { version: 2, rules: [rule] });
+            return true;
+          });
+          console.log('PASS: multi-rule response list addition, distinct headers, conflict override, reorder, independent toggle and deletion');
+        }
       }
       await until('delete rewrite', () => automation(app, 'DeleteRule') === 'OK');
       await until('removed rewrite file', () => !fs.existsSync(file));

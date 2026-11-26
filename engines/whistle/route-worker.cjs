@@ -4,75 +4,30 @@
 // Whistle private hooks remain pinned; desktop activation is not wired here.
 const path = require('node:path');
 const http = require('node:http');
-const fs = require('node:fs');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { readVerifiedCa } = require('./ca-integrity.cjs');
+const { createRewriteEngine, validHost } = require('./rewrite-rules.cjs');
 if (process.platform !== 'win32') process.umask(0o077);
 const settings = JSON.parse(process.env.NETVERGE_MITM_WORKER_CONFIG || '{}');
 delete process.env.NETVERGE_MITM_WORKER_CONFIG;
 const { dataDir, port, hosts, targetPort, controlSecret } = settings;
 const validSecret = v => typeof v === 'string' && /^[A-Za-z0-9_-]{32}$/.test(v);
-const validHost = v => typeof v === 'string' && v.length <= 253 && v.includes('.') &&
-  !require('node:net').isIP(v) && v.split('.').every(s => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(s));
 if (!path.isAbsolute(dataDir || '') || !Number.isInteger(port) || port < 1024 || port > 65535 ||
     targetPort !== 443 || !Array.isArray(hosts) || !hosts.length || hosts.length > 64 ||
     !hosts.every(validHost) || !validSecret(controlSecret)) {
   throw new Error('Invalid dynamic route configuration');
 }
 const allowed = new Set(hosts.map(host => host + ':443'));
-// This file belongs to the local MITM profile. Remote Clash profiles cannot supply rules.
-const rewriteFile = path.join(dataDir, 'response-header-rule.json');
-let responseRule;
-let rewriteHits = 0;
-function loadResponseRule() {
-  responseRule = undefined;
-  try {
-    const stat = fs.lstatSync(rewriteFile);
-    if (!stat.isFile() || stat.size > 8192) throw new Error();
-    const rule = JSON.parse(fs.readFileSync(rewriteFile, 'utf8'));
-    if (rule.enabled === false) return;
-    if (rule.enabled !== true || !hosts.includes(rule.host) || typeof rule.path !== 'string' ||
-        !/^\/[^?#\s]*$/.test(rule.path) || typeof rule.header !== 'string' ||
-        !/^x-[a-z0-9-]{1,100}$/i.test(rule.header) || typeof rule.value !== 'string' ||
-        rule.value.length > 1024) throw new Error();
-    http.validateHeaderValue(rule.header, rule.value);
-    responseRule = { ...rule, header: rule.header.toLowerCase() };
-  } catch (error) {
-    if (error.code !== 'ENOENT') console.error('Invalid local response header rule; rewrite disabled');
+function strip(req, name) {
+  delete req.headers[name];
+  if (Array.isArray(req.rawHeaders)) {
+    for (let i = req.rawHeaders.length - 2; i >= 0; i -= 2) {
+      if (req.rawHeaders[i].toLowerCase() === name) req.rawHeaders.splice(i, 2);
+    }
   }
 }
-loadResponseRule();
-fs.watchFile(rewriteFile, { interval: 500, persistent: false }, loadResponseRule);
-
-// Request rewriting has its own local rule and session counter. Do not
-// accept routing, identity, framing, authentication or Whistle control
-// headers: this initial implementation permits only X-Custom-* names.
-const requestRewriteFile = path.join(dataDir, 'request-header-rule.json');
-let requestRule;
-let requestRewriteHits = 0;
-function loadRequestRule() {
-  requestRule = undefined;
-  try {
-    const stat = fs.lstatSync(requestRewriteFile);
-    if (!stat.isFile() || stat.size > 8192) throw new Error();
-    const rule = JSON.parse(fs.readFileSync(requestRewriteFile, 'utf8'));
-    if (rule.enabled === false) return;
-    if (rule.enabled !== true || Object.keys(rule).sort().join(',') !== 'enabled,header,host,path,value' ||
-        !hosts.includes(rule.host) || typeof rule.path !== 'string' ||
-        !/^\/[^?#\s]*$/.test(rule.path) || typeof rule.header !== 'string' ||
-        !/^x-custom-[a-z0-9-]{1,91}$/i.test(rule.header) || typeof rule.value !== 'string' ||
-        rule.value.length > 1024) throw new Error();
-    http.validateHeaderValue(rule.header, rule.value);
-    requestRule = { ...rule, header: rule.header.toLowerCase() };
-  } catch (error) {
-    if (error.code !== 'ENOENT') console.error('Invalid local request header rule; rewrite disabled');
-  }
-}
-loadRequestRule();
-fs.watchFile(requestRewriteFile, { interval: 500, persistent: false }, loadRequestRule);
-
-const pathFile = path.join(dataDir, 'url-path-rule.json');
-let pathRule, pathHits = 0, nextRequestId = 1;
+const rewrites = createRewriteEngine({ dataDir, hosts, strip });
+let nextRequestId = 1;
 const recentRequests = [], REDACTED = '[redacted]';
 const isSensitiveHeader = name =>
   /^(?:authorization|proxy-authorization|cookie|set-cookie|www-authenticate|proxy-authenticate)$/i.test(name) ||
@@ -118,77 +73,6 @@ function recordResponse(entry, res, startedAt) {
   recentRequests.unshift(entry);
   recentRequests.splice(20);
   while (Buffer.byteLength(JSON.stringify(recentRequests)) > 12000) recentRequests.pop();
-}
-function validPath(value) {
-  return typeof value === 'string' && /^\/(?!\/)[A-Za-z0-9/._~%-]*$/.test(value) &&
-    !/%(?![0-9a-f]{2})/i.test(value) && new URL(value, 'https://example.test').pathname === value;
-}
-function loadPathRule() {
-  pathRule = undefined;
-  try {
-    const stat = fs.lstatSync(pathFile);
-    if (!stat.isFile() || stat.size > 8192) throw new Error();
-    const rule = JSON.parse(fs.readFileSync(pathFile, 'utf8'));
-    if (rule.enabled === false) return;
-    if (rule.enabled !== true || !hosts.includes(rule.host) || !validPath(rule.path) || !validPath(rule.target)) throw new Error();
-    pathRule = rule;
-  } catch (error) {
-    if (error.code !== 'ENOENT') console.error('Invalid local URL path rule; rewrite disabled');
-  }
-}
-loadPathRule();
-fs.watchFile(pathFile, { interval: 500, persistent: false }, loadPathRule);
-function applyPathRule(req, authority, entry) {
-  if (!pathRule || authority !== pathRule.host + ':443') return;
-  const url = new URL(req.url, 'https://' + authority);
-  if (url.pathname !== pathRule.path) return;
-  const query = req.url.indexOf('?');
-  const target = pathRule.target + (query < 0 ? '' : req.url.slice(query));
-  req.url = req.url.startsWith('/') ? target : url.origin + target;
-  entry.pathRule = true;
-  pathHits = Math.min(pathHits + 1, 0xfffffffe);
-}
-
-function applyRequestRule(req, authority, entry) {
-  const rule = requestRule;
-  if (!rule || authority !== rule.host + ':443' ||
-      new URL(req.url, 'https://' + authority).pathname !== rule.path) return;
-  // The verified request still uses its original admitted connection lease.
-  // Remove every case variant from raw headers so duplicate client values
-  // cannot take precedence when Whistle reconstructs the upstream request.
-  strip(req, rule.header);
-  req.headers[rule.header] = rule.value;
-  if (Array.isArray(req.rawHeaders)) req.rawHeaders.push(rule.header, rule.value);
-  entry.requestRule = true;
-  requestRewriteHits = Math.min(requestRewriteHits + 1, 0xfffffffe);
-}
-
-function applyResponseRule(req, res, authority, entry) {
-  const rule = responseRule;
-  if (!rule || authority !== rule.host + ':443' ||
-      new URL(req.url, 'https://' + authority).pathname !== rule.path) return;
-  const writeHead = res.writeHead;
-  res.writeHead = function(status, reason, fields) {
-    entry.responseRule = true;
-    rewriteHits = Math.min(rewriteHits + 1, 0xfffffffe);
-    const headers = typeof reason === 'string' ? fields : reason;
-    // Explicit writeHead fields take precedence over setHeader, including
-    // differently cased or repeated fields. Preserve every unrelated field.
-    if (Array.isArray(headers)) {
-      const pairs = [];
-      for (let i = 0; i < headers.length; i += 2) {
-        if (headers[i].toLowerCase() !== rule.header) pairs.push(headers[i], headers[i + 1]);
-      }
-      pairs.push(rule.header, rule.value);
-      return typeof reason === 'string' ? writeHead.call(this, status, reason, pairs) : writeHead.call(this, status, pairs);
-    }
-    const updated = { ...headers };
-    for (const name of Object.keys(updated)) {
-      if (name.toLowerCase() === rule.header) delete updated[name];
-    }
-    updated[rule.header] = rule.value;
-    return typeof reason === 'string' ? writeHead.call(this, status, reason, updated) : writeHead.call(this, status, updated);
-  };
 }
 
 const routes = new Map();
@@ -245,7 +129,7 @@ function control(req,res) {
     return true;
   }
   if (req.method === 'GET' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
-    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],rewriteHits,requestRewriteHits,pathHits,recentRequests});
+    const body = JSON.stringify({protocol:1,hosts:[...new Set(hosts)],...rewrites.counts(),recentRequests});
     res.writeHead(200, {Connection:'close','Cache-Control':'no-store','Content-Type':'application/json','Content-Length':Buffer.byteLength(body)});
     res.end(body);
     return true;
@@ -305,14 +189,6 @@ const admissions = new WeakMap();
 const agents = new WeakMap();
 let ready = false;
 
-function strip(req, name) {
-  delete req.headers[name];
-  if (Array.isArray(req.rawHeaders)) {
-    for (let i = req.rawHeaders.length - 2; i >= 0; i -= 2) {
-      if (req.rawHeaders[i].toLowerCase() === name) req.rawHeaders.splice(i, 2);
-    }
-  }
-}
 function sameAuthority(req, authority, url = req.url) {
   try {
     const expected = new URL('https://' + authority);
@@ -373,10 +249,10 @@ server.emit = function(event, ...args) {
       return rawWriteHead.apply(this, arguments);
     };
     res.once('finish', () => recordResponse(entry, res, startedAt));
-    applyRequestRule(req, authority, entry);
+    rewrites.applyRequestRules(req, authority, entry);
     entry.requestHeaders = sanitizeHeaders(req.headers);
-    applyResponseRule(req, res, authority, entry);
-    applyPathRule(req, authority, entry);
+    rewrites.applyResponseRules(req, res, authority, entry);
+    rewrites.applyPathRules(req, authority, entry);
   }
   if (event === 'upgrade') { args[1].destroy(); return true; }
   return emit.call(this, event, ...args);

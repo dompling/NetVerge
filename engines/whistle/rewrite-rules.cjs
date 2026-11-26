@@ -1,0 +1,158 @@
+'use strict';
+
+const fs = require('node:fs');
+const http = require('node:http');
+const net = require('node:net');
+const path = require('node:path');
+
+const MAX_FILE_BYTES = 8192;
+const MAX_RULES = 16;
+
+const validHost = v => typeof v === 'string' && v.length <= 253 && v.includes('.') &&
+  !net.isIP(v) && v.split('.').every(s => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(s));
+
+const validPath = value => typeof value === 'string' && /^\/(?!\/)[A-Za-z0-9/._~%-]*$/.test(value) &&
+  !/%(?![0-9a-f]{2})/i.test(value) && new URL(value, 'https://example.test').pathname === value;
+
+function parseRuleFile(filePath, validateRule) {
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error();
+  const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error();
+  const list = 'version' in raw ? (() => {
+    if (raw.version !== 2 || Object.keys(raw).sort().join(',') !== 'rules,version' ||
+        !Array.isArray(raw.rules) || raw.rules.length > MAX_RULES) throw new Error();
+    return raw.rules;
+  })() : [raw];
+  const active = [];
+  for (const item of list) {
+    const parsed = validateRule(item);
+    if (parsed) active.push(parsed);
+  }
+  return active;
+}
+
+function validateHeaderRule(rule, pattern) {
+  if (!rule || typeof rule !== 'object' || Array.isArray(rule) ||
+      Object.keys(rule).sort().join(',') !== 'enabled,header,host,path,value' ||
+      typeof rule.enabled !== 'boolean' || typeof rule.host !== 'string' ||
+      typeof rule.path !== 'string' || typeof rule.header !== 'string' ||
+      typeof rule.value !== 'string') throw new Error();
+  if (!rule.enabled) return null;
+  if (!validHost(rule.host) || !/^\/[^?#\s]*$/.test(rule.path) ||
+      !pattern.test(rule.header) || rule.value.length > 1024) throw new Error();
+  http.validateHeaderValue(rule.header, rule.value);
+  return { ...rule, header: rule.header.toLowerCase() };
+}
+
+function validatePathRule(rule) {
+  if (!rule || typeof rule !== 'object' || Array.isArray(rule) ||
+      Object.keys(rule).sort().join(',') !== 'enabled,host,path,target' ||
+      typeof rule.enabled !== 'boolean' || typeof rule.host !== 'string' ||
+      typeof rule.path !== 'string' || typeof rule.target !== 'string') throw new Error();
+  if (!rule.enabled) return null;
+  if (!validHost(rule.host) || !validPath(rule.path) || !validPath(rule.target)) throw new Error();
+  return rule;
+}
+
+function createRewriteEngine({ dataDir, hosts, strip }) {
+  const allowedHosts = new Set(hosts);
+  const files = {
+    response: path.join(dataDir, 'response-header-rule.json'),
+    request: path.join(dataDir, 'request-header-rule.json'),
+    path: path.join(dataDir, 'url-path-rule.json'),
+  };
+  let responseRules = [];
+  let requestRules = [];
+  let pathRules = [];
+  let rewriteHits = 0;
+  let requestRewriteHits = 0;
+  let pathHits = 0;
+
+  function watch(filePath, label, validator, assign) {
+    const reload = () => {
+      assign([]);
+      try {
+        assign(parseRuleFile(filePath, validator));
+      } catch (error) {
+        if (error?.code !== 'ENOENT') console.error(`Invalid local ${label} rule; rewrite disabled`);
+      }
+    };
+    reload();
+    fs.watchFile(filePath, { interval: 500, persistent: false }, reload);
+  }
+
+  watch(files.response, 'response header', r => validateHeaderRule(r, /^x-[a-z0-9-]{1,100}$/i), v => { responseRules = v; });
+  watch(files.request, 'request header', r => validateHeaderRule(r, /^x-custom-[a-z0-9-]{1,91}$/i), v => { requestRules = v; });
+  watch(files.path, 'URL path', validatePathRule, v => { pathRules = v; });
+
+  function matchingRules(list, req, authority) {
+    const pathname = new URL(req.url, 'https://' + authority).pathname;
+    return list.filter(r => allowedHosts.has(r.host) && authority === r.host + ':443' && pathname === r.path);
+  }
+
+  function applyRequestRules(req, authority, entry) {
+    const matched = matchingRules(requestRules, req, authority);
+    if (!matched.length) return;
+    // Execute in top-to-bottom list order: distinct headers accumulate while
+    // later rules with the same case-insensitive name override earlier ones.
+    for (const rule of matched) {
+      strip(req, rule.header);
+      req.headers[rule.header] = rule.value;
+      if (Array.isArray(req.rawHeaders)) req.rawHeaders.push(rule.header, rule.value);
+    }
+    entry.requestRule = true;
+    requestRewriteHits = Math.min(requestRewriteHits + 1, 0xfffffffe);
+  }
+
+  function applyResponseRules(req, res, authority, entry) {
+    const matched = matchingRules(responseRules, req, authority);
+    if (!matched.length) return;
+    const writeHead = res.writeHead;
+    res.writeHead = function(status, reason, fields) {
+      entry.responseRule = true;
+      rewriteHits = Math.min(rewriteHits + 1, 0xfffffffe);
+      const headers = typeof reason === 'string' ? fields : reason;
+      if (Array.isArray(headers)) {
+        let pairs = headers.slice();
+        for (const rule of matched) {
+          const next = [];
+          for (let i = 0; i + 1 < pairs.length; i += 2) {
+            if (String(pairs[i]).toLowerCase() !== rule.header) next.push(pairs[i], pairs[i + 1]);
+          }
+          next.push(rule.header, rule.value);
+          pairs = next;
+        }
+        return typeof reason === 'string' ? writeHead.call(this, status, reason, pairs) : writeHead.call(this, status, pairs);
+      }
+      const updated = { ...headers };
+      for (const rule of matched) {
+        for (const name of Object.keys(updated)) {
+          if (name.toLowerCase() === rule.header) delete updated[name];
+        }
+        updated[rule.header] = rule.value;
+      }
+      return typeof reason === 'string' ? writeHead.call(this, status, reason, updated) : writeHead.call(this, status, updated);
+    };
+  }
+
+  function applyPathRules(req, authority, entry) {
+    const url = new URL(req.url, 'https://' + authority);
+    const rule = pathRules.find(r => allowedHosts.has(r.host) && authority === r.host + ':443' && url.pathname === r.path);
+    if (!rule) return;
+    const query = req.url.indexOf('?');
+    const target = rule.target + (query < 0 ? '' : req.url.slice(query));
+    req.url = req.url.startsWith('/') ? target : url.origin + target;
+    entry.pathRule = true;
+    pathHits = Math.min(pathHits + 1, 0xfffffffe);
+  }
+
+  return {
+    applyRequestRules,
+    applyResponseRules,
+    applyPathRules,
+    counts: () => ({ rewriteHits, requestRewriteHits, pathHits }),
+  };
+}
+
+module.exports = { createRewriteEngine, validHost };

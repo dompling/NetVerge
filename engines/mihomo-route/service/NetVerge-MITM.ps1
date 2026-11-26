@@ -42,6 +42,7 @@ switch ($Action) {
             $null = Get-VerifiedFile "service/$coreName"
             $node = Get-VerifiedFile 'worker/node.exe'
             $worker = Get-VerifiedFile 'worker/route-worker.cjs'
+            $null = Get-VerifiedFile 'worker/rewrite-rules.cjs'
             $null = Get-VerifiedFile 'worker/ca-integrity.cjs'
             $configPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Bootstrap)
             if (!(Test-Path -LiteralPath $configPath)) {

@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,8 +131,52 @@ switch ($Action) {
         }
         'OK'
     }
-    'ToggleRule' {
-        $button = Find-Element 'Enable rule' ([Windows.Automation.ControlType]::Button)
+    { $_ -in 'AddSecondRule', 'ConflictSecondRule' } {
+        if (!(Find-Element 'MITM hostname #2' ([Windows.Automation.ControlType]::Edit))) {
+            $add = Find-Element 'Add another rule' ([Windows.Automation.ControlType]::Button)
+            if ($add -and $add.Current.IsEnabled) { $add.GetCurrentPattern($invoke).Invoke() }
+            break
+        }
+        $keys = New-Object -ComObject WScript.Shell
+        if (!$keys.AppActivate($process.Id)) { break }
+        $fields = [ordered]@{'MITM hostname #2'='api.example.test'; 'Exact path #2'='/demo'; 'X- header name #2'='X-NetVerge-Extra'; 'Header value #2'='second'}
+        if ($Action -eq 'ConflictSecondRule') {
+            $fields = [ordered]@{'X- header name #2'='X-NetVerge-Test'; 'Header value #2'='override'}
+        }
+        foreach ($label in $fields.Keys) {
+            $field = Find-Element $label ([Windows.Automation.ControlType]::Edit)
+            if (!$field -or !$field.Current.IsEnabled) { return }
+            $field.SetFocus()
+            Start-Sleep -Milliseconds 150
+            if (!$field.Current.HasKeyboardFocus) { return }
+            if ((Read-EditValue $label) -cne $fields[$label]) {
+                $keys.SendKeys('^a')
+                Start-Sleep -Milliseconds 100
+                $keys.SendKeys($fields[$label])
+                $deadline = [DateTime]::UtcNow.AddSeconds(2)
+                while ((Read-EditValue $label) -cne $fields[$label] -and [DateTime]::UtcNow -lt $deadline) {
+                    Start-Sleep -Milliseconds 100
+                }
+                if ((Read-EditValue $label) -cne $fields[$label]) { return }
+            }
+            $keys.SendKeys('{TAB}')
+            Start-Sleep -Milliseconds 150
+            $field = Find-Element $label ([Windows.Automation.ControlType]::Edit)
+            if (!$field -or $field.Current.HasKeyboardFocus) { return }
+        }
+        foreach ($label in $fields.Keys) {
+            if ((Read-EditValue $label) -cne $fields[$label]) { return }
+        }
+        'OK'
+    }
+    { $_ -in 'ToggleRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule' } {
+        $label = switch ($Action) {
+            'ToggleRule' { 'Enable rule' }
+            'ToggleSecondRule' { 'Enable rule #2' }
+            'MoveUpSecondRule' { 'Move up #2' }
+            'DeleteSecondRule' { 'Delete #2' }
+        }
+        $button = Find-Element $label ([Windows.Automation.ControlType]::Button)
         if (!$button -or !$button.Current.IsEnabled) { break }
         $keys = New-Object -ComObject WScript.Shell
         if (!$keys.AppActivate($process.Id)) { break }

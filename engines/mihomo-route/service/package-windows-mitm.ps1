@@ -28,7 +28,7 @@ try {
     $node = (Get-Command node).Source
     Copy-Item -LiteralPath $node -Destination (Join-Path $worker 'node.exe')
     Copy-Item (Join-Path (Split-Path $node) 'LICENSE') (Join-Path $worker 'NODE-LICENSE')
-    foreach ($name in @('route-worker.cjs', 'ca-integrity.cjs', 'package.json')) {
+    foreach ($name in @('route-worker.cjs', 'rewrite-rules.cjs', 'ca-integrity.cjs', 'package.json')) {
         Copy-Item (Join-Path $SourceRoot "engines/whistle/$name") $worker
     }
     Push-Location $worker
@@ -46,7 +46,7 @@ try {
         'NetVerge-MITM.exe', 'verge-mihomo.exe', 'verge-mihomo-alpha.exe',
         'service/clash-verge-service.exe', 'service/clash-verge-service-install.exe',
         'service/clash-verge-service-uninstall.exe', 'service/netverge-mihomo-service.exe',
-        'worker/node.exe', 'worker/route-worker.cjs', 'worker/ca-integrity.cjs'
+        'worker/node.exe', 'worker/route-worker.cjs', 'worker/rewrite-rules.cjs', 'worker/ca-integrity.cjs'
     )) {
         $digests[$name] = (Get-FileHash -LiteralPath (Join-Path $staging $name) -Algorithm SHA256).Hash
     }

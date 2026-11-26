@@ -43,17 +43,25 @@ export const commands = {
   getMitmStatus: () => __TAURI_INVOKE<MitmStatus_Serialize>('get_mitm_status'),
   /**  Save the guarded service preference for the next complete app start. */
   setMitmServiceMode: (enabled: boolean) => __TAURI_INVOKE<null>('set_mitm_service_mode', { enabled }),
-  getResponseHeaderRule: () => __TAURI_INVOKE<ResponseHeaderRule | null>('get_response_header_rule'),
-  saveResponseHeaderRule: (expected: ResponseHeaderRule | null, rule: ResponseHeaderRule | null) =>
-    __TAURI_INVOKE<null>('save_response_header_rule', { expected, rule }),
+  getResponseHeaderRules: () =>
+    __TAURI_INVOKE<ResponseHeaderRule[]>('get_response_header_rules'),
+  saveResponseHeaderRules: (
+    expected: ResponseHeaderRule[],
+    rules: ResponseHeaderRule[],
+  ) =>
+    __TAURI_INVOKE<null>('save_response_header_rules', { expected, rules }),
   getResponseHeaderHits: () => __TAURI_INVOKE<number | null>('get_response_header_hits'),
-  getRequestHeaderRule: () => __TAURI_INVOKE<ResponseHeaderRule | null>('get_request_header_rule'),
-  saveRequestHeaderRule: (expected: ResponseHeaderRule | null, rule: ResponseHeaderRule | null) =>
-    __TAURI_INVOKE<null>('save_request_header_rule', { expected, rule }),
+  getRequestHeaderRules: () =>
+    __TAURI_INVOKE<ResponseHeaderRule[]>('get_request_header_rules'),
+  saveRequestHeaderRules: (
+    expected: ResponseHeaderRule[],
+    rules: ResponseHeaderRule[],
+  ) =>
+    __TAURI_INVOKE<null>('save_request_header_rules', { expected, rules }),
   getRequestHeaderHits: () => __TAURI_INVOKE<number | null>('get_request_header_hits'),
-  getUrlPathRule: () => __TAURI_INVOKE<UrlPathRule | null>('get_url_path_rule'),
-  saveUrlPathRule: (expected: UrlPathRule | null, rule: UrlPathRule | null) =>
-    __TAURI_INVOKE<null>('save_url_path_rule', { expected, rule }),
+  getUrlPathRules: () => __TAURI_INVOKE<UrlPathRule[]>('get_url_path_rules'),
+  saveUrlPathRules: (expected: UrlPathRule[], rules: UrlPathRule[]) =>
+    __TAURI_INVOKE<null>('save_url_path_rules', { expected, rules }),
   getUrlPathHits: () => __TAURI_INVOKE<number | null>('get_url_path_hits'),
   getMitmRecentRequests: () => __TAURI_INVOKE<RecentRequest[]>('get_mitm_recent_requests'),
   clearMitmRecentRequests: () =>
