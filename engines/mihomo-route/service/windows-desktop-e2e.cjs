@@ -225,6 +225,19 @@ async function main() {
           { stdio: 'inherit', timeout: 75000 });
         console.log('PASS: HTTP method ' + method + ' condition against original GET, TLS and original exit verified');
       }
+      for (const [label, regex, expected] of [
+        ['matching RE2-subset URL regex', '^https://api\\.example\\.test/de[m]o$', 'on'],
+        ['non-matching RE2-subset URL regex', '^https://api\\.example\\.test/v[0-9]+/demo$', 'off'],
+        ['unsupported lookahead regex rejected', '^https://api\\.example\\.test/(?=demo)demo$', 'off'],
+      ]) {
+        const rule = { enabled: true, host: selected, path: '', regex, header: 'X-NetVerge-Test', value: '1' };
+        fs.writeFileSync(file + '.tmp', JSON.stringify({ version: 2, rules: [rule] }));
+        fs.renameSync(file + '.tmp', file);
+        await sleep(1200);
+        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', expected],
+          { stdio: 'inherit', timeout: 75000 });
+        console.log('PASS: ' + label + ' against original HTTPS URL, bypass and original exit verified');
+      }
       fs.unlinkSync(file);
       const bodyFile = path.join(mitm, 'response-body-rule.json');
       for (const enabled of [true, false]) {

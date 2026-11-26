@@ -6,6 +6,7 @@ on:
       - 'engines/mihomo-route/**'
       - 'src/components/mitm/recent-requests.tsx'
       - 'src/components/mitm/response-rule-editor.tsx'
+      - 'src/components/mitm/rewrite-rule-model.ts'
       - 'src-tauri/src/core/mitm/rewrite.rs'
       - 'src-tauri/src/core/mitm/service_generation.rs'
       - 'src-tauri/src/core/mitm/service_pipe.rs'

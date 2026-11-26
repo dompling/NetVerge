@@ -22,7 +22,16 @@ DELETE, OPTIONS. Unknown values fail validation; no widening to an unrestricted 
 Validate via Rust round trip, JavaScript planner/file tests and native Windows TLS
 GET positive/negative method-condition probes. No regex engine in this increment.
 
-Next 8.1b increments: typed rule model with stable IDs, explicit source and revision, request/response
+8.1c: add optional bounded linear-time URL regex (`regex`) across the four existing
+rule types and shared editor using an explicit RE2-compatible ASCII Thompson NFA subset
+(1..=256 printable ASCII bytes, <= 128 NFA states, group nesting <= 8, counted repeats
+<= 16, matched original `https://<host><path>[?<query>]` URL <= 2048 bytes). Reject
+backreferences, lookarounds, inline flags, word boundaries, empty groups/branches,
+nullable quantifiers and chained quantifiers in both Rust and the Whistle worker.
+Keep exact `host` and `allowedHosts` admission unchanged; allow `path: ""` only when
+`regex` is present, and AND `path`, `method`, and `regex` against the original URL.
+
+Next 8.1 increments: typed rule model with stable IDs, explicit source and revision, request/response
 match phases, bounded URL patterns, method conditions and per-rule diagnostics. Keep the
 outer MITM admission allowlist exact until a separate reviewed scope change. Prefer a
 linear-time regex subset (evaluate RE2 compatibility); never run unbounded arbitrary JS

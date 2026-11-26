@@ -16,134 +16,21 @@ import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
 
-import type {
-  ResponseBodyRule,
-  ResponseHeaderRule,
-  UrlPathRule,
-} from '@/services/bindings'
+import type { ResponseHeaderRule } from '@/services/bindings'
+
 import {
-  getRequestHeaderHits,
-  getRequestHeaderRules,
-  getResponseBodyHits,
-  getResponseBodyRules,
-  getResponseHeaderHits,
-  getResponseHeaderRules,
-  getUrlPathHits,
-  getUrlPathRules,
-  saveRequestHeaderRules,
-  saveResponseBodyRules,
-  saveResponseHeaderRules,
-  saveUrlPathRules,
-} from '@/services/cmds'
-
-const MAX_RULES = 16
-
-type DraftRule = ResponseHeaderRule & { uid: string }
-
-const blankRule = (): DraftRule => ({
-  uid: nanoid(),
-  enabled: false,
-  host: '',
-  path: '/',
-  header: '',
-  value: '',
-})
-
-const stripUid = ({ uid: _uid, ...rule }: DraftRule): ResponseHeaderRule => rule
-
-// Tauri command failures are structured objects, not necessarily Error instances.
-function errorDetail(error: unknown): string {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'detail' in error &&
-    typeof error.detail === 'string'
-  ) {
-    return error.detail
-  }
-  return error instanceof Error ? error.message : String(error)
-}
-
-type Direction = 'request' | 'response' | 'path' | 'body'
-
-const isBlank = (rule: ResponseHeaderRule) =>
-  !rule.enabled &&
-  !rule.host &&
-  !rule.method &&
-  rule.path === '/' &&
-  !rule.header &&
-  !rule.value
-
-const isComplete = (rule: ResponseHeaderRule, direction: Direction) =>
-  Boolean(
-    rule.host && rule.path && (direction === 'path' ? rule.value : rule.header),
-  )
-
-// Adapt the path-only form to the shared autosave editor. Only the native
-// path schema crosses IPC; header rules retain their existing format.
-const toPath = (rules: ResponseHeaderRule[]): UrlPathRule[] =>
-  rules.map((rule) => ({
-    enabled: rule.enabled,
-    host: rule.host,
-    path: rule.path,
-    method: rule.method,
-    target: rule.value,
-  }))
-
-const toBody = (rules: ResponseHeaderRule[]): ResponseBodyRule[] =>
-  rules.map((rule) => ({
-    enabled: rule.enabled,
-    host: rule.host,
-    path: rule.path,
-    method: rule.method,
-    search: rule.header,
-    value: rule.value,
-  }))
-
-const editors = {
-  body: {
-    read: async (): Promise<ResponseHeaderRule[]> => {
-      const rules = await getResponseBodyRules()
-      return rules.map((rule) => ({
-        enabled: rule.enabled,
-        host: rule.host,
-        path: rule.path,
-        method: rule.method,
-        header: rule.search,
-        value: rule.value,
-      }))
-    },
-    save: (expected: ResponseHeaderRule[], rules: ResponseHeaderRule[]) =>
-      saveResponseBodyRules(toBody(expected), toBody(rules)),
-    hits: getResponseBodyHits,
-  },
-  path: {
-    read: async (): Promise<ResponseHeaderRule[]> => {
-      const rules = await getUrlPathRules()
-      return rules.map((rule) => ({
-        enabled: rule.enabled,
-        host: rule.host,
-        path: rule.path,
-        method: rule.method,
-        value: rule.target,
-        header: '',
-      }))
-    },
-    save: (expected: ResponseHeaderRule[], rules: ResponseHeaderRule[]) =>
-      saveUrlPathRules(toPath(expected), toPath(rules)),
-    hits: getUrlPathHits,
-  },
-  request: {
-    read: getRequestHeaderRules,
-    save: saveRequestHeaderRules,
-    hits: getRequestHeaderHits,
-  },
-  response: {
-    read: getResponseHeaderRules,
-    save: saveResponseHeaderRules,
-    hits: getResponseHeaderHits,
-  },
-}
+  blankRule,
+  DIRECTION_TABS,
+  type Direction,
+  type DraftRule,
+  editors,
+  errorDetail,
+  HTTP_METHODS,
+  isBlank,
+  isComplete,
+  MAX_RULES,
+  stripUid,
+} from './rewrite-rule-model'
 
 export function HeaderRuleEditor() {
   const { t } = useTranslation()
@@ -158,20 +45,13 @@ export function HeaderRuleEditor() {
           if (next) setDirection(next)
         }}
       >
-        <ToggleButton value="response">
-          {t('settings.mitm.rewrite.title')}
-        </ToggleButton>
-        <ToggleButton value="request">
-          {t('settings.mitm.rewrite.requestTitle')}
-        </ToggleButton>
-        <ToggleButton value="path">
-          {t('settings.mitm.rewrite.pathTitle')}
-        </ToggleButton>
-        <ToggleButton value="body">
-          {t('settings.mitm.rewrite.bodyTitle')}
-        </ToggleButton>
+        {DIRECTION_TABS.map(([value, key]) => (
+          <ToggleButton key={value} value={value}>
+            {t(key)}
+          </ToggleButton>
+        ))}
       </ToggleButtonGroup>
-      {(['response', 'request', 'path', 'body'] as const).map((kind) => (
+      {DIRECTION_TABS.map(([kind]) => (
         <div key={kind} hidden={direction !== kind}>
           <Editor direction={kind} visible={direction === kind} />
         </div>
@@ -378,28 +258,58 @@ function RuleListForm({
                         )
                       })}
                   </Stack>
-                  <TextField
-                    select
-                    size="small"
-                    label={`HTTP Method${suffix}`}
-                    value={item.method ?? ''}
-                    sx={{ alignSelf: 'flex-start', minWidth: 140 }}
-                    slotProps={{ select: { native: true }, htmlInput: { 'aria-label': `HTTP Method${suffix}` } }}
-                    onChange={(event) => {
-                      const next = draftRef.current.map((row) =>
-                        row.uid === item.uid
-                          ? { ...row, method: event.target.value || undefined }
-                          : row,
-                      )
-                      updateDraft(next)
-                      commitRows(next)
-                    }}
-                  >
-                    <option value="">*</option>
-                    {['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].map((method) => (
-                      <option key={method} value={method}>{method}</option>
-                    ))}
-                  </TextField>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                    <TextField
+                      select
+                      size="small"
+                      label={`HTTP Method${suffix}`}
+                      value={item.method ?? ''}
+                      sx={{ minWidth: 140 }}
+                      slotProps={{
+                        select: { native: true },
+                        htmlInput: { 'aria-label': `HTTP Method${suffix}` },
+                      }}
+                      onChange={(event) => {
+                        const next = draftRef.current.map((row) =>
+                          row.uid === item.uid
+                            ? { ...row, method: event.target.value || undefined }
+                            : row,
+                        )
+                        updateDraft(next)
+                        commitRows(next)
+                      }}
+                    >
+                      <option value="">*</option>
+                      {HTTP_METHODS.map((method) => (
+                        <option key={method} value={method}>
+                          {method}
+                        </option>
+                      ))}
+                    </TextField>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label={`URL Regex${suffix}`}
+                      slotProps={{
+                        htmlInput: { 'aria-label': `URL Regex${suffix}` },
+                      }}
+                      value={item.regex ?? ''}
+                      onChange={(event) => {
+                        const regex = event.target.value || undefined
+                        updateDraft(
+                          draftRef.current.map((row) =>
+                            row.uid === item.uid ? { ...row, regex } : row,
+                          ),
+                        )
+                      }}
+                      onBlur={commit}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.currentTarget.querySelector('input')?.blur()
+                        }
+                      }}
+                    />
+                  </Stack>
                   <Stack
                     direction="row"
                     spacing={1}

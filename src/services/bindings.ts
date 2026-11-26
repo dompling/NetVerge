@@ -705,17 +705,26 @@ export type ResponseBodyRule = {
   host: string
   path: string
   method?: string | null
+  regex?: string | null
   search: string
   value: string
 }
 
-export type UrlPathRule = { enabled: boolean; host: string; path: string; method?: string | null; target: string }
+export type UrlPathRule = {
+  enabled: boolean
+  host: string
+  path: string
+  method?: string | null
+  regex?: string | null
+  target: string
+}
 
 export type ResponseHeaderRule = {
   enabled: boolean
   host: string
   path: string
   method?: string | null
+  regex?: string | null
   header: string
   value: string
 }
