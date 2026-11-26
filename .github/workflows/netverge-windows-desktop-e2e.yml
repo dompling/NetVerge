@@ -15,12 +15,12 @@ on:
     inputs:
       package_run:
         description: Successful Windows test-package workflow run ID
-        default: '45634146475'
+        default: '45735002898'
         required: true
         type: string
       package_name:
         description: Windows x64 ZIP artifact name
-        default: NetVerge-MITM-Test-Windows-x64-a6b7217.zip
+        default: NetVerge-MITM-Test-Windows-x64-2c12dfd.zip
         required: true
         type: string
 
@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [packaged, rewrite]
+        scenario: [packaged, rewrite, editor]
     runs-on: windows-latest
     timeout-minutes: 12
     steps:
@@ -46,8 +46,8 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.package_run || '45634146475' }}
-          name: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-a6b7217.zip' }}
+          run-id: ${{ inputs.package_run || '45735002898' }}
+          name: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-2c12dfd.zip' }}
           path: desktop-artifact
       - name: Verify bounded DNS readiness behavior
         run: node --test engines/whistle/windows-tun-dns-readiness.test.cjs
@@ -57,7 +57,7 @@ jobs:
       - name: Click the MITM service switch and verify native TLS after app restart
         shell: pwsh
         env:
-          TEST_PACKAGE_NAME: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-a6b7217.zip' }}
+          TEST_PACKAGE_NAME: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-2c12dfd.zip' }}
         run: |
           $package = (Resolve-Path -LiteralPath 'desktop-artifact').Path
           $archive = Join-Path $package $env:TEST_PACKAGE_NAME

@@ -168,7 +168,10 @@ switch ($Action) {
         if ($row) { 'OK'; break }
         $button = Find-Element 'Recent requests' ([Windows.Automation.ControlType]::Button)
         if ($button -and !(Find-Element ("GET api.example.test/demo " + [char]0xb7 + " 200"))) {
-            $button.GetCurrentPattern($invoke).Invoke()
+            $keys = New-Object -ComObject WScript.Shell
+            if (!$keys.AppActivate($process.Id)) { break }
+            $button.SetFocus()
+            if ($button.Current.HasKeyboardFocus) { $keys.SendKeys(' '); Start-Sleep -Milliseconds 500 }
         }
     }
     'Healthy' {
