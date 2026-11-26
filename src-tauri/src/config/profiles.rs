@@ -62,7 +62,7 @@ pub struct IProfilePreview<'a> {
 }
 
 pub(crate) struct ProfileDeletePlan {
-    files: Vec<(Option<String>, String)>,
+    files: Vec<String>,
     workspace_uids: Vec<String>,
 }
 
@@ -71,8 +71,8 @@ impl ProfileDeletePlan {
         let Ok(dir) = dirs::app_profiles_dir() else {
             return;
         };
-        for (uid, file) in self.files {
-            let path = match super::workspace::resolve_profile_file_in_dir(&dir, uid.as_deref(), file.as_str()) {
+        for file in self.files {
+            let path = match super::workspace::resolve_profile_file_in_dir(&dir, None, file.as_str()) {
                 Ok(path) => path,
                 Err(error) => {
                     logging!(warn, Type::Config, "Skipping invalid deleted profile path {file}: {error:#}");
@@ -408,12 +408,12 @@ impl IProfiles {
         }
 
         if let Some(file) = Self::take_item_file_by_uid(&mut items, Some(uid)) {
-            files.push((Some(uid.into()), file));
+            files.push(file);
         }
 
         for delete_uid in delete_uids {
             if let Some(file) = Self::take_item_file_by_uid(&mut items, delete_uid.as_deref()) {
-                files.push((delete_uid, file));
+                files.push(file);
             }
         }
 
@@ -1292,6 +1292,7 @@ mod tests {
         assert!(should_update);
         assert_eq!(profiles.current.as_deref(), Some("b"));
         assert_eq!(plan.files, vec![String::from("a.yaml"), String::from("owned.yaml")]);
+        assert_eq!(plan.workspace_uids, vec![String::from("a")]);
         assert!(profiles.get_item("owned").is_err());
         Ok(())
     }
