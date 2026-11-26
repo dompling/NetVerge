@@ -86,7 +86,8 @@ async function serve(dir) {
 
 async function fakeAddress(port, host) {
   // Local link health can be published before the new DNS listener binds.
-  // Give only this lookup a bounded readiness window (~18 seconds worst case).
+  // Allow retries for 15 seconds of elapsed time, plus at most the final
+  // resolver attempt (configured below); immediate refusals cannot exhaust it early.
   // Each attempt uses a fresh resolver rather than a previous core's socket.
   const [ip] = await resolveReady(name => {
     const resolver = new Resolver({ timeout: 900, tries: 1 });
