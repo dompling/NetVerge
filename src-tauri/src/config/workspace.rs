@@ -1,5 +1,5 @@
 use super::IProfiles;
-use anyhow::{Context as _, Result, bail, ensure};
+use anyhow::{Context as _, Result, ensure};
 use parking_lot::Mutex;
 use std::{
     collections::HashSet,
