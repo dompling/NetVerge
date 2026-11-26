@@ -57,6 +57,37 @@ function validatePathRule(rule) {
   return rule;
 }
 
+// A request gets one ordered match plan before any rewrite mutates its URL.
+// Match only the already admitted HTTPS authority and the original URL path.
+// This is a pure planning boundary, not a replacement for route admission.
+function planRequest(allowedHosts, lists, rawTarget, authority) {
+  const empty = { request: [], response: [], body: [], pathTarget: null };
+  if (typeof authority !== 'string' || !authority.endsWith(':443') ||
+      typeof rawTarget !== 'string') return empty;
+  const host = authority.slice(0, -4);
+  if (!validHost(host) || !allowedHosts.has(host)) return empty;
+  let url;
+  try {
+    const origin = 'https://' + host;
+    url = new URL(rawTarget, origin);
+    if (url.origin !== origin || url.username || url.password || url.hash) return empty;
+  } catch { return empty; }
+  const matches = rule => rule.host === host && rule.path === url.pathname;
+  const pathRule = lists.path.find(matches);
+  // Preserve the original raw query bytes, including an empty query.
+  const query = rawTarget.indexOf('?');
+  const pathTarget = pathRule
+    ? (rawTarget.startsWith('/') ? '' : url.origin) + pathRule.target +
+      (query < 0 ? '' : rawTarget.slice(query))
+    : null;
+  return {
+    request: lists.request.filter(matches),
+    response: lists.response.filter(matches),
+    body: lists.body.filter(matches),
+    pathTarget,
+  };
+}
+
 function createRewriteEngine({ dataDir, hosts, strip }) {
   const allowedHosts = new Set(hosts);
   const files = {
@@ -92,13 +123,13 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
   watch(files.path, 'URL path', validatePathRule, v => { pathRules = v; });
   watch(files.body, 'response body', r => validateBodyRule(r, validHost), v => { bodyRules = v; }, MAX_BODY_RULE_FILE_BYTES);
 
-  function matchingRules(list, req, authority) {
-    const pathname = new URL(req.url, 'https://' + authority).pathname;
-    return list.filter(r => allowedHosts.has(r.host) && authority === r.host + ':443' && pathname === r.path);
+  function plan(req, authority) {
+    return planRequest(allowedHosts, {
+      request: requestRules, response: responseRules, body: bodyRules, path: pathRules,
+    }, req.url, authority);
   }
 
-  function applyRequestRules(req, authority, entry) {
-    const matched = matchingRules(requestRules, req, authority);
+  function applyRequestRules(req, matched, entry) {
     if (!matched.length) return;
     // Execute in top-to-bottom list order: distinct headers accumulate while
     // later rules with the same case-insensitive name override earlier ones.
@@ -111,8 +142,7 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
     requestRewriteHits = Math.min(requestRewriteHits + 1, 0xfffffffe);
   }
 
-  function applyResponseRules(req, res, authority, entry) {
-    const matched = matchingRules(responseRules, req, authority);
+  function applyResponseRules(res, matched, entry) {
     if (!matched.length) return;
     const writeHead = res.writeHead;
     res.writeHead = function(status, reason, fields) {
@@ -142,19 +172,14 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
     };
   }
 
-  function applyPathRules(req, authority, entry) {
-    const url = new URL(req.url, 'https://' + authority);
-    const rule = pathRules.find(r => allowedHosts.has(r.host) && authority === r.host + ':443' && url.pathname === r.path);
-    if (!rule) return;
-    const query = req.url.indexOf('?');
-    const target = rule.target + (query < 0 ? '' : req.url.slice(query));
-    req.url = req.url.startsWith('/') ? target : url.origin + target;
+  function applyPathRules(req, target, entry) {
+    if (target === null) return;
+    req.url = target;
     entry.pathRule = true;
     pathHits = Math.min(pathHits + 1, 0xfffffffe);
   }
 
-  function applyBodyRules(req, res, authority, entry) {
-    const matched = matchingRules(bodyRules, req, authority);
+  function applyBodyRules(req, res, matched, entry) {
     installBodyRewrite(req, res, matched, () => {
       entry.bodyRule = true;
       bodyHits = Math.min(bodyHits + 1, 0xfffffffe);
@@ -162,6 +187,7 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
   }
 
   return {
+    plan,
     applyRequestRules,
     applyResponseRules,
     applyPathRules,
@@ -170,4 +196,4 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
   };
 }
 
-module.exports = { createRewriteEngine, validHost };
+module.exports = { createRewriteEngine, validHost, planRequest };

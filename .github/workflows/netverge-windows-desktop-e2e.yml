@@ -9,6 +9,7 @@ on:
       - 'engines/mihomo-route/service/windows-desktop-uia.ps1'
       - 'engines/whistle/route-worker.cjs'
       - 'engines/whistle/rewrite-rules.cjs'
+      - 'engines/whistle/rewrite-plan.test.cjs'
       - 'engines/whistle/body-rewrite.cjs'
       - 'engines/whistle/windows-tun-lab.cjs'
       - 'engines/whistle/windows-tun-dns-readiness*.cjs'
@@ -52,7 +53,7 @@ jobs:
           name: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-2c12dfd.zip' }}
           path: desktop-artifact
       - name: Verify bounded DNS readiness behavior
-        run: node --test engines/whistle/windows-tun-dns-readiness.test.cjs
+        run: node --test engines/whistle/windows-tun-dns-readiness.test.cjs engines/whistle/rewrite-plan.test.cjs
       - name: Install TLS fixture dependencies
         working-directory: engines/whistle
         run: npm install --ignore-scripts --no-audit --no-fund

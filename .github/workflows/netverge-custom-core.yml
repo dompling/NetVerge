@@ -16,6 +16,7 @@ on:
       - 'engines/whistle/windows-tun-lab.cjs'
       - 'engines/whistle/route-worker.cjs'
       - 'engines/whistle/rewrite-rules.cjs'
+      - 'engines/whistle/rewrite-plan.test.cjs'
       - 'engines/whistle/body-rewrite.cjs'
       - 'engines/whistle/body-rewrite-flush.test.cjs'
       - 'engines/whistle/ca-integrity.cjs'
@@ -60,7 +61,7 @@ jobs:
           node-version: '22.23.3'
       - name: Verify streamed response body rewriting
         working-directory: netverge
-        run: node --test engines/whistle/body-rewrite-flush.test.cjs
+        run: node --test engines/whistle/body-rewrite-flush.test.cjs engines/whistle/rewrite-plan.test.cjs
       - name: Install pinned core source
         shell: bash
         run: |

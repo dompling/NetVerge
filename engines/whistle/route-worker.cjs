@@ -249,11 +249,13 @@ server.emit = function(event, ...args) {
       return rawWriteHead.apply(this, arguments);
     };
     res.once('finish', () => recordResponse(entry, res, startedAt));
-    rewrites.applyRequestRules(req, authority, entry);
+    // Freeze the original matching context before any action changes the URL.
+    const plan = rewrites.plan(req, authority);
+    rewrites.applyRequestRules(req, plan.request, entry);
     entry.requestHeaders = sanitizeHeaders(req.headers);
-    rewrites.applyBodyRules(req, res, authority, entry);
-    rewrites.applyResponseRules(req, res, authority, entry);
-    rewrites.applyPathRules(req, authority, entry);
+    rewrites.applyBodyRules(req, res, plan.body, entry);
+    rewrites.applyResponseRules(res, plan.response, entry);
+    rewrites.applyPathRules(req, plan.pathTarget, entry);
   }
   if (event === 'upgrade') { args[1].destroy(); return true; }
   return emit.call(this, event, ...args);
