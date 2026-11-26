@@ -407,7 +407,14 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
                 }
             }
             "response-body" => {
-                ensure!(item.action.len() == 2, "response-body action requires `search` and `replace`");
+                let match_whole = item.action.get("match-whole")
+                    .map(|value| value.as_bool().ok_or_else(|| anyhow::anyhow!("match-whole must be a boolean")))
+                    .transpose()?;
+                let expected_keys = if match_whole.is_some() { 3 } else { 2 };
+                ensure!(
+                    item.action.len() == expected_keys,
+                    "response-body action requires search and replace and supports optional match-whole"
+                );
                 let search = item
                     .action
                     .get(serde_yaml_ng::Value::String("search".into()))
@@ -431,6 +438,7 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
                     regex,
                     search: search.to_owned(),
                     value: replace.to_owned(),
+                    match_whole: match_whole.filter(|whole| *whole),
                 });
             }
             other => bail!("unsupported rewrite type \"{other}\""),
@@ -456,6 +464,37 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_body_supports_optional_boolean_whole_match() -> Result<()> {
+        let manifest = r#"
+kind: netverge-module
+schema: 1
+id: com.example.whole-body
+name: Whole response replacement
+version: "1"
+rewrite:
+  - id: body
+    type: response-body
+    match:
+      host: api.example.test
+      path: /v1
+    action:
+      search: "original"
+      replace: "new"
+      match-whole: true
+"#;
+        let (_, compiled) = parse_and_compile_manifest("module.yaml", manifest)
+            .map_err(|diag| anyhow::anyhow!(diag.message))?;
+        assert_eq!(compiled.body[0].match_whole, Some(true));
+        let legacy = manifest.replace("      match-whole: true\n", "");
+        let (_, compiled) = parse_and_compile_manifest("module.yaml", &legacy)
+            .map_err(|diag| anyhow::anyhow!(diag.message))?;
+        assert_eq!(compiled.body[0].match_whole, None);
+        let invalid = manifest.replace("match-whole: true", "match-whole: 'true'");
+        assert!(parse_and_compile_manifest("module.yaml", &invalid).is_err());
+        Ok(())
+    }
 
     #[test]
     fn url_query_removal_compiles_and_checks_names() -> Result<()> {

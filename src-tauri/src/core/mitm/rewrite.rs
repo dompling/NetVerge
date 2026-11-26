@@ -241,6 +241,9 @@ pub struct ResponseBodyRule {
     pub regex: Option<String>,
     pub search: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub match_whole: Option<bool>,
 }
 
 impl RuleIdentity for ResponseBodyRule {
@@ -255,6 +258,7 @@ pub async fn save_body(expected: Vec<ResponseBodyRule>, rules: Vec<ResponseBodyR
     ensure!(rules.len() <= MAX_RULES, "At most 16 rewrite rules are supported per type");
     validate_identities(&rules)?;
     for rule in &rules {
+        ensure!(rule.match_whole.is_none(), "Whole-body matching is available only in approved modules");
         validate_method(rule.method.as_deref())?;
         validate_regex(rule.regex.as_deref())?;
         ensure!(super::valid_host(&rule.host), "Invalid MITM hostname");

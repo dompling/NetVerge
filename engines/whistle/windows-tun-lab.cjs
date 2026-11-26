@@ -49,7 +49,8 @@ async function serve(dir) {
       return;
     }
     if (req.headers['x-netverge-body-probe'] === 'gzip') {
-      const gz = zlib.gzipSync(Buffer.from(JSON.stringify({ marker: body, path: pathname }), 'utf8'));
+      const text = JSON.stringify({ marker: body, path: pathname });
+      const gz = zlib.gzipSync(rawQuery === 'variant=1' ? text + '\n' : text);
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Content-Encoding': 'gzip',
@@ -139,11 +140,13 @@ async function probe(dir, port, mode, rewrite) {
   const log = path.join(dir, 'exit-observations');
   const originCA = fs.readFileSync(path.join(dir, 'origin-ca.pem'));
   const originLeaf = new X509Certificate(fs.readFileSync(path.join(dir, 'origin-leaf.pem')));
-  const bodyRewrite = rewrite === 'body-on' || rewrite === 'body-off';
+  const wholeBody = rewrite === 'body-whole';
+  const bodyRewrite = wholeBody || rewrite === 'body-on' || rewrite === 'body-off';
   const cases = bodyRewrite
     ? [[selected, '/demo'], [selected, '/demo/other'], [selected, '/demo?oversize=1'], [selected, '/demo?binary=1'], [bypass, '/demo']]
     : rewrite ? [[selected, '/demo'], [selected, '/demo/other'], [bypass, '/demo']]
     : hosts.map(host => [host, '/netverge-proof']);
+  if (wholeBody) cases.push([selected, '/demo?variant=1']);
   for (const [host, requestPath] of cases) {
     const ip = await fakeAddress(port, host);
     const before = fs.readFileSync(log, 'utf8');
@@ -165,7 +168,7 @@ async function probe(dir, port, mode, rewrite) {
     const keptQuery = '?id=7&id=8&raw=a%2Fb+%2f&Debug=keep';
     const query = queryProbe ? keptQuery + '&debug=1&%64ebug=2&debug' :
       pathRewrite ? '?id=7&id=8&raw=a%2Fb' : '';
-    const extraHeaders = bodyRewrite && !requestPath.includes('?') ? 'X-NetVerge-Body-Probe: gzip\r\n' : '';
+    const extraHeaders = bodyRewrite && (!requestPath.includes('?') || requestPath === '/demo?variant=1') ? 'X-NetVerge-Body-Probe: gzip\r\n' : '';
     const result = await dialTun(ip, host, 443, ca, 15000, requestPath + query, requestRewrite, extraHeaders);
     assert.match(result.response, /^HTTP\/1\.[01] 200 /);
     if (bodyRewrite) {
@@ -175,14 +178,18 @@ async function probe(dir, port, mode, rewrite) {
         assert.equal(decoded.body.subarray(0, body.length + 1).toString('utf8'), body + ':', 'oversized stream must bypass body rewrite');
       } else if (requestPath === '/demo?binary=1') {
         assert.equal(decoded.body.toString('utf8'), body, 'binary MIME must bypass body rewrite');
-      } else if (rewrite === 'body-on' && intercepted && requestPath === '/demo') {
+      } else if ((wholeBody || rewrite === 'body-on') && activeDemo) {
         assert.ok(!/^content-encoding:/im.test(decoded.head), 'rewritten body must clear Content-Encoding');
         assert.ok(!/^etag:/im.test(decoded.head), 'rewritten body must clear stale ETag');
         assert.ok(decoded.body.length > 0, 'rewritten body was empty: ' + JSON.stringify(decoded.head));
         assert.deepEqual(JSON.parse(decoded.body.toString('utf8')), { marker: 'netverge-body-rewritten', path: '/demo' });
       } else {
         assert.match(decoded.head, /^content-encoding:\s*gzip\s*$/im, 'untouched gzip response must retain encoding');
-        assert.equal(JSON.parse(zlib.gunzipSync(decoded.body).toString('utf8')).marker, body);
+        const pathname = requestPath.split('?')[0];
+        const expectedText = JSON.stringify({ marker: body, path: pathname });
+        assert.equal(zlib.gunzipSync(decoded.body).toString('utf8'),
+          requestPath === '/demo?variant=1' ? expectedText + '\n' : expectedText);
+        assert.match(decoded.head, /^etag:\s*"origin-etag"\s*$/im);
       }
     } else {
       assert.ok(result.response.includes(body), 'missing controlled origin response');

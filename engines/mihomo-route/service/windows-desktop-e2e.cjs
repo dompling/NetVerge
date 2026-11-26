@@ -145,6 +145,11 @@ async function verifyModuleApproval(app, manifest, netFixture, temp, dnsPort, ad
     ['request-header', { remove: ['X-Custom-NetVerge-Test'] }],
     ['response-header', { remove: ['X-NetVerge-Test'] }],
     ['url', { 'remove-query': ['debug'] }],
+    ['response-body', {
+      search: '{"marker":"netverge-windows-tun-origin","path":"/demo"}',
+      replace: '{"marker":"netverge-body-rewritten","path":"/demo"}',
+      'match-whole': true,
+    }],
   ] : [
     ['response-header', { set: { 'X-NetVerge-Test': 'override' } }],
   ];
@@ -156,7 +161,11 @@ async function verifyModuleApproval(app, manifest, netFixture, temp, dnsPort, ad
   await until('updated module is active', () => automation(app, 'ModuleActive') === 'OK');
   await sleep(1200);
   probe(advancedModule ? 'module-remove' : 'multi-override');
-  if (advancedModule) console.log('PASS: approved module removed both headers and selected query parameters only on the matched request');
+  if (advancedModule) {
+    console.log('PASS: approved module removed both headers and selected query parameters only on the matched request');
+    probe('body-whole');
+    console.log('PASS: a whole-body rule rewrote the exact gzip payload and preserved the one-byte variant');
+  }
   console.log('PASS: editing the manifest preserved the approved rewrite until the update was approved');
 }
 

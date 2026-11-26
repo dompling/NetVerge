@@ -770,6 +770,7 @@ export type ResponseBodyRule = {
   regex?: string | null
   search: string
   value: string
+  match_whole?: boolean | null
 }
 
 export type UrlPathRule = {

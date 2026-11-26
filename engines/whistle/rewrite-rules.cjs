@@ -112,7 +112,7 @@ function parseModuleBundle(filePath) {
     request: normalizeRuleItems(raw.request, raw.revision, r => validateHeaderRule(r, /^x-custom-[a-z0-9-]{1,91}$/i, true), 'request-header', true),
     response: normalizeRuleItems(raw.response, raw.revision, r => validateHeaderRule(r, /^x-[a-z0-9-]{1,100}$/i, true), 'response-header', true),
     path: normalizeRuleItems(raw.path, raw.revision, r => validatePathRule(r, true), 'url-path', true),
-    body: normalizeRuleItems(raw.body, raw.revision, r => validateBodyRule(r, validHost), 'response-body', true),
+    body: normalizeRuleItems(raw.body, raw.revision, r => validateBodyRule(r, validHost, true), 'response-body', true),
   };
 }
 

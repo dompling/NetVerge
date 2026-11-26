@@ -20,6 +20,8 @@ const cases = [
     { search: 'x', value: 'y' }, { search: 'y', value: '🌳' },
   ], 'second rule exceeds limit by one byte'],
   [plainText, 'original', '$&', [{ search: 'original', value: '$&' }], 'literal replacement'],
+  [plainText, 'original', 'new', [{ search: 'original', value: 'new', match_whole: true }], 'whole body match'],
+  [plainText, 'original\n', undefined, [{ search: 'original', value: 'new', match_whole: true }], 'whole body mismatch'],
 
 ];
 

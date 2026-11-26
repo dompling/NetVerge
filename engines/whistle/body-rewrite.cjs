@@ -92,12 +92,14 @@ function rewriteHeadersForBody(res, explicit, byteLength, charsetChanged) {
   return updated;
 }
 
-function validateBodyRule(rule, validHost) {
+function validateBodyRule(rule, validHost, allowWholeMatch = false) {
   if (!rule || typeof rule !== 'object' || Array.isArray(rule) ||
-      Object.keys(rule).sort().join(',') !== 'enabled,host,path,search,value' ||
       typeof rule.enabled !== 'boolean' || typeof rule.host !== 'string' ||
       typeof rule.path !== 'string' || typeof rule.search !== 'string' ||
       typeof rule.value !== 'string') throw new Error();
+  const keys = Object.keys(rule).sort().join(',');
+  if (keys !== 'enabled,host,path,search,value' &&
+      !(allowWholeMatch && keys === 'enabled,host,match_whole,path,search,value' && rule.match_whole === true)) throw new Error();
   if (!rule.enabled) return null;
   if (!validHost(rule.host) || !/^\/[^?#\s]*$/.test(rule.path) ||
       !rule.search.length || Buffer.byteLength(rule.search, 'utf8') > 1024 ||
@@ -216,7 +218,14 @@ function installBodyRewrite(req, res, matched, onHit) {
     }
     let text = originalText;
     let hit = false;
-    for (const { search, value } of matched) {
+    for (const { search, value, match_whole: matchWhole } of matched) {
+      if (matchWhole) {
+        if (text === search) {
+          text = value;
+          hit = true;
+        }
+        continue;
+      }
       let index = text.indexOf(search);
       if (index === -1) continue;
       const growth = Buffer.byteLength(value) - Buffer.byteLength(search);
