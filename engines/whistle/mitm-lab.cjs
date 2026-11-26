@@ -205,7 +205,7 @@ async function fakeAddress(port, host) {
   return ip;
 }
 
-function dialTun(ip, host, originPort, ca, deadlineMs = 15000, requestPath = '/netverge-proof', requestHeaderFixture = false) {
+function dialTun(ip, host, originPort, ca, deadlineMs = 15000, requestPath = '/netverge-proof', requestHeaderFixture = false, extraHeaders = '') {
   return new Promise((resolve, reject) => {
     // Native TLS socket to the fake IP; no HTTP proxy or CONNECT at the client.
     const secured = tls.connect({ host: ip, port: originPort, servername: host, ca, rejectUnauthorized: true, ALPNProtocols: ['http/1.1'] });
@@ -217,14 +217,17 @@ function dialTun(ip, host, originPort, ca, deadlineMs = 15000, requestPath = '/n
     secured.once('error', fail);
     secured.once('secureConnect', () => {
       const fingerprint = secured.getPeerCertificate().fingerprint256;
-      let response = '';
-      secured.setEncoding('utf8');
-      secured.on('data', chunk => { response += chunk; });
-      secured.once('end', () => { clearTimeout(timer); resolve({ fingerprint, response }); });
-      secured.once('close', () => { if (!response) fail(new Error('TUN closed without response')); });
+      const chunks = [];
+      secured.on('data', chunk => { chunks.push(chunk); });
+      secured.once('end', () => {
+        clearTimeout(timer);
+        const raw = Buffer.concat(chunks);
+        resolve({ fingerprint, response: raw.toString('utf8'), raw });
+      });
+      secured.once('close', () => { if (!chunks.length) fail(new Error('TUN closed without response')); });
       const authFixture = requestPath.startsWith('/demo') ? 'Authorization: Bearer client-sensitive-secret\r\n' : '';
       const fixture = requestHeaderFixture ? 'X-Custom-NetVerge-Test: client\r\nx-custom-netverge-test: duplicate\r\n' : '';
-      secured.write('GET ' + requestPath + ' HTTP/1.1\r\nHost: ' + host + ':' + originPort + '\r\n' + authFixture + fixture + 'Connection: close\r\n\r\n');
+      secured.write('GET ' + requestPath + ' HTTP/1.1\r\nHost: ' + host + ':' + originPort + '\r\n' + authFixture + fixture + extraHeaders + 'Connection: close\r\n\r\n');
     });
   });
 }

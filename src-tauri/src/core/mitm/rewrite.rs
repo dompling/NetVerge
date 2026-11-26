@@ -72,7 +72,7 @@ pub async fn save(direction: Direction, expected: Vec<ResponseHeaderRule>, rules
         ensure!(name.strip_prefix(prefix).is_some_and(|s| !s.is_empty() && s.len() <= limit && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')), "Expected a valid {prefix} header");
         ensure!(rule.value.chars().count() <= 1024 && rule.value.chars().all(|c| c == '\t' || (' '..='~').contains(&c) || ('\u{80}'..='\u{ff}').contains(&c)), "Invalid HTTP header value");
     }
-    save_rules(direction.filename(), expected, rules).await
+    save_rules(direction.filename(), expected, rules, 8192).await
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -97,16 +97,39 @@ pub async fn save_path(expected: Vec<UrlPathRule>, rules: Vec<UrlPathRule>) -> R
         ensure!(super::valid_host(&rule.host), "Invalid MITM hostname");
         ensure!(valid_path(&rule.path) && valid_path(&rule.target), "Expected two same-host URL paths without query or fragment");
     }
-    save_rules(PATH_FILE, expected, rules).await
+    save_rules(PATH_FILE, expected, rules, 8192).await
 }
 
-async fn save_rules<T: serde::de::DeserializeOwned + Serialize + PartialEq>(filename: &str, expected: Vec<T>, rules: Vec<T>) -> Result<()> {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseBodyRule {
+    pub enabled: bool,
+    pub host: String,
+    pub path: String,
+    pub search: String,
+    pub value: String,
+}
+const BODY_FILE: &str = "response-body-rule.json";
+pub fn read_body() -> Result<Vec<ResponseBodyRule>> { read_rules(BODY_FILE) }
+
+pub async fn save_body(expected: Vec<ResponseBodyRule>, rules: Vec<ResponseBodyRule>) -> Result<()> {
+    ensure!(rules.len() <= MAX_RULES, "At most 16 rewrite rules are supported per type");
+    for rule in &rules {
+        ensure!(super::valid_host(&rule.host), "Invalid MITM hostname");
+        ensure!(rule.path.starts_with('/') && !rule.path.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#')), "Expected an exact URL path");
+        ensure!(!rule.search.is_empty() && rule.search.len() <= 1024, "Expected non-empty search text up to 1024 bytes");
+        ensure!(rule.value.len() <= 4096, "Replacement text exceeds 4096 bytes");
+    }
+    save_rules(BODY_FILE, expected, rules, 16384).await
+}
+
+async fn save_rules<T: serde::de::DeserializeOwned + Serialize + PartialEq>(filename: &str, expected: Vec<T>, rules: Vec<T>, max_bytes: usize) -> Result<()> {
     let _guard = WRITE.lock().await;
     ensure!(read_rules::<T>(filename)? == expected, "Rewrite rule changed. Reopen the MITM page to reload.");
     let path = file(filename)?;
     if !rules.is_empty() {
         let json = serde_json::to_string(&RuleFile { version: 2, rules })?;
-        ensure!(json.len() <= 8192, "Rewrite rules exceed 8192 bytes");
+        ensure!(json.len() <= max_bytes, "Rewrite rules exceed {max_bytes} bytes");
         crate::utils::help::save_yaml_str_private(&path, &json, None).await?;
     } else if !expected.is_empty() {
         match tokio::fs::remove_file(path).await {

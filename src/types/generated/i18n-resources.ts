@@ -991,6 +991,10 @@ export interface TranslationResources {
         rewrite: {
           add: string
           addAnother: string
+          bodyHint: string
+          bodySearch: string
+          bodyTitle: string
+          bodyValue: string
           enable: string
           header: string
           hint: string

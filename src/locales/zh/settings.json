@@ -743,6 +743,10 @@
       "none": "未命中"
     },
     "rewrite": {
+      "bodyTitle": "响应体重写",
+      "bodySearch": "查找文本",
+      "bodyValue": "替换内容",
+      "bodyHint": "离开输入框后自动保存（最多 16 条，仅重写 ≤ 256 KB 的文本/JSON；自动解压 gzip/deflate/br 并重算 Content-Length）。",
       "pathTitle": "URL 路径重写",
       "targetPath": "目标路径",
       "requestTitle": "请求头重写",

@@ -16,6 +16,7 @@ on:
       - 'engines/whistle/windows-tun-lab.cjs'
       - 'engines/whistle/route-worker.cjs'
       - 'engines/whistle/rewrite-rules.cjs'
+      - 'engines/whistle/body-rewrite.cjs'
       - 'engines/whistle/ca-integrity.cjs'
       - 'engines/whistle/package.json'
       - '.github/workflows/netverge-custom-core.yml'
@@ -254,4 +255,4 @@ jobs:
             $package = Join-Path $env:RUNNER_TEMP 'netverge-rewrite-editor'
             Expand-Archive -LiteralPath $zip.FullName -DestinationPath $package
           }
-          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package editor-rules
+          node engines/mihomo-route/service/windows-desktop-e2e.cjs $package editor-body

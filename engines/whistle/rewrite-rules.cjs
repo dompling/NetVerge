@@ -4,8 +4,10 @@ const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
 const path = require('node:path');
+const { installBodyRewrite, validateBodyRule } = require('./body-rewrite.cjs');
 
 const MAX_FILE_BYTES = 8192;
+const MAX_BODY_RULE_FILE_BYTES = 16384;
 const MAX_RULES = 16;
 
 const validHost = v => typeof v === 'string' && v.length <= 253 && v.includes('.') &&
@@ -14,9 +16,9 @@ const validHost = v => typeof v === 'string' && v.length <= 253 && v.includes('.
 const validPath = value => typeof value === 'string' && /^\/(?!\/)[A-Za-z0-9/._~%-]*$/.test(value) &&
   !/%(?![0-9a-f]{2})/i.test(value) && new URL(value, 'https://example.test').pathname === value;
 
-function parseRuleFile(filePath, validateRule) {
+function parseRuleFile(filePath, validateRule, maxBytes = MAX_FILE_BYTES) {
   const stat = fs.lstatSync(filePath);
-  if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error();
+  if (!stat.isFile() || stat.size > maxBytes) throw new Error();
   const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error();
   const list = 'version' in raw ? (() => {
@@ -61,19 +63,22 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
     response: path.join(dataDir, 'response-header-rule.json'),
     request: path.join(dataDir, 'request-header-rule.json'),
     path: path.join(dataDir, 'url-path-rule.json'),
+    body: path.join(dataDir, 'response-body-rule.json'),
   };
   let responseRules = [];
   let requestRules = [];
   let pathRules = [];
+  let bodyRules = [];
   let rewriteHits = 0;
   let requestRewriteHits = 0;
   let pathHits = 0;
+  let bodyHits = 0;
 
-  function watch(filePath, label, validator, assign) {
+  function watch(filePath, label, validator, assign, maxBytes = MAX_FILE_BYTES) {
     const reload = () => {
       assign([]);
       try {
-        assign(parseRuleFile(filePath, validator));
+        assign(parseRuleFile(filePath, validator, maxBytes));
       } catch (error) {
         if (error?.code !== 'ENOENT') console.error(`Invalid local ${label} rule; rewrite disabled`);
       }
@@ -85,6 +90,7 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
   watch(files.response, 'response header', r => validateHeaderRule(r, /^x-[a-z0-9-]{1,100}$/i), v => { responseRules = v; });
   watch(files.request, 'request header', r => validateHeaderRule(r, /^x-custom-[a-z0-9-]{1,91}$/i), v => { requestRules = v; });
   watch(files.path, 'URL path', validatePathRule, v => { pathRules = v; });
+  watch(files.body, 'response body', r => validateBodyRule(r, validHost), v => { bodyRules = v; }, MAX_BODY_RULE_FILE_BYTES);
 
   function matchingRules(list, req, authority) {
     const pathname = new URL(req.url, 'https://' + authority).pathname;
@@ -147,11 +153,20 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
     pathHits = Math.min(pathHits + 1, 0xfffffffe);
   }
 
+  function applyBodyRules(req, res, authority, entry) {
+    const matched = matchingRules(bodyRules, req, authority);
+    installBodyRewrite(req, res, matched, () => {
+      entry.bodyRule = true;
+      bodyHits = Math.min(bodyHits + 1, 0xfffffffe);
+    });
+  }
+
   return {
     applyRequestRules,
     applyResponseRules,
     applyPathRules,
-    counts: () => ({ rewriteHits, requestRewriteHits, pathHits }),
+    applyBodyRules,
+    counts: () => ({ rewriteHits, requestRewriteHits, pathHits, bodyHits }),
   };
 }
 

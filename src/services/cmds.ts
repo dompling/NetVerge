@@ -524,3 +524,6 @@ export const getRequestHeaderHits = commands.getRequestHeaderHits
 export const getUrlPathRules = commands.getUrlPathRules
 export const saveUrlPathRules = commands.saveUrlPathRules
 export const getUrlPathHits = commands.getUrlPathHits
+export const getResponseBodyRules = commands.getResponseBodyRules
+export const saveResponseBodyRules = commands.saveResponseBodyRules
+export const getResponseBodyHits = commands.getResponseBodyHits

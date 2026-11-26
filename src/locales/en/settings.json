@@ -743,6 +743,10 @@
       "none": "No match"
     },
     "rewrite": {
+      "bodyTitle": "Response body rewrite",
+      "bodySearch": "Search text",
+      "bodyValue": "Replacement text",
+      "bodyHint": "Changes save when you leave a field (up to 16 rules, UTF-8 text/JSON ≤ 256 KB; decompresses gzip/deflate/br and recalculates Content-Length).",
       "pathTitle": "URL path rewrite",
       "targetPath": "Target path",
       "requestTitle": "Request header rewrite",

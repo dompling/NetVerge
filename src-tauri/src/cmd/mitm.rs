@@ -77,6 +77,26 @@ pub fn get_url_path_hits() -> Option<u32> {
 
 #[tauri::command]
 #[specta::specta]
+pub fn get_response_body_rules() -> super::CmdResult<Vec<mitm::rewrite::ResponseBodyRule>> {
+    use super::StringifyErr as _;
+    mitm::rewrite::read_body().stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn save_response_body_rules(expected: Vec<mitm::rewrite::ResponseBodyRule>, rules: Vec<mitm::rewrite::ResponseBodyRule>) -> super::CmdResult<()> {
+    use super::StringifyErr as _;
+    mitm::rewrite::save_body(expected, rules).await.stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_response_body_hits() -> Option<u32> {
+    mitm::route_runtime::response_body_hits()
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn get_mitm_recent_requests() -> Vec<mitm::route_runtime::RecentRequest> {
     mitm::route_runtime::recent_requests()
 }

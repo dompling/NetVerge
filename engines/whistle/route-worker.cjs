@@ -241,7 +241,7 @@ server.emit = function(event, ...args) {
     const id = nextRequestId < 0xfffffffe ? nextRequestId++ : (nextRequestId = 1);
     const entry = { id, method: req.method.slice(0, 32), host: authority.slice(0, -4),
       path: pathname.length > 256 ? pathname.slice(0, 255) + '…' : pathname,
-      requestRule: false, responseRule: false, pathRule: false, status: 0,
+      requestRule: false, responseRule: false, pathRule: false, bodyRule: false, status: 0,
       completedAt: '', durationMs: 0, requestHeaders: [], responseHeaders: [] };
     const rawWriteHead = res.writeHead;
     res.writeHead = function(status, reason, fields) {
@@ -251,6 +251,7 @@ server.emit = function(event, ...args) {
     res.once('finish', () => recordResponse(entry, res, startedAt));
     rewrites.applyRequestRules(req, authority, entry);
     entry.requestHeaders = sanitizeHeaders(req.headers);
+    rewrites.applyBodyRules(req, res, authority, entry);
     rewrites.applyResponseRules(req, res, authority, entry);
     rewrites.applyPathRules(req, authority, entry);
   }

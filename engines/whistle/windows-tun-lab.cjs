@@ -6,6 +6,7 @@ const http = require('node:http');
 const https = require('node:https');
 const net = require('node:net');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const { X509Certificate } = require('node:crypto');
 const { Resolver } = require('node:dns/promises');
 const { resolveReady } = require('./windows-tun-dns-readiness.cjs');
@@ -25,7 +26,8 @@ async function serve(dir) {
   const dns = await startLabDns(hosts);
   dns.on('error', err => { throw err; });
   const origin = https.createServer({ key: certs.key, cert: certs.cert }, (req, res) => {
-    if (!['/netverge-proof', '/demo', '/demo/other', '/changed'].includes(req.url.split('?')[0]) || req.headers['proxy-authorization'] || req.headers['x-whistle-tunnel-data']) {
+    const [pathname, rawQuery = ''] = req.url.split('?');
+    if (!['/netverge-proof', '/demo', '/demo/other', '/changed'].includes(pathname) || req.headers['proxy-authorization'] || req.headers['x-whistle-tunnel-data']) {
       res.writeHead(400).end();
       return;
     }
@@ -33,6 +35,30 @@ async function serve(dir) {
     res.setHeader('X-NetVerge-Test', 'origin');
     res.setHeader('X-NetVerge-Observed-Request', req.headers['x-custom-netverge-test'] ?? 'missing');
     res.setHeader('Set-Cookie', 'nv_session=origin-sensitive-secret; HttpOnly');
+    if (rawQuery === 'oversize=1') {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.write(body + ':');
+      const block = Buffer.alloc(60000, 'x');
+      for (let i = 0; i < 5; i++) res.write(block);
+      res.end(block);
+      return;
+    }
+    if (rawQuery === 'binary=1') {
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+      res.end(Buffer.from(body, 'utf8'));
+      return;
+    }
+    if (req.headers['x-netverge-body-probe'] === 'gzip') {
+      const gz = zlib.gzipSync(Buffer.from(JSON.stringify({ marker: body, path: pathname }), 'utf8'));
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Encoding': 'gzip',
+        'ETag': '"origin-etag"',
+        'Content-Length': String(gz.length),
+      });
+      res.end(gz);
+      return;
+    }
     res.end(body);
   });
   const originPort = await listen(origin);
@@ -84,12 +110,39 @@ async function fakeAddress(port, host) {
   return ip;
 }
 
+function decodeHttpResponse(raw) {
+  const sep = raw.indexOf('\r\n\r\n');
+  assert.ok(sep > 0, 'missing HTTP header delimiter');
+  const head = raw.subarray(0, sep).toString('utf8');
+  let payload = raw.subarray(sep + 4);
+  if (/^transfer-encoding:\s*chunked\b/im.test(head)) {
+    const out = [];
+    let offset = 0;
+    while (offset < payload.length) {
+      const lineEnd = payload.indexOf('\r\n', offset);
+      assert.ok(lineEnd > offset, 'invalid chunk header');
+      const size = Number.parseInt(payload.subarray(offset, lineEnd).toString('ascii').split(';')[0], 16);
+      offset = lineEnd + 2;
+      if (size === 0) break;
+      out.push(payload.subarray(offset, offset + size));
+      offset += size + 2;
+    }
+    return { head, body: Buffer.concat(out), chunked: true };
+  }
+  const clMatch = head.match(/^content-length:\s*(\d+)\s*$/im);
+  if (clMatch) assert.equal(payload.length, Number(clMatch[1]), 'Content-Length mismatch on wire');
+  return { head, body: payload, chunked: false };
+}
+
 async function probe(dir, port, mode, rewrite) {
   const log = path.join(dir, 'exit-observations');
   const originCA = fs.readFileSync(path.join(dir, 'origin-ca.pem'));
   const originLeaf = new X509Certificate(fs.readFileSync(path.join(dir, 'origin-leaf.pem')));
-  const cases = rewrite ? [[selected, '/demo'], [selected, '/demo/other'], [bypass, '/demo']] :
-    hosts.map(host => [host, '/netverge-proof']);
+  const bodyRewrite = rewrite === 'body-on' || rewrite === 'body-off';
+  const cases = bodyRewrite
+    ? [[selected, '/demo'], [selected, '/demo/other'], [selected, '/demo?oversize=1'], [selected, '/demo?binary=1'], [bypass, '/demo']]
+    : rewrite ? [[selected, '/demo'], [selected, '/demo/other'], [bypass, '/demo']]
+    : hosts.map(host => [host, '/netverge-proof']);
   for (const [host, requestPath] of cases) {
     const ip = await fakeAddress(port, host);
     const before = fs.readFileSync(log, 'utf8');
@@ -106,10 +159,28 @@ async function probe(dir, port, mode, rewrite) {
     const requestRewrite = rewrite === 'request-on' || rewrite === 'request-off';
     const pathRewrite = rewrite === 'path-on' || rewrite === 'path-off';
     const query = pathRewrite ? '?id=7&id=8&raw=a%2Fb' : '';
-    const result = await dialTun(ip, host, 443, ca, 15000, requestPath + query, requestRewrite);
+    const extraHeaders = bodyRewrite && !requestPath.includes('?') ? 'X-NetVerge-Body-Probe: gzip\r\n' : '';
+    const result = await dialTun(ip, host, 443, ca, 15000, requestPath + query, requestRewrite, extraHeaders);
     assert.match(result.response, /^HTTP\/1\.[01] 200 /);
-    assert.ok(result.response.includes(body), 'missing controlled origin response');
-    if (rewrite) {
+    if (bodyRewrite) {
+      const decoded = decodeHttpResponse(result.raw);
+      if (requestPath === '/demo?oversize=1') {
+        assert.equal(decoded.body.length, body.length + 1 + 360000, 'oversized stream truncated');
+        assert.equal(decoded.body.subarray(0, body.length + 1).toString('utf8'), body + ':', 'oversized stream must bypass body rewrite');
+      } else if (requestPath === '/demo?binary=1') {
+        assert.equal(decoded.body.toString('utf8'), body, 'binary MIME must bypass body rewrite');
+      } else if (rewrite === 'body-on' && intercepted && requestPath === '/demo') {
+        assert.ok(!/^content-encoding:/im.test(decoded.head), 'rewritten body must clear Content-Encoding');
+        assert.ok(!/^etag:/im.test(decoded.head), 'rewritten body must clear stale ETag');
+        assert.deepEqual(JSON.parse(decoded.body.toString('utf8')), { marker: 'netverge-body-rewritten', path: '/demo' });
+      } else {
+        assert.match(decoded.head, /^content-encoding:\s*gzip\s*$/im, 'untouched gzip response must retain encoding');
+        assert.equal(JSON.parse(zlib.gunzipSync(decoded.body).toString('utf8')).marker, body);
+      }
+    } else {
+      assert.ok(result.response.includes(body), 'missing controlled origin response');
+    }
+    if (rewrite && !bodyRewrite) {
       const activeDemo = intercepted && requestPath === '/demo';
       const expected = activeDemo && (rewrite === 'on' || rewrite === 'multi-both') ? '1' :
         activeDemo && rewrite === 'multi-override' ? 'override' : 'origin';

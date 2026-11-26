@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,8 +79,12 @@ switch ($Action) {
             'OK'
         }
     }
-    { $_ -in 'OpenRequestRule', 'OpenPathRule' } {
-        $label = if ($Action -eq 'OpenPathRule') { 'URL path rewrite' } else { 'Request header rewrite' }
+    { $_ -in 'OpenRequestRule', 'OpenPathRule', 'OpenBodyRule' } {
+        $label = switch ($Action) {
+            'OpenPathRule' { 'URL path rewrite' }
+            'OpenBodyRule' { 'Response body rewrite' }
+            default { 'Request header rewrite' }
+        }
         $button = Find-Element $label ([Windows.Automation.ControlType]::Button)
         if ($button) {
             $keys = New-Object -ComObject WScript.Shell
@@ -90,7 +94,7 @@ switch ($Action) {
             'OK'
         }
     }
-    { $_ -in 'FillRule', 'FillRequestRule', 'FillPathRule' } {
+    { $_ -in 'FillRule', 'FillRequestRule', 'FillPathRule', 'FillBodyRule' } {
         $add = Find-Element 'Add rule' ([Windows.Automation.ControlType]::Button)
         if ($add) { $add.GetCurrentPattern($invoke).Invoke(); break }
         $keys = New-Object -ComObject WScript.Shell
@@ -101,6 +105,9 @@ switch ($Action) {
         }
         if ($Action -eq 'FillPathRule') {
             $fields = [ordered]@{'MITM hostname'='api.example.test'; 'Exact path'='/demo'; 'Target path'='/changed'}
+        }
+        if ($Action -eq 'FillBodyRule') {
+            $fields = [ordered]@{'MITM hostname'='api.example.test'; 'Exact path'='/demo'; 'Search text'='netverge-windows-tun-origin'; 'Replacement text'='netverge-body-rewritten'}
         }
         foreach ($label in $fields.Keys) {
             $field = Find-Element $label ([Windows.Automation.ControlType]::Edit)

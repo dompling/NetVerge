@@ -216,19 +216,24 @@ async function main() {
       }
     }
 
-    const editor = ['editor', 'editor-filters', 'editor-inspector', 'editor-rules'].includes(process.argv[3]);
-    const hasFilters = ['editor-filters', 'editor-inspector', 'editor-rules'].includes(process.argv[3]);
-    const hasInspector = ['editor-inspector', 'editor-rules'].includes(process.argv[3]);
-    const hasMultiRules = process.argv[3] === 'editor-rules';
-    for (const direction of editor ? ['response', 'request', 'path'] : []) {
+    const editor = ['editor', 'editor-filters', 'editor-inspector', 'editor-rules', 'editor-body'].includes(process.argv[3]);
+    const hasFilters = ['editor-filters', 'editor-inspector', 'editor-rules', 'editor-body'].includes(process.argv[3]);
+    const hasInspector = ['editor-inspector', 'editor-rules', 'editor-body'].includes(process.argv[3]);
+    const hasMultiRules = ['editor-rules', 'editor-body'].includes(process.argv[3]);
+    const hasBody = process.argv[3] === 'editor-body';
+    const directions = !editor ? [] : hasBody ? ['response', 'request', 'path', 'body'] : ['response', 'request', 'path'];
+    for (const direction of directions) {
       const request = direction === 'request';
       const pathRule = direction === 'path';
+      const bodyRule = direction === 'body';
       if (pathRule) await until('open URL path editor', () => automation(app, 'OpenPathRule') === 'OK');
       if (request) await until('open request header editor', () => automation(app, 'OpenRequestRule') === 'OK');
-      const file = path.join(mitm, pathRule ? 'url-path-rule.json' : direction + '-header-rule.json');
-      await until('enter and verify all rewrite field values', () => automation(app, pathRule ? 'FillPathRule' : request ? 'FillRequestRule' : 'FillRule') === 'OK', 70000);
-      const rule = pathRule ? { enabled: false, host: selected, path: '/demo', target: '/changed' } : { enabled: false, host: selected, path: '/demo',
-        header: request ? 'X-Custom-NetVerge-Test' : 'X-NetVerge-Test', value: request ? 'rewritten' : '1' };
+      if (bodyRule) await until('open response body editor', () => automation(app, 'OpenBodyRule') === 'OK');
+      const file = path.join(mitm, pathRule ? 'url-path-rule.json' : bodyRule ? 'response-body-rule.json' : direction + '-header-rule.json');
+      await until('enter and verify all rewrite field values', () => automation(app, pathRule ? 'FillPathRule' : bodyRule ? 'FillBodyRule' : request ? 'FillRequestRule' : 'FillRule') === 'OK', 70000);
+      const rule = pathRule ? { enabled: false, host: selected, path: '/demo', target: '/changed' }
+        : bodyRule ? { enabled: false, host: selected, path: '/demo', search: 'netverge-windows-tun-origin', value: 'netverge-body-rewritten' }
+        : { enabled: false, host: selected, path: '/demo', header: request ? 'X-Custom-NetVerge-Test' : 'X-NetVerge-Test', value: request ? 'rewritten' : '1' };
       for (const [index, enabled] of [false, true, false].entries()) {
         if (enabled !== rule.enabled) await until('toggle rewrite', () => automation(app, 'ToggleRule') === 'OK');
         rule.enabled = enabled;
@@ -238,7 +243,8 @@ async function main() {
           return true;
         });
         await sleep(1200);
-        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', (pathRule ? 'path-' : request ? 'request-' : '') + (enabled ? 'on' : 'off')],
+        const probeKind = (pathRule ? 'path-' : bodyRule ? 'body-' : request ? 'request-' : '') + (enabled ? 'on' : 'off');
+        execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', probeKind],
           { stdio: 'inherit', timeout: 75000 });
         if (enabled && pathRule) await until('recent request shows exact path, status and matched rule', () => automation(app, 'RecentRequests') === 'OK');
         if (enabled && pathRule && hasFilters) {

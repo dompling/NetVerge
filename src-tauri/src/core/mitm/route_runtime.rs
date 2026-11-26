@@ -223,6 +223,12 @@ pub(crate) fn url_path_hits() -> Option<u32> {
     (value != u32::MAX && matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy)).then_some(value)
 }
 
+static BODY_HITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+pub(crate) fn response_body_hits() -> Option<u32> {
+    let value = BODY_HITS.load(std::sync::atomic::Ordering::Relaxed);
+    (value != u32::MAX && matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy)).then_some(value)
+}
+
 #[derive(Clone, Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentRequest {
@@ -233,6 +239,7 @@ pub struct RecentRequest {
     request_rule: bool,
     response_rule: bool,
     path_rule: bool,
+    body_rule: bool,
     status: u16,
     completed_at: String,
     duration_ms: u32,
@@ -273,6 +280,8 @@ struct WorkerState {
     request_rewrite_hits: Option<u32>,
     #[serde(default, rename = "pathHits")]
     path_hits: Option<u32>,
+    #[serde(default, rename = "bodyHits")]
+    body_hits: Option<u32>,
     #[serde(default, rename = "recentRequests")]
     recent_requests: Vec<RecentRequest>,
     protocol: u32,
@@ -333,6 +342,7 @@ impl Launch {
         if CLEAR_EPOCH.load(std::sync::atomic::Ordering::Acquire) == epoch {
             *RECENT_REQUESTS.lock() = state.recent_requests;
         }
+        BODY_HITS.store(state.body_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         PATH_HITS.store(state.path_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         REQUEST_REWRITE_HITS.store(state.request_rewrite_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);
         REWRITE_HITS.store(state.rewrite_hits.unwrap_or(u32::MAX), std::sync::atomic::Ordering::Relaxed);

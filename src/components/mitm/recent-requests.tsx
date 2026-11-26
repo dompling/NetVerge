@@ -88,10 +88,17 @@ export function RecentRequests() {
         return entry.requestRule
       case 'response':
         return entry.responseRule
+      case 'body':
+        return entry.bodyRule
       case 'path':
         return entry.pathRule
       case 'none':
-        return !entry.requestRule && !entry.responseRule && !entry.pathRule
+        return (
+          !entry.requestRule &&
+          !entry.responseRule &&
+          !entry.bodyRule &&
+          !entry.pathRule
+        )
       default:
         return true
     }
@@ -153,6 +160,9 @@ export function RecentRequests() {
               <option value="response">
                 {t('settings.mitm.rewrite.title')}
               </option>
+              <option value="body">
+                {t('settings.mitm.rewrite.bodyTitle')}
+              </option>
               <option value="path">
                 {t('settings.mitm.rewrite.pathTitle')}
               </option>
@@ -177,6 +187,7 @@ export function RecentRequests() {
               const rules = [
                 entry.requestRule && t('settings.mitm.rewrite.requestTitle'),
                 entry.responseRule && t('settings.mitm.rewrite.title'),
+                entry.bodyRule && t('settings.mitm.rewrite.bodyTitle'),
                 entry.pathRule && t('settings.mitm.rewrite.pathTitle'),
               ].filter(Boolean)
               const line = `${entry.method} ${entry.host}${entry.path} · ${entry.status}`

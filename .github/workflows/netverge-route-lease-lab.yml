@@ -16,6 +16,7 @@ on:
       - 'engines/whistle/mitm-worker.cjs'
       - 'engines/whistle/route-worker.cjs'
       - 'engines/whistle/rewrite-rules.cjs'
+      - 'engines/whistle/body-rewrite.cjs'
       - 'engines/whistle/ca-integrity.cjs'
       - 'engines/whistle/package.json'
       - '.github/workflows/netverge-route-lease-lab.yml'

@@ -16,15 +16,22 @@ import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
 
-import type { ResponseHeaderRule, UrlPathRule } from '@/services/bindings'
+import type {
+  ResponseBodyRule,
+  ResponseHeaderRule,
+  UrlPathRule,
+} from '@/services/bindings'
 import {
   getRequestHeaderHits,
   getRequestHeaderRules,
+  getResponseBodyHits,
+  getResponseBodyRules,
   getResponseHeaderHits,
   getResponseHeaderRules,
   getUrlPathHits,
   getUrlPathRules,
   saveRequestHeaderRules,
+  saveResponseBodyRules,
   saveResponseHeaderRules,
   saveUrlPathRules,
 } from '@/services/cmds'
@@ -57,7 +64,7 @@ function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-type Direction = 'request' | 'response' | 'path'
+type Direction = 'request' | 'response' | 'path' | 'body'
 
 const isBlank = (rule: ResponseHeaderRule) =>
   !rule.enabled &&
@@ -81,7 +88,31 @@ const toPath = (rules: ResponseHeaderRule[]): UrlPathRule[] =>
     target: rule.value,
   }))
 
+const toBody = (rules: ResponseHeaderRule[]): ResponseBodyRule[] =>
+  rules.map((rule) => ({
+    enabled: rule.enabled,
+    host: rule.host,
+    path: rule.path,
+    search: rule.header,
+    value: rule.value,
+  }))
+
 const editors = {
+  body: {
+    read: async (): Promise<ResponseHeaderRule[]> => {
+      const rules = await getResponseBodyRules()
+      return rules.map((rule) => ({
+        enabled: rule.enabled,
+        host: rule.host,
+        path: rule.path,
+        header: rule.search,
+        value: rule.value,
+      }))
+    },
+    save: (expected: ResponseHeaderRule[], rules: ResponseHeaderRule[]) =>
+      saveResponseBodyRules(toBody(expected), toBody(rules)),
+    hits: getResponseBodyHits,
+  },
   path: {
     read: async (): Promise<ResponseHeaderRule[]> => {
       const rules = await getUrlPathRules()
@@ -131,8 +162,11 @@ export function HeaderRuleEditor() {
         <ToggleButton value="path">
           {t('settings.mitm.rewrite.pathTitle')}
         </ToggleButton>
+        <ToggleButton value="body">
+          {t('settings.mitm.rewrite.bodyTitle')}
+        </ToggleButton>
       </ToggleButtonGroup>
-      {(['response', 'request', 'path'] as const).map((kind) => (
+      {(['response', 'request', 'path', 'body'] as const).map((kind) => (
         <div key={kind} hidden={direction !== kind}>
           <Editor direction={kind} visible={direction === kind} />
         </div>
@@ -278,7 +312,9 @@ function RuleListForm({
               {t(
                 direction === 'path'
                   ? 'settings.mitm.rewrite.pathHint'
-                  : 'settings.mitm.rewrite.hint',
+                  : direction === 'body'
+                    ? 'settings.mitm.rewrite.bodyHint'
+                    : 'settings.mitm.rewrite.hint',
               )}
             </Typography>
             {draft.map((item, index) => {
@@ -296,9 +332,13 @@ function RuleListForm({
                         const baseLabel = t(
                           direction === 'path' && field === 'value'
                             ? 'settings.mitm.rewrite.targetPath'
-                            : field === 'header' && direction === 'request'
-                              ? 'settings.mitm.rewrite.requestHeader'
-                              : `settings.mitm.rewrite.${field}`,
+                            : direction === 'body' && field === 'header'
+                              ? 'settings.mitm.rewrite.bodySearch'
+                              : direction === 'body' && field === 'value'
+                                ? 'settings.mitm.rewrite.bodyValue'
+                                : field === 'header' && direction === 'request'
+                                  ? 'settings.mitm.rewrite.requestHeader'
+                                  : `settings.mitm.rewrite.${field}`,
                         )
                         const fieldLabel = baseLabel + suffix
                         return (

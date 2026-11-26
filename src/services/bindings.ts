@@ -63,6 +63,15 @@ export const commands = {
   saveUrlPathRules: (expected: UrlPathRule[], rules: UrlPathRule[]) =>
     __TAURI_INVOKE<null>('save_url_path_rules', { expected, rules }),
   getUrlPathHits: () => __TAURI_INVOKE<number | null>('get_url_path_hits'),
+  getResponseBodyRules: () =>
+    __TAURI_INVOKE<ResponseBodyRule[]>('get_response_body_rules'),
+  saveResponseBodyRules: (
+    expected: ResponseBodyRule[],
+    rules: ResponseBodyRule[],
+  ) =>
+    __TAURI_INVOKE<null>('save_response_body_rules', { expected, rules }),
+  getResponseBodyHits: () =>
+    __TAURI_INVOKE<number | null>('get_response_body_hits'),
   getMitmRecentRequests: () => __TAURI_INVOKE<RecentRequest[]>('get_mitm_recent_requests'),
   clearMitmRecentRequests: () =>
     __TAURI_INVOKE<null>('clear_mitm_recent_requests'),
@@ -683,11 +692,20 @@ export type RecentRequest = {
   requestRule: boolean
   responseRule: boolean
   pathRule: boolean
+  bodyRule: boolean
   status: number
   completedAt: string
   durationMs: number
   requestHeaders: [string, string][]
   responseHeaders: [string, string][]
+}
+
+export type ResponseBodyRule = {
+  enabled: boolean
+  host: string
+  path: string
+  search: string
+  value: string
 }
 
 export type UrlPathRule = { enabled: boolean; host: string; path: string; target: string }

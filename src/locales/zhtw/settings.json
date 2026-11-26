@@ -743,6 +743,10 @@
       "none": "未命中"
     },
     "rewrite": {
+      "bodyTitle": "回應內容重寫",
+      "bodySearch": "搜尋文字",
+      "bodyValue": "取代內容",
+      "bodyHint": "離開欄位後自動儲存（最多 16 條，僅重寫 ≤ 256 KB 的文字/JSON；自動解壓縮 gzip/deflate/br 並重算 Content-Length）。",
       "pathTitle": "URL 路徑重寫",
       "targetPath": "目標路徑",
       "requestTitle": "請求標頭重寫",
