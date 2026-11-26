@@ -116,6 +116,27 @@ pub fn get_mitm_rewrite_diagnostics() -> Vec<mitm::route_runtime::RewritePhaseDi
 
 #[tauri::command]
 #[specta::specta]
+pub fn get_mitm_profile_modules() -> super::CmdResult<mitm::module_manager::ProfileModulesView> {
+    use super::StringifyErr as _;
+    mitm::module_manager::get_profile_modules().stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_mitm_module_approval(
+    profile_uid: String,
+    module_id: String,
+    expected_sha256: String,
+    enabled: bool,
+) -> super::CmdResult<mitm::module_manager::ProfileModulesView> {
+    use super::StringifyErr as _;
+    mitm::module_manager::set_module_approval(profile_uid, module_id, expected_sha256, enabled)
+        .await
+        .stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn clear_mitm_recent_requests() -> super::CmdResult<()> {
     use super::StringifyErr as _;
     mitm::route_runtime::clear_recent_requests().await.stringify_err()

@@ -270,6 +270,31 @@ async function main() {
         console.log('PASS: ' + label + ' against original HTTPS URL, bypass and original exit verified');
       }
       fs.unlinkSync(file);
+      const moduleBundleFile = path.join(mitm, 'compiled-module-rules.json');
+      const modRule = value => ({
+        id: 'com.example.debug:resp', source: 'module:com.example.debug', enabled: true,
+        host: selected, path: '', regex: '^https://api\\.example\\.test/demo$', header: 'X-NetVerge-Test', value,
+      });
+      fs.writeFileSync(moduleBundleFile + '.tmp', JSON.stringify({
+        version: 1, profileUid: 'desktop-fixture', revision: 1, request: [], response: [modRule('1')], path: [], body: [],
+      }));
+      fs.renameSync(moduleBundleFile + '.tmp', moduleBundleFile);
+      await sleep(1200);
+      execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', 'on'], { stdio: 'inherit', timeout: 75000 });
+      console.log('PASS: compiled module rewrite bundle applied over Windows TUN and native TLS');
+
+      // Local rule overrides conflicting module header assignment.
+      fs.writeFileSync(moduleBundleFile + '.tmp', JSON.stringify({
+        version: 1, profileUid: 'desktop-fixture', revision: 2, request: [], response: [modRule('module-shadowed')], path: [], body: [],
+      }));
+      fs.renameSync(moduleBundleFile + '.tmp', moduleBundleFile);
+      fs.writeFileSync(file + '.tmp', JSON.stringify({ version: 2, rules: [{ enabled: true, host: selected, path: '/demo', header: 'X-NetVerge-Test', value: '1' }] }));
+      fs.renameSync(file + '.tmp', file);
+      await sleep(1200);
+      execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', 'on'], { stdio: 'inherit', timeout: 75000 });
+      console.log('PASS: local rewrite rule retained precedence over conflicting module rule');
+      fs.unlinkSync(moduleBundleFile);
+      fs.unlinkSync(file);
       const bodyFile = path.join(mitm, 'response-body-rule.json');
       for (const enabled of [true, false]) {
         const bodyRule = { version: 2, rules: [{ enabled, host: selected, path: '/demo', search: 'netverge-windows-tun-origin', value: 'netverge-body-rewritten' }] };

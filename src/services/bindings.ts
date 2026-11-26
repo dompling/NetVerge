@@ -75,6 +75,20 @@ export const commands = {
   getMitmRecentRequests: () => __TAURI_INVOKE<RecentRequest[]>('get_mitm_recent_requests'),
   getMitmRewriteDiagnostics: () =>
     __TAURI_INVOKE<RewritePhaseDiagnostic[]>('get_mitm_rewrite_diagnostics'),
+  getMitmProfileModules: () =>
+    __TAURI_INVOKE<ProfileModulesView>('get_mitm_profile_modules'),
+  setMitmModuleApproval: (
+    profileUid: string,
+    moduleId: string,
+    expectedSha256: string,
+    enabled: boolean,
+  ) =>
+    __TAURI_INVOKE<ProfileModulesView>('set_mitm_module_approval', {
+      profileUid,
+      moduleId,
+      expectedSha256,
+      enabled,
+    }),
   clearMitmRecentRequests: () =>
     __TAURI_INVOKE<null>('clear_mitm_recent_requests'),
   /**  Returns the last verified public CA only. Never installs trust or exports a private key. */
@@ -709,6 +723,41 @@ export type RewritePhaseDiagnostic = {
   activeRules: number
   error: string | null
   ruleHits: Partial<{ [key in string]: number }>
+}
+
+export type ModuleApprovalState =
+  | 'unapproved'
+  | 'active'
+  | 'disabled'
+  | 'update_pending'
+
+export type ModuleDiagnostic = {
+  manifestPath: string
+  line: number | null
+  message: string
+}
+
+export type DiscoveredModulePreview = {
+  id: string
+  name: string
+  version: string
+  description: string | null
+  author: string | null
+  manifestPath: string
+  contentSha256: string
+  approvedSha256: string | null
+  enabled: boolean
+  state: ModuleApprovalState
+  proposedHostnames: string[]
+  missingMitmHostnames: string[]
+  rewriteCount: number
+  scriptCount: number
+}
+
+export type ProfileModulesView = {
+  profileUid: string | null
+  modules: DiscoveredModulePreview[]
+  diagnostics: ModuleDiagnostic[]
 }
 
 export type ResponseBodyRule = {

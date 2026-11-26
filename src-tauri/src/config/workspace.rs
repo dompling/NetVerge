@@ -231,7 +231,6 @@ pub(crate) fn migrate_flat_profiles_in_dir(
 
 /// Resolves a forward-slash relative asset path strictly inside `workspace_root`
 /// (the directory containing the active profile's `config.yaml`).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resolve_workspace_asset(workspace_root: &Path, rel_path: &str) -> Result<PathBuf> {
     ensure!(
         !rel_path.is_empty()
@@ -307,10 +306,11 @@ pub(crate) fn sync_active_workspace(
         root,
     };
     *guard = next.clone();
+    drop(guard);
+    crate::core::mitm::module_manager::sync_for_workspace_snapshot(&next);
     Ok(next)
 }
 
-#[cfg(test)]
 pub(crate) fn active_workspace_snapshot() -> WorkspaceSnapshot {
     ACTIVE_WORKSPACE.lock().clone()
 }

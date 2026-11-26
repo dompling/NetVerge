@@ -230,8 +230,13 @@ workspaces (`config::workspace`), automatically migrating flat legacy profile fi
 persisting `profiles.yaml` while preserving UID, subscription metadata, proxy selection,
 companion chains, backup/restore, generation-checked profile switching and rollback, and
 config-root-relative asset boundary checks (rejecting traversal, symlinks and reparse points).
-- 8.3: native module.yaml discovery and strict parsing, typed configuration compiler,
-  profile-relative asset validation, non-destructive preview and approved snapshot.
+8.3: recursively discover `module.yaml` (`kind: netverge-module`, `schema: 1`) inside the
+active profile workspace (`core::mitm::module_manifest` + `module_manager`), rejecting YAML
+anchors/aliases/tags/merge keys/duplicate keys/unknown fields with line-numbered diagnostics,
+verifying and hashing profile-root-relative script assets into `contentSha256`, storing
+per-profile explicit approvals (`module-approvals/<uid>.json`) that preserve last-known
+approved rules on unapproved edits, and compiling active module rewrites to
+`compiled-module-rules.json` with local-wins precedence and atomic profile-switch sync.
 - 8.4: advanced header, URL/query and bounded body operations; encoding/framing,
   oversize pass-through, stream preservation; same-authority only, redirects separate.
 - 8.5: Mock / Map Local, scoped asset access and terminal-action precedence;

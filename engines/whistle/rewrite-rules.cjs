@@ -9,6 +9,7 @@ const { compileUrlRegex, cacheCompiledRegex, getCompiledRegex } = require('./url
 
 const MAX_FILE_BYTES = 8192;
 const MAX_BODY_RULE_FILE_BYTES = 16384;
+const MAX_MODULE_BUNDLE_BYTES = 32768;
 const MAX_RULES = 16;
 const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
 
@@ -40,14 +41,17 @@ function decodeRuleItems(filePath, maxBytes) {
   return { revision: raw.revision ?? 1, list: raw.rules };
 }
 
-function parseRuleEntries(filePath, validateRule, maxBytes, phase) {
-  const { revision, list } = decodeRuleItems(filePath, maxBytes);
+function normalizeRuleItems(list, revision, validateRule, phase, requireModule = false) {
+  if (!Array.isArray(list) || list.length > MAX_RULES) throw new Error();
   const seenIds = new Set();
   const active = [];
   for (let index = 0; index < list.length; index++) {
     const item = list[index];
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error();
     const { id, source, method, regex, ...action } = item;
+    if (requireModule && (id == null || typeof source !== 'string' || !source.startsWith('module:'))) {
+      throw new Error();
+    }
     if (id != null) {
       if (!validRuleId(id) || seenIds.has(id)) throw new Error();
       seenIds.add(id);
@@ -85,7 +89,31 @@ function parseRuleEntries(filePath, validateRule, maxBytes, phase) {
       ...(regex == null ? {} : { regex }),
     });
   }
-  return { revision, rules: active };
+  return active;
+}
+
+function parseRuleEntries(filePath, validateRule, maxBytes, phase) {
+  const { revision, list } = decodeRuleItems(filePath, maxBytes);
+  return { revision, rules: normalizeRuleItems(list, revision, validateRule, phase) };
+}
+
+function parseModuleBundle(filePath) {
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile() || stat.size > MAX_MODULE_BUNDLE_BYTES) throw new Error();
+  const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.version !== 1 ||
+      Object.keys(raw).sort().join(',') !== 'body,path,profileUid,request,response,revision,version' ||
+      typeof raw.profileUid !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(raw.profileUid) ||
+      !Number.isInteger(raw.revision) || raw.revision < 1 || raw.revision > 0xffffffff) {
+    throw new Error();
+  }
+  return {
+    revision: raw.revision,
+    request: normalizeRuleItems(raw.request, raw.revision, r => validateHeaderRule(r, /^x-custom-[a-z0-9-]{1,91}$/i), 'request-header', true),
+    response: normalizeRuleItems(raw.response, raw.revision, r => validateHeaderRule(r, /^x-[a-z0-9-]{1,100}$/i), 'response-header', true),
+    path: normalizeRuleItems(raw.path, raw.revision, validatePathRule, 'url-path', true),
+    body: normalizeRuleItems(raw.body, raw.revision, r => validateBodyRule(r, validHost), 'response-body', true),
+  };
 }
 
 function parseRuleFile(filePath, validateRule, maxBytes = MAX_FILE_BYTES) {
@@ -182,8 +210,11 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
     request: path.join(dataDir, 'request-header-rule.json'),
     path: path.join(dataDir, 'url-path-rule.json'),
     body: path.join(dataDir, 'response-body-rule.json'),
+    modules: path.join(dataDir, 'compiled-module-rules.json'),
   };
+  const emptyModules = () => ({ request: [], response: [], path: [], body: [] });
   let responseRules = [], requestRules = [], pathRules = [], bodyRules = [];
+  let moduleBundle = emptyModules();
   let rewriteHits = 0, requestRewriteHits = 0, pathHits = 0, bodyHits = 0;
   const diag = {
     'response-header': { phase: 'response-header', revision: 0, activeRules: 0, error: null, ruleHits: {} },
@@ -219,9 +250,25 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
   watch(files.path, 'url-path', 'URL path', validatePathRule, v => { pathRules = v; });
   watch(files.body, 'response-body', 'response body', r => validateBodyRule(r, validHost), v => { bodyRules = v; }, MAX_BODY_RULE_FILE_BYTES);
 
+  const reloadModules = () => {
+    moduleBundle = emptyModules();
+    try {
+      moduleBundle = parseModuleBundle(files.modules);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') console.error('Invalid compiled module rules; module rewrites disabled');
+    }
+  };
+  reloadModules();
+  fs.watchFile(files.modules, { interval: 500, persistent: false }, reloadModules);
+
+  // Local editor rules always retain precedence over approved module rules:
+  // URL path takes the first match (local first), while headers/body take the last assignment (local last).
   function plan(req, authority) {
     return planRequest(allowedHosts, {
-      request: requestRules, response: responseRules, body: bodyRules, path: pathRules,
+      request: [...moduleBundle.request, ...requestRules],
+      response: [...moduleBundle.response, ...responseRules],
+      body: [...moduleBundle.body, ...bodyRules],
+      path: [...pathRules, ...moduleBundle.path],
     }, req.url, authority, req.method);
   }
 

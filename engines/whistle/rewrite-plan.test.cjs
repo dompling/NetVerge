@@ -258,3 +258,71 @@ test('typed rule set normalizes stable IDs, source, revision, per-rule hits and 
     ruleHits: {},
   });
 });
+
+test('compiled module bundle applies with local-wins precedence and fails closed on bad sources', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nv-mod-bundle-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const modFile = path.join(dir, 'compiled-module-rules.json');
+  const reqFile = path.join(dir, 'request-header-rule.json');
+  const pathFile = path.join(dir, 'url-path-rule.json');
+
+  fs.writeFileSync(modFile, JSON.stringify({
+    version: 1,
+    profileUid: 'prof-a',
+    revision: 2,
+    request: [
+      { id: 'com.example.mod:h1', source: 'module:com.example.mod', enabled: true, host, path: '/v1', header: 'X-Custom-Shared', value: 'from-module' },
+      { id: 'com.example.mod:h2', source: 'module:com.example.mod', enabled: true, host, path: '/v1', header: 'X-Custom-Mod-Only', value: 'yes' },
+    ],
+    response: [],
+    path: [
+      { id: 'com.example.mod:p1', source: 'module:com.example.mod', enabled: true, host, path: '/v1', target: '/from-module' },
+    ],
+    body: [],
+  }));
+  fs.writeFileSync(reqFile, JSON.stringify({
+    version: 2,
+    rules: [{ enabled: true, host, path: '/v1', header: 'X-Custom-Shared', value: 'from-local' }],
+  }));
+  fs.writeFileSync(pathFile, JSON.stringify({
+    version: 2,
+    rules: [{ enabled: true, host, path: '/v1', target: '/from-local' }],
+  }));
+
+  const engine = createRewriteEngine({ dataDir: dir, hosts: [host], strip: (r, k) => { delete r.headers[k]; } });
+  t.after(() => engine.close());
+
+  const req = { url: '/v1', method: 'GET', headers: {}, rawHeaders: [] };
+  const entry = { matchedRuleIds: [] };
+  const planned = engine.plan(req, authority);
+  engine.applyRequestRules(req, planned.request, entry);
+  engine.applyPathRules(req, planned.pathTarget, entry, planned.pathRuleId);
+  assert.equal(req.headers['x-custom-shared'], 'from-local');
+  assert.equal(req.headers['x-custom-mod-only'], 'yes');
+  assert.equal(req.url, '/from-local');
+  assert.deepEqual(entry.matchedRuleIds, [
+    'com.example.mod:h1',
+    'com.example.mod:h2',
+    'local:request-header:1',
+    'local:url-path:1',
+  ]);
+
+  // A bundle containing a non-module source must fail closed.
+  engine.close();
+  fs.unlinkSync(reqFile);
+  fs.unlinkSync(pathFile);
+  fs.writeFileSync(modFile, JSON.stringify({
+    version: 1,
+    profileUid: 'prof-a',
+    revision: 3,
+    request: [{ id: 'spoof', source: 'local', enabled: true, host, path: '/v1', header: 'X-Custom-Spoof', value: '1' }],
+    response: [],
+    path: [],
+    body: [],
+  }));
+  const rejectedEngine = createRewriteEngine({ dataDir: dir, hosts: [host], strip: () => {} });
+  t.after(() => rejectedEngine.close());
+  assert.deepEqual(rejectedEngine.plan({ url: '/v1', method: 'GET' }, authority), {
+    request: [], response: [], body: [], pathTarget: null,
+  });
+});

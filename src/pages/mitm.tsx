@@ -9,6 +9,10 @@ import useSWR, { useSWRConfig } from 'swr'
 
 import { RecentRequests } from '@/components/mitm/recent-requests'
 import { HeaderRuleEditor } from '@/components/mitm/response-rule-editor'
+import {
+  MITM_MODULES_KEY,
+  ModuleListCard,
+} from '@/components/mitm/module-list-card'
 import { BasePage } from '@/components/base'
 import { MitmConfigEditor, MITM_CONFIG_KEY } from '@/components/mitm/mitm-config-editor'
 import {
@@ -110,7 +114,7 @@ const MitmPage = () => {
       </Stack>}
       header={
         <Button size="small" variant="outlined" startIcon={<RefreshRounded />}
-          disabled={busy || isValidating} onClick={() => { void mutate(); void revalidate(MITM_CONFIG_KEY) }}>
+          disabled={busy || isValidating} onClick={() => { void mutate(); void revalidate(MITM_CONFIG_KEY); void revalidate(MITM_MODULES_KEY) }}>
           {t('settings.mitm.refresh')}
         </Button>
       }
@@ -135,7 +139,7 @@ const MitmPage = () => {
             }>{t('settings.mitm.serviceRestartRequired')}</Alert>}
           </Card>
         )}
-        {(live || status?.serviceModeRequested) && <><HeaderRuleEditor /><RecentRequests /></>}
+        {(live || status?.serviceModeRequested) && <><ModuleListCard /><HeaderRuleEditor /><RecentRequests /></>}
         {!live && !status?.serviceModeRequested && <Alert severity="info">{t('settings.mitm.routingPaused')}</Alert>}
         {status?.serviceFailure && <Alert severity="error">{status.serviceFailure}</Alert>}
         {error && <Alert severity="error">{t('settings.mitm.error')}</Alert>}
