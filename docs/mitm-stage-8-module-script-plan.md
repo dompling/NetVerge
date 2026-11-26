@@ -225,8 +225,11 @@ A failed or cancelled relevant run is not a pass. Fix/revalidate the current gat
 Do not create unused alternative implementations, speculative adapters or duplicate helpers.
 
 - 8.1: centralized matching plan, typed rule model, bounded matcher and migration.
-- 8.2: independent profile workspace and module management foundation, reusing existing
-  profile UID and validated activation/rollback mechanisms.
+8.2: isolate `local` and `remote` profiles into dedicated `profiles/<profile-uid>/config.yaml`
+workspaces (`config::workspace`), automatically migrating flat legacy profile files after
+persisting `profiles.yaml` while preserving UID, subscription metadata, proxy selection,
+companion chains, backup/restore, generation-checked profile switching and rollback, and
+config-root-relative asset boundary checks (rejecting traversal, symlinks and reparse points).
 - 8.3: native module.yaml discovery and strict parsing, typed configuration compiler,
   profile-relative asset validation, non-destructive preview and approved snapshot.
 - 8.4: advanced header, URL/query and bounded body operations; encoding/framing,

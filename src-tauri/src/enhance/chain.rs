@@ -45,7 +45,12 @@ impl AsyncChainItemFrom for Option<Arc<ChainItem>> {
         let itype = item.itype.as_ref()?.as_str();
         let file = item.file.clone()?;
         let uid = item.uid.clone().unwrap_or_else(|| "".into());
-        let path = dirs::app_profiles_dir().ok()?.join(file.as_str());
+        let path = crate::config::workspace::resolve_profile_file_in_dir(
+            &dirs::app_profiles_dir().ok()?,
+            item.uid.as_deref(),
+            file.as_str(),
+        )
+        .ok()?;
 
         let meta = fs::metadata(&path).await.ok()?;
         let (mtime, len) = (meta.modified().ok()?, meta.len());

@@ -204,8 +204,8 @@ impl PrfItem {
         file_data: Option<String>,
         option: Option<&PrfOption>,
     ) -> Result<Self> {
-        let uid = help::get_uid("L").into();
-        let file = format!("{uid}.yaml").into();
+        let uid: String = help::get_uid("L").into();
+        let file = super::workspace::workspace_rel_config(uid.as_str())?.into();
         let opt_ref = option.as_ref();
         let update_interval = opt_ref.and_then(|o| o.update_interval);
         let mut merge = opt_ref.and_then(|o| o.merge.clone());
@@ -353,8 +353,8 @@ impl PrfItem {
             .and_then(|value| value.to_str().ok())
             .and_then(normalize_profile_home_url);
 
-        let uid = help::get_uid("R").into();
-        let file = format!("{uid}.yaml").into();
+        let uid: String = help::get_uid("R").into();
+        let file = super::workspace::workspace_rel_config(uid.as_str())?.into();
         let name = name.map_or_else(
             || filename.map_or_else(|| "Remote File".into(), |s| s.into()),
             |s| s.to_owned(),
@@ -462,7 +462,11 @@ impl PrfItem {
             .file
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("could not find the file"))?;
-        let path = dirs::app_profiles_dir()?.join(file.as_str());
+        let path = super::workspace::resolve_profile_file_in_dir(
+            &dirs::app_profiles_dir()?,
+            self.uid.as_deref(),
+            file.as_str(),
+        )?;
         let content = fs::read_to_string(&path)
             .await
             .with_context(|| format!("failed to read the file \"{}\"", path.display()))?;

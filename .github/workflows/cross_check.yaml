@@ -111,6 +111,7 @@ jobs:
         working-directory: src-tauri
         run: |
           cargo test -p clash-verge --lib --features clippy,verge-dev --target ${{ matrix.target }} core::mitm::
+          cargo test -p clash-verge --lib --features clippy,verge-dev --target ${{ matrix.target }} config::workspace::
 
       - name: Provision frontend placeholder for contract generator
         if: runner.os == 'macOS'

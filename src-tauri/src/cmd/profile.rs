@@ -188,6 +188,13 @@ pub async fn delete_profile(index: std::string::String) -> CmdResult {
         }
     };
     if should_update {
+        if let Ok(dir) = dirs::app_profiles_dir() {
+            let _ = crate::config::workspace::sync_active_workspace(
+                None,
+                &Config::profiles().await.data_arc(),
+                &dir,
+            );
+        }
         profiles::activate_selected_nodes();
     }
     drop(config_update_guard);
@@ -245,10 +252,20 @@ async fn commit_current_profile(profiles: &Draft<IProfiles>, current: Option<Str
         .await
 }
 
-async fn handle_success(current_value: Option<&String>) -> CmdResult<ValidationOutcome> {
+async fn handle_success(
+    current_value: Option<&String>,
+    switch_generation: u64,
+) -> CmdResult<ValidationOutcome> {
     commit_current_profile(&Config::profiles().await, current_value.cloned())
         .await
         .stringify_err()?;
+    let profiles_dir = dirs::app_profiles_dir().stringify_err()?;
+    crate::config::workspace::sync_active_workspace(
+        Some(switch_generation),
+        &Config::profiles().await.data_arc(),
+        &profiles_dir,
+    )
+    .stringify_err()?;
     // Runtime refresh and tray rebuilding happen after saved node selections are restored.
     profiles::activate_selected_nodes();
 
@@ -269,6 +286,13 @@ async fn discard_and_restore(current_profile: Option<&String>) -> CmdResult<()> 
     Config::profiles().await.discard();
     if let Some(prev_profile) = current_profile {
         restore_previous_profile(prev_profile).await?;
+    }
+    if let Ok(dir) = dirs::app_profiles_dir() {
+        let _ = crate::config::workspace::sync_active_workspace(
+            None,
+            &Config::profiles().await.data_arc(),
+            &dir,
+        );
     }
     Ok(())
 }
@@ -309,11 +333,12 @@ where
 async fn perform_config_update(
     current_value: Option<&String>,
     current_profile: Option<&String>,
+    switch_generation: u64,
 ) -> CmdResult<ValidationOutcome> {
     let update_result = run_profile_config_update_transition(|| CoreManager::global().update_config_forced()).await;
 
     match update_result {
-        Ok(outcome) if outcome.is_valid() => handle_success(current_value).await,
+        Ok(outcome) if outcome.is_valid() => handle_success(current_value, switch_generation).await,
         Ok(outcome) => handle_validation_failure(outcome, current_profile).await,
         Err(e) => handle_update_error(e, current_profile).await,
     }
@@ -403,13 +428,14 @@ pub async fn patch_profiles_config(profiles: ProfileSelection) -> CmdResult<Vali
     };
     let target_profile = profiles.current.as_ref();
 
+    let switch_generation = crate::config::workspace::begin_workspace_switch();
     let previous_profile = Config::profiles().await.data_arc().current.clone();
 
     Config::profiles().await.edit_draft(|d| {
         d.patch_config(&profiles);
     });
 
-    perform_config_update(target_profile, previous_profile.as_ref())
+    perform_config_update(target_profile, previous_profile.as_ref(), switch_generation)
         .await
         .map_err(|error| coded_error("PROFILE_SWITCH_FAILED", error))
 }
@@ -469,16 +495,21 @@ pub async fn patch_profile(index: std::string::String, profile: ProfilePatch) ->
 pub async fn view_profile(index: std::string::String) -> CmdResult {
     let profiles = Config::profiles().await;
     let profiles_ref = profiles.latest_arc();
-    let file = profiles_ref
+    let item = profiles_ref
         .get_item(&index)
-        .with_error_code("PROFILE_OPEN_FAILED")?
+        .with_error_code("PROFILE_OPEN_FAILED")?;
+    let file = item
         .file
         .as_ref()
         .ok_or_else(|| coded_error("PROFILE_OPEN_FAILED", "the file field is null"))?;
 
-    let path = dirs::app_profiles_dir()
-        .with_error_code("PROFILE_OPEN_FAILED")?
-        .join(file.as_str());
+    let profiles_dir = dirs::app_profiles_dir().with_error_code("PROFILE_OPEN_FAILED")?;
+    let path = crate::config::workspace::resolve_profile_file_in_dir(
+        &profiles_dir,
+        item.uid.as_deref(),
+        file.as_str(),
+    )
+    .with_error_code("PROFILE_OPEN_FAILED")?;
     if !path.exists() {
         return CmdResult::Err(coded_error(
             "PROFILE_OPEN_FAILED",
@@ -495,20 +526,24 @@ pub async fn read_profile_file(index: std::string::String) -> CmdResult<std::str
     let item = {
         let profiles = Config::profiles().await;
         let profiles_ref = profiles.latest_arc();
+        let found = profiles_ref
+            .get_item(&index)
+            .with_error_code("PROFILE_READ_FAILED")?;
         PrfItem {
-            file: profiles_ref
-                .get_item(&index)
-                .with_error_code("PROFILE_READ_FAILED")?
-                .file
-                .to_owned(),
+            uid: found.uid.clone(),
+            file: found.file.to_owned(),
             ..Default::default()
         }
     };
 
     if let Some(file) = item.file.as_ref() {
-        let path = dirs::app_profiles_dir()
-            .with_error_code("PROFILE_READ_FAILED")?
-            .join(file.as_str());
+        let profiles_dir = dirs::app_profiles_dir().with_error_code("PROFILE_READ_FAILED")?;
+        let path = crate::config::workspace::resolve_profile_file_in_dir(
+            &profiles_dir,
+            item.uid.as_deref(),
+            file.as_str(),
+        )
+        .with_error_code("PROFILE_READ_FAILED")?;
         match tokio::fs::try_exists(&path).await {
             Ok(true) => {}
             Ok(false) => return Ok(std::string::String::new()),

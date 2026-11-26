@@ -20,7 +20,6 @@ use serde_yaml_ng::Mapping;
 use std::num::NonZeroUsize;
 use std::{
     collections::{HashMap, HashSet},
-    path::{Component, Path},
     sync::{
         LazyLock,
         atomic::{AtomicU64, Ordering},
@@ -28,7 +27,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri_plugin_mihomo::models::{Proxies, ProxyType};
-use tokio::{fs, task::JoinHandle};
+use tokio::task::JoinHandle;
 use tristr::alias::String;
 
 pub(crate) static PROFILE_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -63,7 +62,8 @@ pub struct IProfilePreview<'a> {
 }
 
 pub(crate) struct ProfileDeletePlan {
-    files: Vec<String>,
+    files: Vec<(Option<String>, String)>,
+    workspace_uids: Vec<String>,
 }
 
 impl ProfileDeletePlan {
@@ -71,8 +71,14 @@ impl ProfileDeletePlan {
         let Ok(dir) = dirs::app_profiles_dir() else {
             return;
         };
-        for file in self.files {
-            let path = dir.join(file.as_str());
+        for (uid, file) in self.files {
+            let path = match super::workspace::resolve_profile_file_in_dir(&dir, uid.as_deref(), file.as_str()) {
+                Ok(path) => path,
+                Err(error) => {
+                    logging!(warn, Type::Config, "Skipping invalid deleted profile path {file}: {error:#}");
+                    continue;
+                }
+            };
             if let Err(error) = path.remove_if_exists().await {
                 logging!(
                     warn,
@@ -80,6 +86,17 @@ impl ProfileDeletePlan {
                     "Failed to remove deleted profile file {}: {error:#}",
                     path.display()
                 );
+            }
+        }
+        for uid in self.workspace_uids {
+            let profiles_dir = dir.clone();
+            let uid_str = uid.to_string();
+            if let Ok(Err(error)) = tokio::task::spawn_blocking(move || {
+                super::workspace::remove_profile_workspace_in_dir(&profiles_dir, &uid_str)
+            })
+            .await
+            {
+                logging!(warn, Type::Config, "Failed to remove deleted profile workspace {uid}: {error:#}");
             }
         }
     }
@@ -125,8 +142,34 @@ impl IProfiles {
                     }
                 }
 
-                if home_changed && let Err(err) = profiles.save_file().await {
-                    logging!(error, Type::Config, "无法保存已清理的 profiles.yaml: {err:#}");
+                let mut migrated = false;
+                let mut obsolete_flat = Vec::new();
+                if let Ok(profiles_dir) = dirs::app_profiles_dir() {
+                    match super::workspace::migrate_flat_profiles_in_dir(&profiles_dir, &mut profiles) {
+                        Ok((changed, obsolete)) => {
+                            migrated = changed;
+                            obsolete_flat = obsolete;
+                        }
+                        Err(err) => {
+                            logging!(error, Type::Config, "Failed to migrate flat profiles into workspaces: {err:#}");
+                        }
+                    }
+                }
+
+                if home_changed || migrated {
+                    match profiles.save_file().await {
+                        Ok(()) => {
+                            for old_path in obsolete_flat {
+                                let _ = old_path.remove_if_exists().await;
+                            }
+                        }
+                        Err(err) => {
+                            logging!(error, Type::Config, "无法保存已清理或已迁移的 profiles.yaml: {err:#}");
+                        }
+                    }
+                }
+                if let Ok(profiles_dir) = dirs::app_profiles_dir() {
+                    let _ = super::workspace::sync_active_workspace(None, &profiles, &profiles_dir);
                 }
                 profiles
             }
@@ -188,14 +231,21 @@ impl IProfiles {
                 .file
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("file field is required when file_data is provided"))?;
-            let path = dirs::app_profiles_dir()?.join(file.as_str());
-
-            fs::write(&path, file_data.as_bytes())
-                .await
-                .with_context(|| format!("failed to write to file \"{file}\""))?;
+            let profiles_dir = dirs::app_profiles_dir()?;
+            let uid_owned = uid.as_ref().map(|u| u.to_string());
+            let file_owned = file.to_string();
+            let bytes = file_data.as_bytes().to_vec();
+            tokio::task::spawn_blocking(move || {
+                super::workspace::write_profile_file_in_dir(&profiles_dir, uid_owned.as_deref(), &file_owned, &bytes)
+            })
+            .await
+            .context("profile write task failed")?
+            .with_context(|| format!("failed to write to file \"{file}\""))?;
         }
 
-        if self.current.is_none() && (item.itype == Some("remote".into()) || item.itype == Some("local".into())) {
+        let became_current =
+            self.current.is_none() && (item.itype == Some("remote".into()) || item.itype == Some("local".into()));
+        if became_current {
             self.current = uid.to_owned();
         }
 
@@ -205,6 +255,12 @@ impl IProfiles {
 
         if let Some(items) = self.items.as_mut() {
             items.push(item.to_owned());
+        }
+
+        if became_current
+            && let Ok(profiles_dir) = dirs::app_profiles_dir()
+        {
+            let _ = super::workspace::sync_active_workspace(None, self, &profiles_dir);
         }
 
         Ok(())
@@ -228,7 +284,7 @@ impl IProfiles {
 
     async fn patch_item(&mut self, uid: &str, item: &PrfItem) -> Result<()> {
         if let Some(file) = &item.file {
-            Self::validate_profile_file(file)?;
+            super::workspace::validate_profile_rel_file(Some(uid), file.as_str())?;
         }
 
         let mut items = self.items.take().unwrap_or_default();
@@ -254,22 +310,6 @@ impl IProfiles {
         bail!("failed to find the profile item \"uid:{uid}\"")
     }
 
-    fn validate_profile_file(file: &str) -> Result<()> {
-        let mut components = Path::new(file).components();
-        if file.is_empty()
-            || file.contains('/')
-            || file.contains('\\')
-            || !matches!(
-                (components.next(), components.next()),
-                (Some(Component::Normal(_)), None)
-            )
-        {
-            bail!("profile file must be a single filename");
-        }
-
-        Ok(())
-    }
-
     /// Updates fields returned by a remote profile refresh.
     async fn update_item(&mut self, uid: &str, item: &mut PrfItem) -> Result<()> {
         if self.items.is_none() {
@@ -286,17 +326,34 @@ impl IProfiles {
                     each.home = item.home.to_owned();
                     each.option = PrfOption::merge(each.option.as_ref(), item.option.as_ref());
                     if let Some(file_data) = item.file_data.take() {
-                        let file = each.file.take();
-                        let file =
-                            file.unwrap_or_else(|| item.file.take().unwrap_or_else(|| format!("{}.yaml", uid).into()));
+                        let default_file: String = if matches!(each.itype.as_deref(), Some("local" | "remote")) {
+                            super::workspace::workspace_rel_config(uid)?.into()
+                        } else {
+                            format!("{uid}.yaml").into()
+                        };
+                        let file = each
+                            .file
+                            .take()
+                            .or_else(|| item.file.take())
+                            .unwrap_or(default_file);
 
                         each.file = Some(file.clone());
 
-                        let path = dirs::app_profiles_dir()?.join(file.as_str());
-
-                        fs::write(&path, file_data.as_bytes())
-                            .await
-                            .with_context(|| format!("failed to write to file \"{file}\""))?;
+                        let profiles_dir = dirs::app_profiles_dir()?;
+                        let uid_owned = uid.to_owned();
+                        let file_owned = file.to_string();
+                        let bytes = file_data.as_bytes().to_vec();
+                        tokio::task::spawn_blocking(move || {
+                            super::workspace::write_profile_file_in_dir(
+                                &profiles_dir,
+                                Some(&uid_owned),
+                                &file_owned,
+                                &bytes,
+                            )
+                        })
+                        .await
+                        .context("profile refresh write task failed")?
+                        .with_context(|| format!("failed to write to file \"{file}\""))?;
                     }
 
                     break;
@@ -330,7 +387,9 @@ impl IProfiles {
 
     pub(crate) fn plan_delete_item(&mut self, uid: &str) -> Result<(bool, ProfileDeletePlan)> {
         let deleting_current = self.current.as_deref().is_none_or(|current| current == uid);
-        let delete_uids = self.get_item(uid)?.option.as_ref().map_or_else(Vec::new, |op| {
+        let target_item = self.get_item(uid)?;
+        let is_workspace_owner = matches!(target_item.itype.as_deref(), Some("local" | "remote"));
+        let delete_uids = target_item.option.as_ref().map_or_else(Vec::new, |op| {
             [
                 op.merge.clone(),
                 op.script.clone(),
@@ -343,14 +402,18 @@ impl IProfiles {
         });
         let mut items = self.items.take().unwrap_or_default();
         let mut files = Vec::new();
+        let mut workspace_uids = Vec::new();
+        if is_workspace_owner {
+            workspace_uids.push(uid.into());
+        }
 
         if let Some(file) = Self::take_item_file_by_uid(&mut items, Some(uid)) {
-            files.push(file);
+            files.push((Some(uid.into()), file));
         }
 
         for delete_uid in delete_uids {
             if let Some(file) = Self::take_item_file_by_uid(&mut items, delete_uid.as_deref()) {
-                files.push(file);
+                files.push((delete_uid, file));
             }
         }
 
@@ -365,7 +428,13 @@ impl IProfiles {
         }
 
         self.items = Some(items);
-        Ok((deleting_current, ProfileDeletePlan { files }))
+        Ok((
+            deleting_current,
+            ProfileDeletePlan {
+                files,
+                workspace_uids,
+            },
+        ))
     }
 
     /// 获取current指向的订阅内容
@@ -374,7 +443,11 @@ impl IProfiles {
             (Some(current), Some(items)) => {
                 if let Some(item) = items.iter().find(|e| e.uid.as_ref() == Some(current)) {
                     let file_path = match item.file.as_ref() {
-                        Some(file) => dirs::app_profiles_dir()?.join(file.as_str()),
+                        Some(file) => super::workspace::resolve_profile_file_in_dir(
+                            &dirs::app_profiles_dir()?,
+                            item.uid.as_deref(),
+                            file.as_str(),
+                        )?,
                         None => bail!("failed to get the file field"),
                     };
                     return help::read_mapping(&file_path).await;

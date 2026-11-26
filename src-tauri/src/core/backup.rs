@@ -268,6 +268,45 @@ fn parse_webdav_list(xml: &str) -> Result<Vec<ListEntity>, reqwest_dav::Error> {
     multi_status.responses.into_iter().map(ListEntity::try_from).collect()
 }
 
+async fn archive_profiles_tree(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    root_dir: PathBuf,
+    options: SimpleFileOptions,
+) -> Result<(), Error> {
+    let mut stack = vec![(root_dir, std::string::String::from("profiles"), 0usize)];
+    while let Some((dir, rel_prefix, depth)) = stack.pop() {
+        if depth > 8 || crate::config::workspace::ensure_not_symlink_or_reparse(&dir).is_err() {
+            continue;
+        }
+        let Ok(mut entries) = fs::read_dir(&dir).await else {
+            continue;
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let file_name_os = entry.file_name();
+            let file_name = file_name_os
+                .to_str()
+                .ok_or_else(|| anyhow::Error::msg("Invalid file name encoding"))?;
+            if file_name.starts_with(".nvtmp-") {
+                continue;
+            }
+            let path = entry.path();
+            if crate::config::workspace::ensure_not_symlink_or_reparse(&path).is_err() {
+                continue;
+            }
+            let meta = fs::symlink_metadata(&path).await?;
+            let rel_path = format!("{rel_prefix}/{file_name}");
+            if meta.is_dir() {
+                stack.push((path, rel_path, depth + 1));
+            } else if meta.is_file() {
+                zip.start_file(rel_path, options)?;
+                let file_content = fs::read(&path).await?;
+                zip.write_all(&file_content)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn create_backup() -> Result<(String, PathBuf), Error> {
     let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     let zip_file_name: String = format!("{OS}-backup-{now}.zip").into();
@@ -279,21 +318,7 @@ pub async fn create_backup() -> Result<(String, PathBuf), Error> {
     zip.add_directory("profiles/", SimpleFileOptions::default())?;
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
-    if let Ok(mut entries) = fs::read_dir(dirs::app_profiles_dir()?).await {
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.is_file() {
-                let file_name_os = entry.file_name();
-                let file_name = file_name_os
-                    .to_str()
-                    .ok_or_else(|| anyhow::Error::msg("Invalid file name encoding"))?;
-                let backup_path = format!("profiles/{}", file_name);
-                zip.start_file(backup_path, options)?;
-                let file_content = fs::read(&path).await?;
-                zip.write_all(&file_content)?;
-            }
-        }
-    }
+    archive_profiles_tree(&mut zip, dirs::app_profiles_dir()?, options).await?;
     zip.start_file(dirs::CLASH_CONFIG, options)?;
     zip.write_all(fs::read(dirs::clash_path()?).await?.as_slice())?;
 

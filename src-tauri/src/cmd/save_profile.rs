@@ -47,7 +47,12 @@ pub async fn save_profile_file(
     };
 
     let profiles_dir = dirs::app_profiles_dir().stringify_err()?;
-    let file_path = profiles_dir.join(rel_path.as_str());
+    let file_path = crate::config::workspace::resolve_profile_file_in_dir(
+        &profiles_dir,
+        Some(index.as_str()),
+        rel_path.as_str(),
+    )
+    .stringify_err()?;
     let file_path_str = file_path.to_string_lossy().to_string();
 
     // 读取原始内容（在释放profiles_guard后进行）
@@ -59,6 +64,7 @@ pub async fn save_profile_file(
     })?;
     let original_content = if original_existed {
         PrfItem {
+            uid: Some(index.clone()),
             file: Some(rel_path.clone()),
             ..Default::default()
         }
@@ -68,6 +74,10 @@ pub async fn save_profile_file(
     } else {
         String::new()
     };
+
+    if let Some(parent) = file_path.parent() {
+        fs::create_dir_all(parent).await.stringify_err()?;
+    }
 
     // 保存新的配置文件
     fs::write(&file_path, &file_data).await.stringify_err()?;
