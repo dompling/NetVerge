@@ -110,6 +110,49 @@ async function restartDesktop(app, previousPid) {
   await until('MITM navigation after restart', () => automation(app, 'Open') === 'OK', 70000);
 }
 
+function writeModuleManifest(file, version, value) {
+  // JSON is a subset of YAML and keeps the fixture values typed.
+  fs.writeFileSync(file + '.tmp', JSON.stringify({
+    kind: 'netverge-module',
+    schema: 1,
+    id: 'com.example.desktop-approval',
+    name: 'Desktop Approval Fixture',
+    version,
+    rewrite: [{
+      id: 'response-marker',
+      type: 'response-header',
+      match: { host: selected, path: '/demo' },
+      action: { set: { 'X-NetVerge-Test': value } },
+    }],
+  }));
+  fs.renameSync(file + '.tmp', file);
+}
+
+async function verifyModuleApproval(app, manifest, netFixture, temp, dnsPort) {
+  const probe = (expected) => {
+    execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', expected],
+      { stdio: 'inherit', timeout: 75000 });
+  };
+
+  await until('discovered module awaiting approval', () => automation(app, 'ModulePending') === 'OK');
+  probe('off');
+  await until('click Approve for discovered module', () => automation(app, 'ApproveModule') === 'OK');
+  await until('module is active', () => automation(app, 'ModuleActive') === 'OK');
+  await sleep(1200);
+  probe('on');
+  console.log('PASS: desktop module approval enabled the scoped rewrite over TUN/TLS');
+
+  writeModuleManifest(manifest, '1.1', 'override');
+  await until('refresh module list after a manifest edit', () => automation(app, 'RefreshMitm') === 'OK');
+  await until('updated module awaiting approval', () => automation(app, 'ModuleUpdatePending') === 'OK');
+  probe('on');
+  await until('click Approve for updated module', () => automation(app, 'ApproveModule') === 'OK');
+  await until('updated module is active', () => automation(app, 'ModuleActive') === 'OK');
+  await sleep(1200);
+  probe('multi-override');
+  console.log('PASS: editing the manifest preserved the approved rewrite until the update was approved');
+}
+
 async function main() {
   assert.ok(process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true', 'requires a disposable Windows runner');
   const root = path.resolve(process.argv[2]);
@@ -118,6 +161,7 @@ async function main() {
   const launcher = path.join(root, 'NetVerge-MITM.ps1');
   const node = path.join(root, 'worker', 'node.exe');
   const rewriteTest = process.argv[3] === 'rewrite';
+  const moduleTest = process.argv[3] === 'modules';
   const worker = rewriteTest ? path.resolve(__dirname, '../../whistle/route-worker.cjs') :
     path.join(root, 'worker', 'route-worker.cjs');
   const mitm = path.join(appRoot, 'netverge-mitm-dev');
@@ -190,6 +234,12 @@ async function main() {
       rules: [`DOMAIN,${selected},fixture-exit`, `DOMAIN,${bypass},fixture-exit`, 'MATCH,REJECT'],
     }));
 
+    const moduleManifest = path.join(appRoot, 'profiles', 'desktop-fixture', 'modules', 'fixture', 'module.yaml');
+    if (moduleTest) {
+      fs.mkdirSync(path.dirname(moduleManifest), { recursive: true });
+      writeModuleManifest(moduleManifest, '1.0', '1');
+    }
+
     attemptedInstall = true;
     powershell("& " + q(launcher) + ' -Action Install', 'inherit');
     desktop = spawn(app, [], {
@@ -216,6 +266,8 @@ async function main() {
     await until('restored desktop MITM state', () => automation(app, 'Healthy') === 'OK', 60000);
     execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled'], { stdio: 'inherit', timeout: 75000 });
     console.log('PASS: clicked desktop MITM service switch and restarted into a protected service generation');
+
+    if (moduleTest) await verifyModuleApproval(app, moduleManifest, netFixture, temp, dnsPort);
 
     if (rewriteTest) {
       const file = path.join(mitm, 'response-header-rule.json');

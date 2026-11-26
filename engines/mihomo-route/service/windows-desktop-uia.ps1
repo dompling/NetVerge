@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'Inspect')][string]$Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -335,13 +335,33 @@ public static class NetVergeServiceSwitchInput {
     'RecentEmpty' {
         if (Find-Element 'No completed requests in this worker session.') { 'OK' }
     }
-    'Healthy' {
-        if (Find-Element 'Local link healthy') { 'OK'; break }
+    'ModulePending' {
+        if ((Find-Element 'Desktop Approval Fixture (1.0)') -and (Find-Element 'Pending approval')) { 'OK' }
+    }
+    'ModuleUpdatePending' {
+        if ((Find-Element 'Desktop Approval Fixture (1.1)') -and (Find-Element 'Modified (review required)')) { 'OK' }
+    }
+    'ModuleActive' {
+        $switch = Find-Element 'Enable module com.example.desktop-approval'
+        if ($switch -and $switch.Current.IsEnabled -and !(Find-Element 'Approve' ([Windows.Automation.ControlType]::Button))) { 'OK' }
+    }
+    'ApproveModule' {
+        $button = Find-Element 'Approve' ([Windows.Automation.ControlType]::Button)
+        if ($button -and $button.Current.IsEnabled) {
+            $button.GetCurrentPattern($invoke).Invoke()
+            'OK'
+        }
+    }
+    { $_ -in 'Healthy', 'RefreshMitm' } {
+        if ($Action -eq 'Healthy' -and (Find-Element 'Local link healthy')) { 'OK'; break }
         # The icon contributes a zero-width character to WebView2's accessible name.
         $buttons = $root.FindAll($scope, [Windows.Automation.PropertyCondition]::new(
             [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button))
         $refresh = $buttons | Where-Object { ($_.Current.Name -replace '[\p{Cf}\s]', '') -eq 'Refresh' } | Select-Object -First 1
-        if ($refresh -and $refresh.Current.IsEnabled) { $refresh.GetCurrentPattern($invoke).Invoke() }
+        if ($refresh -and $refresh.Current.IsEnabled) {
+            $refresh.GetCurrentPattern($invoke).Invoke()
+            if ($Action -eq 'RefreshMitm') { 'OK' }
+        }
     }
     'Inspect' {
         $elements = $root.FindAll($scope, [Windows.Automation.Condition]::TrueCondition)

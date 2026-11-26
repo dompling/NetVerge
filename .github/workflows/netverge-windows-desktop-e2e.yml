@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [packaged, rewrite, editor-body]
+        scenario: [packaged, rewrite, editor-body, modules]
     runs-on: windows-latest
     timeout-minutes: 12
     steps:
