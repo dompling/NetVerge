@@ -251,6 +251,27 @@ impl RuleIdentity for ResponseBodyRule {
     fn rule_source(&self) -> Option<&str> { self.source.as_deref() }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct LocalResponseRule {
+    pub id: String,
+    pub source: String,
+    pub enabled: bool,
+    pub host: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regex: Option<String>,
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(String, String)>,
+    pub body_sha256: String,
+    pub body_len: u32,
+}
+
 const BODY_FILE: &str = "response-body-rule.json";
 pub fn read_body() -> Result<Vec<ResponseBodyRule>> { read_rules(BODY_FILE) }
 

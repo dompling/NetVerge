@@ -9,6 +9,11 @@ const { once } = require('node:events');
 const { spawn, execFileSync } = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
 const { setTimeout: sleep } = require('node:timers/promises');
+const {
+  writeModuleManifest,
+  verifyModuleApproval,
+  verifyCompiledModuleBundle,
+} = require('./windows-desktop-module-e2e.cjs');
 
 const selected = 'api.example.test';
 const bypass = 'bypass.example.test';
@@ -110,65 +115,6 @@ async function restartDesktop(app, previousPid) {
   await until('MITM navigation after restart', () => automation(app, 'Open') === 'OK', 70000);
 }
 
-function writeModuleManifest(file, version, changes) {
-  fs.writeFileSync(file + '.tmp', JSON.stringify({
-    kind: 'netverge-module',
-    schema: 1,
-    id: 'com.example.desktop-approval',
-    name: 'Desktop Approval Fixture',
-    version,
-    rewrite: changes.map(([type, action]) => ({
-      id: type,
-      type,
-      match: { host: selected, path: '/demo' },
-      action,
-    })),
-  }));
-  fs.renameSync(file + '.tmp', file);
-}
-
-async function verifyModuleApproval(app, manifest, netFixture, temp, dnsPort, advancedModule) {
-  const probe = (expected) => {
-    execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', expected],
-      { stdio: 'inherit', timeout: 75000 });
-  };
-
-  await until('discovered module awaiting approval', () => automation(app, 'ModulePending') === 'OK');
-  probe('off');
-  await until('click Approve for discovered module', () => automation(app, 'ApproveModule') === 'OK');
-  await until('module is active', () => automation(app, 'ModuleActive') === 'OK');
-  await sleep(1200);
-  probe('on');
-  console.log('PASS: desktop module approval enabled the scoped rewrite over TUN/TLS');
-
-  const updatedActions = advancedModule ? [
-    ['request-header', { remove: ['X-Custom-NetVerge-Test'] }],
-    ['response-header', { remove: ['X-NetVerge-Test'] }],
-    ['url', { 'remove-query': ['debug'] }],
-    ['response-body', {
-      search: '{"marker":"netverge-windows-tun-origin","path":"/demo"}',
-      replace: '{"marker":"netverge-body-rewritten","path":"/demo"}',
-      'match-whole': true,
-    }],
-  ] : [
-    ['response-header', { set: { 'X-NetVerge-Test': 'override' } }],
-  ];
-  writeModuleManifest(manifest, '1.1', updatedActions);
-  await until('refresh module list after a manifest edit', () => automation(app, 'RefreshMitm') === 'OK');
-  await until('updated module awaiting approval', () => automation(app, 'ModuleUpdatePending') === 'OK');
-  probe(advancedModule ? 'module-pending' : 'on');
-  await until('click Approve for updated module', () => automation(app, 'ApproveModule') === 'OK');
-  await until('updated module is active', () => automation(app, 'ModuleActive') === 'OK');
-  await sleep(1200);
-  probe(advancedModule ? 'module-remove' : 'multi-override');
-  if (advancedModule) {
-    console.log('PASS: approved module removed both headers and selected query parameters only on the matched request');
-    probe('body-whole');
-    console.log('PASS: a whole-body rule rewrote the exact gzip payload and preserved the one-byte variant');
-  }
-  console.log('PASS: editing the manifest preserved the approved rewrite until the update was approved');
-}
-
 async function main() {
   assert.ok(process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true', 'requires a disposable Windows runner');
   const root = path.resolve(process.argv[2]);
@@ -254,7 +200,7 @@ async function main() {
     const moduleManifest = path.join(appRoot, 'profiles', 'desktop-fixture', 'modules', 'fixture', 'module.yaml');
     if (moduleTest) {
       fs.mkdirSync(path.dirname(moduleManifest), { recursive: true });
-      writeModuleManifest(moduleManifest, '1.0', [['response-header', { set: { 'X-NetVerge-Test': '1' } }]]);
+      writeModuleManifest(moduleManifest, selected, '1.0', [['res-init', 'response-header', { set: { 'X-NetVerge-Test': '1' } }]]);
     }
 
     attemptedInstall = true;
@@ -284,7 +230,11 @@ async function main() {
     execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled'], { stdio: 'inherit', timeout: 75000 });
     console.log('PASS: clicked desktop MITM service switch and restarted into a protected service generation');
 
-    if (moduleTest) await verifyModuleApproval(app, moduleManifest, netFixture, temp, dnsPort, advancedModule);
+    if (moduleTest) {
+      await verifyModuleApproval({
+        app, manifest: moduleManifest, netFixture, temp, dnsPort, selected, advancedModule, until, automation,
+      });
+    }
 
     if (rewriteTest) {
       const file = path.join(mitm, 'response-header-rule.json');
@@ -339,31 +289,7 @@ async function main() {
         console.log('PASS: ' + label + ' against original HTTPS URL, bypass and original exit verified');
       }
       fs.unlinkSync(file);
-      const moduleBundleFile = path.join(mitm, 'compiled-module-rules.json');
-      const modRule = value => ({
-        id: 'com.example.debug:resp', source: 'module:com.example.debug', enabled: true,
-        host: selected, path: '', regex: '^https://api\\.example\\.test/demo$', header: 'X-NetVerge-Test', value,
-      });
-      fs.writeFileSync(moduleBundleFile + '.tmp', JSON.stringify({
-        version: 1, profileUid: 'desktop-fixture', revision: 1, request: [], response: [modRule('1')], path: [], body: [],
-      }));
-      fs.renameSync(moduleBundleFile + '.tmp', moduleBundleFile);
-      await sleep(1200);
-      execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', 'on'], { stdio: 'inherit', timeout: 75000 });
-      console.log('PASS: compiled module rewrite bundle applied over Windows TUN and native TLS');
-
-      // Local rule overrides conflicting module header assignment.
-      fs.writeFileSync(moduleBundleFile + '.tmp', JSON.stringify({
-        version: 1, profileUid: 'desktop-fixture', revision: 2, request: [], response: [modRule('module-shadowed')], path: [], body: [],
-      }));
-      fs.renameSync(moduleBundleFile + '.tmp', moduleBundleFile);
-      fs.writeFileSync(file + '.tmp', JSON.stringify({ version: 2, rules: [{ enabled: true, host: selected, path: '/demo', header: 'X-NetVerge-Test', value: '1' }] }));
-      fs.renameSync(file + '.tmp', file);
-      await sleep(1200);
-      execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', 'on'], { stdio: 'inherit', timeout: 75000 });
-      console.log('PASS: local rewrite rule retained precedence over conflicting module rule');
-      fs.unlinkSync(moduleBundleFile);
-      fs.unlinkSync(file);
+      await verifyCompiledModuleBundle({ mitm, file, selected, sha256, netFixture, temp, dnsPort });
       const bodyFile = path.join(mitm, 'response-body-rule.json');
       for (const enabled of [true, false]) {
         const bodyRule = { version: 2, rules: [{ enabled, host: selected, path: '/demo', search: 'netverge-windows-tun-origin', value: 'netverge-body-rewritten' }] };

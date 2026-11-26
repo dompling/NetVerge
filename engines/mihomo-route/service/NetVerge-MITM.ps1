@@ -45,6 +45,7 @@ switch ($Action) {
             $null = Get-VerifiedFile 'worker/rewrite-rules.cjs'
             $null = Get-VerifiedFile 'worker/url-regex.cjs'
             $null = Get-VerifiedFile 'worker/body-rewrite.cjs'
+            $null = Get-VerifiedFile 'worker/local-response.cjs'
             $null = Get-VerifiedFile 'worker/ca-integrity.cjs'
             $configPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Bootstrap)
             if (!(Test-Path -LiteralPath $configPath)) {

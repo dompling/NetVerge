@@ -6,14 +6,16 @@ on:
     paths:
       - '.github/workflows/netverge-windows-desktop-e2e.yml'
       - 'src-tauri/src/core/mitm/module_manager.rs'
+      - 'src-tauri/src/core/mitm/module_manager/**'
       - 'src/pages/mitm.tsx'
-      - 'engines/mihomo-route/service/windows-desktop-e2e.cjs'
+      - 'engines/mihomo-route/service/windows-desktop-*.cjs'
       - 'engines/mihomo-route/service/windows-desktop-uia.ps1'
       - 'engines/whistle/route-worker.cjs'
       - 'engines/whistle/rewrite-rules.cjs'
       - 'engines/whistle/url-regex.cjs'
       - 'engines/whistle/rewrite-plan.test.cjs'
       - 'engines/whistle/body-rewrite.cjs'
+      - 'engines/whistle/local-response.cjs'
       - 'engines/whistle/windows-tun-lab.cjs'
       - 'engines/whistle/windows-tun-dns-readiness*.cjs'
       - 'engines/whistle/mitm-lab.cjs'
@@ -21,12 +23,12 @@ on:
     inputs:
       package_run:
         description: Successful Windows test-package run ID (editor-body capable)
-        default: '45838987358'
+        default: '45865363952'
         required: true
         type: string
       package_name:
         description: Windows x64 ZIP artifact name
-        default: NetVerge-MITM-Test-Windows-x64-bfba4dd.zip
+        default: NetVerge-MITM-Test-Windows-x64-4f082c9.zip
         required: true
         type: string
 
@@ -52,8 +54,8 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.package_run || '45838987358' }}
-          name: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-bfba4dd.zip' }}
+          run-id: ${{ inputs.package_run || '45865363952' }}
+          name: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-4f082c9.zip' }}
           path: desktop-artifact
       - name: Verify DNS readiness and original-request match plan
         run: node --test engines/whistle/windows-tun-dns-readiness.test.cjs engines/whistle/rewrite-plan.test.cjs
@@ -63,7 +65,7 @@ jobs:
       - name: Click the MITM service switch and verify native TLS after app restart
         shell: pwsh
         env:
-          TEST_PACKAGE_NAME: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-bfba4dd.zip' }}
+          TEST_PACKAGE_NAME: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-4f082c9.zip' }}
         run: |
           $package = (Resolve-Path -LiteralPath 'desktop-artifact').Path
           $archive = Join-Path $package $env:TEST_PACKAGE_NAME

@@ -242,6 +242,9 @@ pub struct RecentRequest {
     body_rule: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
+    local_rule: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     matched_rule_ids: Option<Vec<String>>,
     status: u16,
     completed_at: String,

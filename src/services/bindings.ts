@@ -709,6 +709,7 @@ export type RecentRequest = {
   responseRule: boolean
   pathRule: boolean
   bodyRule: boolean
+  localRule?: boolean | null
   matchedRuleIds?: string[] | null
   status: number
   completedAt: string

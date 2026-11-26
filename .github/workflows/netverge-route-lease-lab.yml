@@ -18,6 +18,7 @@ on:
       - 'engines/whistle/rewrite-rules.cjs'
       - 'engines/whistle/url-regex.cjs'
       - 'engines/whistle/body-rewrite.cjs'
+      - 'engines/whistle/local-response.cjs'
       - 'engines/whistle/ca-integrity.cjs'
       - 'engines/whistle/package.json'
       - '.github/workflows/netverge-route-lease-lab.yml'

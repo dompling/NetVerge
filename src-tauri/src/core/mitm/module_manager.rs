@@ -10,7 +10,7 @@ use std::{
 use super::{
     module_discovery::{VerifiedLiveModule, scan_live_modules},
     module_manifest::{CompiledModuleRewrites, ModuleDiagnostic, valid_module_id},
-    rewrite::{ResponseBodyRule, ResponseHeaderRule, UrlPathRule},
+    rewrite::{LocalResponseRule, ResponseBodyRule, ResponseHeaderRule, UrlPathRule},
 };
 use crate::config::workspace::{
     WorkspaceSnapshot, active_workspace_snapshot, validate_profile_uid,
@@ -18,6 +18,7 @@ use crate::config::workspace::{
 
 const MAX_COMPILED_PER_PHASE: usize = 16;
 pub(crate) const COMPILED_MODULE_FILE: &str = "compiled-module-rules.json";
+const APPROVED_BLOBS_DIR: &str = "approved-blobs";
 
 static SNAPSHOT_REVISION: AtomicU32 = AtomicU32::new(1);
 
@@ -85,6 +86,8 @@ struct CompiledModuleRuleBundle {
     response: Vec<ResponseHeaderRule>,
     path: Vec<UrlPathRule>,
     body: Vec<ResponseBodyRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    local: Vec<LocalResponseRule>,
 }
 
 fn approval_file(mitm_dir: &Path, profile_uid: &str) -> Result<PathBuf> {
@@ -129,6 +132,55 @@ fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn valid_hex_sha256(sha: &str) -> bool {
+    sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn stage_approved_blobs(mitm_dir: &Path, blobs: &BTreeMap<String, Vec<u8>>) -> Result<()> {
+    if blobs.is_empty() {
+        return Ok(());
+    }
+    let dir = mitm_dir.join(APPROVED_BLOBS_DIR);
+    for (sha, bytes) in blobs {
+        ensure!(valid_hex_sha256(sha), "invalid approved blob digest");
+        write_atomic_private(&dir.join(sha), bytes)?;
+    }
+    Ok(())
+}
+
+fn prune_unreferenced_blobs(mitm_dir: &Path) {
+    let blobs_dir = mitm_dir.join(APPROVED_BLOBS_DIR);
+    if !blobs_dir.is_dir() {
+        return;
+    }
+    let approvals_dir = mitm_dir.join("module-approvals");
+    let mut keep = BTreeSet::new();
+    if let Ok(entries) = std::fs::read_dir(&approvals_dir) {
+        for entry in entries {
+            let Ok(entry) = entry else { return };
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(raw) = super::settings::read_bounded(&path) else { return };
+            let Ok(store) = serde_json::from_slice::<ProfileApprovalStore>(&raw) else { return };
+            for rec in store.modules.values() {
+                for local in &rec.approved_rewrites.local {
+                    keep.insert(local.body_sha256.clone());
+                }
+            }
+        }
+    }
+    let Ok(blob_entries) = std::fs::read_dir(&blobs_dir) else { return };
+    for entry in blob_entries.flatten() {
+        let os_name = entry.file_name();
+        let Some(name) = os_name.to_str() else { continue };
+        if valid_hex_sha256(name) && !keep.contains(name) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn order_module_ids<'a>(live: &'a [VerifiedLiveModule], user_order: &[String]) -> Vec<&'a VerifiedLiveModule> {
     let mut ranked: Vec<(usize, &VerifiedLiveModule)> = live
         .iter()
@@ -156,10 +208,7 @@ pub(crate) fn write_compiled_snapshot_in_dirs(
     };
     let store = read_approval_store(mitm_dir, uid)?;
     let (live, _) = scan_live_modules(ws_root)?;
-    let mut present_ids: BTreeSet<&str> = BTreeSet::new();
-    for m in &live {
-        present_ids.insert(m.id.as_str());
-    }
+    let present_ids: BTreeSet<&str> = live.iter().map(|m| m.id.as_str()).collect();
     let mut ordered_ids: Vec<&str> = store
         .order
         .iter()
@@ -180,13 +229,14 @@ pub(crate) fn write_compiled_snapshot_in_dirs(
         response: Vec::new(),
         path: Vec::new(),
         body: Vec::new(),
+        local: Vec::new(),
     };
     for mod_id in ordered_ids {
         let Some(entry) = store.modules.get(mod_id) else { continue };
         if !entry.enabled {
             continue;
         }
-        // Preserve last-known approved rewrites even if unapproved edits exist on disk.
+        // Preserve last-known approved rewrites and blobs even if unapproved edits exist on disk.
         let r = &entry.approved_rewrites;
         if bundle.request.len() + r.request.len() <= MAX_COMPILED_PER_PHASE {
             bundle.request.extend(r.request.clone());
@@ -200,16 +250,23 @@ pub(crate) fn write_compiled_snapshot_in_dirs(
         if bundle.body.len() + r.body.len() <= MAX_COMPILED_PER_PHASE {
             bundle.body.extend(r.body.clone());
         }
+        if bundle.local.len() + r.local.len() <= MAX_COMPILED_PER_PHASE {
+            bundle.local.extend(r.local.clone());
+        }
     }
-    if bundle.request.is_empty() && bundle.response.is_empty() && bundle.path.is_empty() && bundle.body.is_empty() {
+    if bundle.request.is_empty()
+        && bundle.response.is_empty()
+        && bundle.path.is_empty()
+        && bundle.body.is_empty()
+        && bundle.local.is_empty()
+    {
         match std::fs::remove_file(&compiled_path) {
             Ok(()) => return Ok(()),
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
             Err(err) => return Err(err.into()),
         }
     }
-    let json = serde_json::to_vec(&bundle)?;
-    write_atomic_private(&compiled_path, &json)
+    write_atomic_private(&compiled_path, &serde_json::to_vec(&bundle)?)
 }
 
 pub(crate) fn preview_modules_in_dirs(
@@ -243,7 +300,8 @@ pub(crate) fn preview_modules_in_dirs(
         let rewrite_total = item.compiled.request.len()
             + item.compiled.response.len()
             + item.compiled.path.len()
-            + item.compiled.body.len();
+            + item.compiled.body.len()
+            + item.compiled.local.len();
         let missing = item
             .proposed_hostnames
             .iter()
@@ -297,6 +355,7 @@ pub(crate) fn set_module_approval_in_dirs(
     if !store.order.iter().any(|id| id == module_id) {
         store.order.push(module_id.to_owned());
     }
+    stage_approved_blobs(mitm_dir, &found.blobs)?;
     store.modules.insert(
         module_id.to_owned(),
         ApprovedModuleEntry {
@@ -308,6 +367,7 @@ pub(crate) fn set_module_approval_in_dirs(
     let store_path = approval_file(mitm_dir, profile_uid)?;
     write_atomic_private(&store_path, &serde_json::to_vec(&store)?)?;
     write_compiled_snapshot_in_dirs(mitm_dir, Some(profile_uid), Some(workspace_root))?;
+    prune_unreferenced_blobs(mitm_dir);
     preview_modules_in_dirs(mitm_dir, Some(profile_uid), Some(workspace_root), active_mitm_hosts)
 }
 
@@ -369,62 +429,4 @@ pub async fn set_module_approval(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn discovers_validates_approves_preserves_on_edit_and_switches_profiles() -> Result<()> {
-        let rev = SNAPSHOT_REVISION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("nv-mod-mgr-{}-{rev}", std::process::id()));
-        std::fs::create_dir_all(&root)?;
-        let result = (|| -> Result<()> {
-            let mitm_dir = root.join("mitm");
-            let ws_a = root.join("profiles/prof-a");
-            let ws_b = root.join("profiles/prof-b");
-            std::fs::create_dir_all(ws_a.join("modules/debug"))?;
-            std::fs::create_dir_all(ws_a.join("scripts"))?;
-            std::fs::create_dir_all(&ws_b)?;
-            std::fs::write(ws_a.join("scripts/hook.js"), b"$done({});\n")?;
-            std::fs::write(
-                ws_a.join("module.yaml"),
-                "kind: netverge-module\nschema: 1\nid: com.example.root\nname: Root\nversion: '1.0'\nrewrite:\n  - id: r1\n    type: url\n    match:\n      host: api.example.test\n      path: /old\n    action:\n      replace: /new\n",
-            )?;
-            std::fs::write(
-                ws_a.join("modules/debug/module.yaml"),
-                "kind: netverge-module\nschema: 1\nid: com.example.debug\nname: Debug\nversion: '1.0'\nmitm:\n  hostnames:\n    - extra.example.test\nrewrite:\n  - id: h1\n    type: response-header\n    match:\n      host: api.example.test\n      path: /demo\n    action:\n      set:\n        X-Module: v1\nscripts:\n  - id: s1\n    type: http-response\n    match:\n      host: api.example.test\n    script: scripts/hook.js\n",
-            )?;
-
-            let preview = preview_modules_in_dirs(&mitm_dir, Some("prof-a"), Some(&ws_a), &[])?;
-            assert!(preview.diagnostics.is_empty());
-            assert_eq!(preview.modules.len(), 2);
-            assert_eq!(preview.modules[0].id, "com.example.root");
-            assert_eq!(preview.modules[1].id, "com.example.debug");
-            assert_eq!(preview.modules[1].state, ModuleApprovalState::Unapproved);
-            assert_eq!(preview.modules[1].missing_mitm_hostnames, vec!["extra.example.test"]);
-            assert!(!mitm_dir.join(COMPILED_MODULE_FILE).exists());
-
-            assert!(set_module_approval_in_dirs(&mitm_dir, "prof-a", &ws_a, "com.example.debug", "stale", true, &[]).is_err());
-            let sha = preview.modules[1].content_sha256.clone();
-            let active = set_module_approval_in_dirs(&mitm_dir, "prof-a", &ws_a, "com.example.debug", &sha, true, &[])?;
-            assert_eq!(active.modules[0].id, "com.example.debug");
-            assert_eq!(active.modules[0].state, ModuleApprovalState::Active);
-
-            // Editing the referenced script marks UpdatePending while retaining last approved rules.
-            std::fs::write(ws_a.join("scripts/hook.js"), b"$done({ edited: true });\n")?;
-            let edited = preview_modules_in_dirs(&mitm_dir, Some("prof-a"), Some(&ws_a), &[])?;
-            assert_eq!(edited.modules[0].state, ModuleApprovalState::UpdatePending);
-            write_compiled_snapshot_in_dirs(&mitm_dir, Some("prof-a"), Some(&ws_a))?;
-            let compiled_bytes = std::fs::read_to_string(mitm_dir.join(COMPILED_MODULE_FILE))?;
-            assert!(compiled_bytes.contains("\"v1\""));
-
-            // Profile switch to prof-b clears prof-a's compiled module rules; rollback restores them.
-            write_compiled_snapshot_in_dirs(&mitm_dir, Some("prof-b"), Some(&ws_b))?;
-            assert!(!mitm_dir.join(COMPILED_MODULE_FILE).exists());
-            write_compiled_snapshot_in_dirs(&mitm_dir, Some("prof-a"), Some(&ws_a))?;
-            assert!(mitm_dir.join(COMPILED_MODULE_FILE).exists());
-            Ok(())
-        })();
-        let _ = std::fs::remove_dir_all(&root);
-        result
-    }
-}
+mod tests;

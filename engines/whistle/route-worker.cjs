@@ -252,6 +252,13 @@ server.emit = function(event, ...args) {
     res.once('finish', () => recordResponse(entry, res, startedAt));
     // Freeze the original matching context before any action changes the URL.
     const plan = rewrites.plan(req, authority);
+    if (plan.localResponse) {
+      entry.requestHeaders = sanitizeHeaders(req.headers);
+      rewrites.applyResponseRules(res, plan.response, entry);
+      admission.route.socket?.once('close', () => removeRoute(admission.route));
+      rewrites.sendLocalResponse(req, res, plan.localResponse, entry);
+      return true;
+    }
     rewrites.applyRequestRules(req, plan.request, entry);
     entry.requestHeaders = sanitizeHeaders(req.headers);
     rewrites.applyBodyRules(req, res, plan.body, entry);

@@ -19,6 +19,7 @@ use std::{
 pub(crate) mod trust;
 pub(crate) mod settings;
 pub(crate) mod rewrite;
+mod module_yaml;
 mod module_discovery;
 pub(crate) mod module_manifest;
 pub(crate) mod module_manager;

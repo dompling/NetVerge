@@ -1,18 +1,21 @@
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    rewrite::{ResponseBodyRule, ResponseHeaderRule, UrlPathRule},
+    module_yaml::validate_raw_yaml_safety,
+    rewrite::{LocalResponseRule, ResponseBodyRule, ResponseHeaderRule, UrlPathRule},
     url_regex::validate_regex,
 };
 
 pub(crate) const MAX_MANIFEST_BYTES: usize = 65_536;
-const MAX_LINE_BYTES: usize = 2048;
-const MAX_NESTING_INDENT: usize = 24;
 const MAX_REWRITE_ENTRIES: usize = 16;
 const MAX_SCRIPT_ENTRIES: usize = 8;
 const MAX_MITM_PROPOSALS: usize = 32;
+
+mod local_action;
+use local_action::{LocalRuleContext, compile_local_action};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -97,6 +100,24 @@ pub(crate) struct CompiledModuleRewrites {
     pub(crate) response: Vec<ResponseHeaderRule>,
     pub(crate) path: Vec<UrlPathRule>,
     pub(crate) body: Vec<ResponseBodyRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) local: Vec<LocalResponseRule>,
+}
+
+pub(crate) struct CompiledManifestOutput {
+    pub(crate) manifest: RawModuleManifest,
+    pub(crate) rewrites: CompiledModuleRewrites,
+    pub(crate) inline_blobs: BTreeMap<String, Vec<u8>>,
+    pub(crate) map_local_files: Vec<(usize, String)>,
+}
+
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(64);
+    for b in Sha256::digest(bytes) {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
 }
 
 pub(crate) fn valid_module_id(id: &str) -> bool {
@@ -131,101 +152,10 @@ fn valid_url_path(path: &str) -> bool {
             .any(|part| matches!(part.to_ascii_lowercase().replace("%2e", ".").as_str(), "." | ".."))
 }
 
-fn scan_unquoted_yaml_line(line: &str, line_no: u32, seen_content: &mut bool) -> Result<(), (u32, String)> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('#') {
-        return Ok(());
-    }
-    if trimmed == "---" || trimmed.starts_with("--- ") {
-        if *seen_content {
-            return Err((line_no, "multiple YAML documents are unsupported".into()));
-        }
-        return Ok(());
-    }
-    if trimmed == "..." {
-        return Err((line_no, "YAML document end markers are unsupported".into()));
-    }
-    *seen_content = true;
-    let indent = line.bytes().take_while(|&b| b == b' ').count();
-    if line.starts_with('\t') || indent > MAX_NESTING_INDENT {
-        return Err((line_no, "invalid indentation or excessive nesting depth".into()));
-    }
-    let bytes = line.as_bytes();
-    let mut idx = 0usize;
-    let mut single_q = false;
-    let mut double_q = false;
-    let mut flow_depth = 0usize;
-    while idx < bytes.len() {
-        let b = bytes[idx];
-        if double_q {
-            if b == b'\\' {
-                idx += 2;
-                continue;
-            }
-            if b == b'"' {
-                double_q = false;
-            }
-            idx += 1;
-            continue;
-        }
-        if single_q {
-            if b == b'\'' {
-                if bytes.get(idx + 1) == Some(&b'\'') {
-                    idx += 2;
-                    continue;
-                }
-                single_q = false;
-            }
-            idx += 1;
-            continue;
-        }
-        match b {
-            b'#' if idx == 0 || bytes[idx - 1].is_ascii_whitespace() => break,
-            b'\'' => single_q = true,
-            b'"' => double_q = true,
-            b'[' | b'{' => {
-                flow_depth += 1;
-                if flow_depth > 6 {
-                    return Err((line_no, "excessive YAML flow nesting".into()));
-                }
-            }
-            b']' | b'}' => flow_depth = flow_depth.saturating_sub(1),
-            b'&' | b'*' | b'!' if idx == 0 || matches!(bytes[idx - 1], b' ' | b':' | b'-' | b'[' | b',') => {
-                return Err((line_no, "YAML anchors, aliases and custom tags are forbidden".into()));
-            }
-            b'<' if bytes.get(idx + 1) == Some(&b'<')
-                && bytes.get(idx + 2..).is_some_and(|rest| rest.trim_ascii_start().starts_with(b":")) =>
-            {
-                return Err((line_no, "YAML merge keys (<<) are forbidden".into()));
-            }
-            _ => {}
-        }
-        idx += 1;
-    }
-    Ok(())
-}
-
-fn validate_raw_yaml_safety(raw: &str) -> Result<(), (Option<u32>, String)> {
-    if raw.is_empty() || raw.len() > MAX_MANIFEST_BYTES {
-        return Err((None, format!("module.yaml must be 1..={MAX_MANIFEST_BYTES} bytes")));
-    }
-    let mut seen_content = false;
-    for (idx, line) in raw.lines().enumerate() {
-        let line_no = u32::try_from(idx + 1).unwrap_or(u32::MAX);
-        if line.len() > MAX_LINE_BYTES || line.chars().any(|c| c.is_control() && c != '\t') {
-            return Err((Some(line_no), "line exceeds length limit or contains control characters".into()));
-        }
-        if let Err((ln, msg)) = scan_unquoted_yaml_line(line, line_no, &mut seen_content) {
-            return Err((Some(ln), msg));
-        }
-    }
-    if !seen_content {
-        return Err((Some(1), "module.yaml is empty".into()));
-    }
-    Ok(())
-}
-
-fn normalize_match_condition(cond: &RawMatchCondition, is_url_type: bool) -> Result<(String, Option<String>, Option<String>)> {
+fn normalize_match_condition(
+    cond: &RawMatchCondition,
+    is_url_type: bool,
+) -> Result<(String, Option<String>, Option<String>)> {
     ensure!(super::valid_host(&cond.host), "invalid match.host \"{}\"", cond.host);
     if let Some(method) = cond.method.as_deref() {
         ensure!(
@@ -240,7 +170,8 @@ fn normalize_match_condition(cond: &RawMatchCondition, is_url_type: bool) -> Res
                 ensure!(valid_url_path(path), "invalid URL match.path \"{path}\"");
             } else {
                 ensure!(
-                    path.starts_with('/') && !path.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#')),
+                    path.starts_with('/')
+                        && !path.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#')),
                     "invalid match.path \"{path}\""
                 );
             }
@@ -248,7 +179,6 @@ fn normalize_match_condition(cond: &RawMatchCondition, is_url_type: bool) -> Res
         }
         (None, Some(regex)) => Ok((String::new(), cond.method.clone(), Some(regex.to_owned()))),
         (None, None) => {
-            // Omitted path matches any path on the explicit admitted host:443.
             let host_pattern = format!("^https://{}/", cond.host.replace('.', r"\."));
             validate_regex(Some(&host_pattern))?;
             Ok((String::new(), cond.method.clone(), Some(host_pattern)))
@@ -256,20 +186,11 @@ fn normalize_match_condition(cond: &RawMatchCondition, is_url_type: bool) -> Res
     }
 }
 
-fn parse_header_action(action: &serde_yaml_ng::Mapping, prefix: &str, limit: usize) -> Result<Vec<(String, Option<String>)>> {
-    ensure!(action.len() == 1, "header rewrite action requires either `set` or `remove`");
-    let headers: Vec<(String, Option<String>)> = if let Some(value) = action.get("set") {
-        let map: BTreeMap<String, String> = serde_yaml_ng::from_value(value.clone())?;
-        map.into_iter().map(|(name, value)| (name, Some(value))).collect()
-    } else if let Some(value) = action.get("remove") {
-        let names: Vec<String> = serde_yaml_ng::from_value(value.clone())?;
-        names.into_iter().map(|name| (name, None)).collect()
-    } else {
-        bail!("header rewrite action requires either `set` or `remove`");
-    };
-    ensure!((1..=4).contains(&headers.len()), "header action must specify 1..=4 headers");
+fn validate_header_map(map: BTreeMap<String, String>, prefix: &str, limit: usize) -> Result<Vec<(String, String)>> {
+    ensure!((1..=4).contains(&map.len()), "header map must specify 1..=4 headers");
     let mut seen = BTreeSet::new();
-    for (name, value) in &headers {
+    let mut out = Vec::with_capacity(map.len());
+    for (name, value) in map {
         let lower = name.to_ascii_lowercase();
         ensure!(
             lower.strip_prefix(prefix).is_some_and(|rest| {
@@ -277,29 +198,94 @@ fn parse_header_action(action: &serde_yaml_ng::Mapping, prefix: &str, limit: usi
             }),
             "unsupported header name '{name}' (expected {prefix}*)"
         );
-        if let Some(value) = value {
-            ensure!(
-                value.chars().count() <= 1024
-                    && value.chars().all(|c| c == '\t' || (' '..='~').contains(&c) || ('\u{80}'..='\u{ff}').contains(&c)),
-                "invalid header value for '{name}'"
-            );
-        } else {
-            ensure!(seen.insert(lower), "duplicate header removal '{name}'");
-        }
+        ensure!(seen.insert(lower), "duplicate header name '{name}'");
+        ensure!(
+            value.chars().count() <= 1024
+                && value.chars().all(|c| c == '\t' || (' '..='~').contains(&c) || ('\u{80}'..='\u{ff}').contains(&c)),
+            "invalid header value for '{name}'"
+        );
+        out.push((name, value));
     }
-    Ok(headers)
+    Ok(out)
+}
+
+fn parse_header_action(action: &serde_yaml_ng::Mapping, prefix: &str, limit: usize) -> Result<Vec<(String, Option<String>)>> {
+    ensure!(action.len() == 1, "header rewrite action requires either `set` or `remove`");
+    if let Some(value) = action.get("set") {
+        let pairs = validate_header_map(serde_yaml_ng::from_value(value.clone())?, prefix, limit)?;
+        return Ok(pairs.into_iter().map(|(k, v)| (k, Some(v))).collect());
+    }
+    let Some(value) = action.get("remove") else {
+        bail!("header rewrite action requires either `set` or `remove`");
+    };
+    let names: Vec<String> = serde_yaml_ng::from_value(value.clone())?;
+    ensure!((1..=4).contains(&names.len()), "header action must specify 1..=4 headers");
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let lower = name.to_ascii_lowercase();
+        ensure!(
+            lower.strip_prefix(prefix).is_some_and(|rest| {
+                !rest.is_empty() && rest.len() <= limit && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            }),
+            "unsupported header name '{name}' (expected {prefix}*)"
+        );
+        ensure!(seen.insert(lower), "duplicate header removal '{name}'");
+        out.push((name, None));
+    }
+    Ok(out)
+}
+
+fn compile_url_action(action: &serde_yaml_ng::Mapping) -> Result<(String, Option<Vec<String>>)> {
+    ensure!(action.len() == 1, "url action requires either replace or remove-query");
+    if let Some(value) = action.get("replace") {
+        let target = value.as_str().unwrap_or("");
+        ensure!(valid_url_path(target), "invalid url replace target '{target}'");
+        return Ok((target.to_owned(), None));
+    }
+    let Some(value) = action.get("remove-query") else {
+        bail!("url action requires either replace or remove-query");
+    };
+    let names: Vec<String> = serde_yaml_ng::from_value(value.clone())?;
+    ensure!((1..=8).contains(&names.len()), "remove-query requires 1..=8 names");
+    let mut seen = BTreeSet::new();
+    for name in &names {
+        ensure!(
+            (1..=64).contains(&name.len())
+                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
+                && seen.insert(name),
+            "expected distinct unreserved ASCII query names"
+        );
+    }
+    Ok((String::new(), Some(names)))
+}
+
+fn compile_body_action(action: &serde_yaml_ng::Mapping) -> Result<(String, String, Option<bool>)> {
+    let match_whole = action
+        .get("match-whole")
+        .map(|value| value.as_bool().ok_or_else(|| anyhow::anyhow!("match-whole must be a boolean")))
+        .transpose()?;
+    ensure!(
+        action.len() == if match_whole.is_some() { 3 } else { 2 },
+        "response-body action requires search and replace and supports optional match-whole"
+    );
+    let search = action.get("search").and_then(serde_yaml_ng::Value::as_str).unwrap_or("");
+    let Some(replace) = action.get("replace").and_then(serde_yaml_ng::Value::as_str) else {
+        bail!("response-body action requires string `replace`");
+    };
+    ensure!(
+        !search.is_empty() && search.len() <= 1024 && replace.len() <= 4096,
+        "invalid response-body search/replace bounds"
+    );
+    Ok((search.to_owned(), replace.to_owned(), match_whole.filter(|w| *w)))
 }
 
 pub(crate) fn parse_and_compile_manifest(
     manifest_path: &str,
     raw: &str,
-) -> std::result::Result<(RawModuleManifest, CompiledModuleRewrites), ModuleDiagnostic> {
+) -> std::result::Result<CompiledManifestOutput, ModuleDiagnostic> {
     if let Err((line, message)) = validate_raw_yaml_safety(raw) {
-        return Err(ModuleDiagnostic {
-            manifest_path: manifest_path.to_owned(),
-            line,
-            message,
-        });
+        return Err(ModuleDiagnostic { manifest_path: manifest_path.to_owned(), line, message });
     }
     let manifest: RawModuleManifest = serde_yaml_ng::from_str(raw).map_err(|err| ModuleDiagnostic {
         manifest_path: manifest_path.to_owned(),
@@ -313,7 +299,7 @@ pub(crate) fn parse_and_compile_manifest(
     })
 }
 
-fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleManifest, CompiledModuleRewrites)> {
+fn validate_manifest_metadata(manifest: &RawModuleManifest) -> Result<()> {
     ensure!(manifest.kind == "netverge-module", "expected kind: netverge-module");
     ensure!(manifest.schema == 1, "unsupported module schema {}", manifest.schema);
     ensure!(valid_module_id(&manifest.id), "invalid reverse-domain module ID \"{}\"", manifest.id);
@@ -322,13 +308,17 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
         "invalid module name"
     );
     ensure!(
-        !manifest.version.is_empty()
-            && manifest.version.len() <= 32
-            && manifest.version.bytes().all(|b| (0x21..=0x7e).contains(&b)),
+        !manifest.version.is_empty() && manifest.version.len() <= 32 && manifest.version.bytes().all(|b| (0x21..=0x7e).contains(&b)),
         "invalid module version"
     );
-    ensure!(manifest.description.as_ref().is_none_or(|d| d.chars().count() <= 256 && !d.chars().any(char::is_control)), "invalid module description");
-    ensure!(manifest.author.as_ref().is_none_or(|a| a.chars().count() <= 64 && !a.chars().any(char::is_control)), "invalid module author");
+    ensure!(
+        manifest.description.as_ref().is_none_or(|d| d.chars().count() <= 256 && !d.chars().any(char::is_control)),
+        "invalid module description"
+    );
+    ensure!(
+        manifest.author.as_ref().is_none_or(|a| a.chars().count() <= 64 && !a.chars().any(char::is_control)),
+        "invalid module author"
+    );
     if let Some(mitm) = &manifest.mitm {
         ensure!(mitm.hostnames.len() <= MAX_MITM_PROPOSALS, "too many proposed MITM hostnames");
         let mut seen_hosts = BTreeSet::new();
@@ -338,39 +328,26 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
     }
     ensure!(manifest.rewrite.len() <= MAX_REWRITE_ENTRIES, "at most 16 rewrite entries are supported per module");
     ensure!(manifest.scripts.len() <= MAX_SCRIPT_ENTRIES, "at most 8 script entries are supported per module");
+    Ok(())
+}
 
+fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<CompiledManifestOutput> {
+    validate_manifest_metadata(&manifest)?;
     let source = format!("module:{}", manifest.id);
     let mut seen_ids = BTreeSet::new();
-    let mut compiled = CompiledModuleRewrites::default();
+    let mut rewrites = CompiledModuleRewrites::default();
+    let mut inline_blobs = BTreeMap::new();
+    let mut map_local_files = Vec::new();
+
     for item in &manifest.rewrite {
         ensure!(valid_local_entry_id(&item.id) && seen_ids.insert(item.id.as_str()), "invalid or duplicate rewrite ID \"{}\"", item.id);
-        let is_url = item.kind == "url";
-        let (path, method, regex) = normalize_match_condition(&item.condition, is_url)?;
+        let (path, method, regex) = normalize_match_condition(&item.condition, item.kind == "url")?;
+        let full_id = format!("{}:{}", manifest.id, item.id);
         match item.kind.as_str() {
             "url" => {
-                ensure!(item.action.len() == 1, "url action requires either replace or remove-query");
-                let (target, remove_query) = if let Some(value) = item.action.get("replace") {
-                    let target = value.as_str().unwrap_or("");
-                    ensure!(valid_url_path(target), "invalid url replace target '{target}'");
-                    (target.to_owned(), None)
-                } else if let Some(value) = item.action.get("remove-query") {
-                    let names: Vec<String> = serde_yaml_ng::from_value(value.clone())?;
-                    ensure!((1..=8).contains(&names.len()), "remove-query requires 1..=8 names");
-                    let mut seen = BTreeSet::new();
-                    for name in &names {
-                        ensure!(
-                            (1..=64).contains(&name.len())
-                                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
-                                && seen.insert(name),
-                            "expected distinct unreserved ASCII query names"
-                        );
-                    }
-                    (String::new(), Some(names))
-                } else {
-                    bail!("url action requires either replace or remove-query");
-                };
-                compiled.path.push(UrlPathRule {
-                    id: Some(format!("{}:{}", manifest.id, item.id)),
+                let (target, remove_query) = compile_url_action(&item.action)?;
+                rewrites.path.push(UrlPathRule {
+                    id: Some(full_id),
                     source: Some(source.clone()),
                     enabled: true,
                     host: item.condition.host.clone(),
@@ -386,11 +363,7 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
                 let headers = parse_header_action(&item.action, if is_req { "x-custom-" } else { "x-" }, if is_req { 91 } else { 100 })?;
                 let multi = headers.len() > 1;
                 for (idx, (header, value)) in headers.into_iter().enumerate() {
-                    let rule_id = if multi {
-                        format!("{}:{}.{}", manifest.id, item.id, idx + 1)
-                    } else {
-                        format!("{}:{}", manifest.id, item.id)
-                    };
+                    let rule_id = if multi { format!("{full_id}.{}", idx + 1) } else { full_id.clone() };
                     let out = ResponseHeaderRule {
                         id: Some(rule_id),
                         source: Some(source.clone()),
@@ -403,52 +376,55 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
                         remove: value.is_none().then_some(true),
                         value: value.unwrap_or_default(),
                     };
-                    if is_req { compiled.request.push(out); } else { compiled.response.push(out); }
+                    if is_req {
+                        rewrites.request.push(out);
+                    } else {
+                        rewrites.response.push(out);
+                    }
                 }
             }
             "response-body" => {
-                let match_whole = item.action.get("match-whole")
-                    .map(|value| value.as_bool().ok_or_else(|| anyhow::anyhow!("match-whole must be a boolean")))
-                    .transpose()?;
-                let expected_keys = if match_whole.is_some() { 3 } else { 2 };
-                ensure!(
-                    item.action.len() == expected_keys,
-                    "response-body action requires search and replace and supports optional match-whole"
-                );
-                let search = item
-                    .action
-                    .get(serde_yaml_ng::Value::String("search".into()))
-                    .and_then(serde_yaml_ng::Value::as_str)
-                    .unwrap_or("");
-                let Some(replace) = item
-                    .action
-                    .get(serde_yaml_ng::Value::String("replace".into()))
-                    .and_then(serde_yaml_ng::Value::as_str)
-                else {
-                    bail!("response-body action requires string `replace`");
-                };
-                ensure!(!search.is_empty() && search.len() <= 1024 && replace.len() <= 4096, "invalid response-body search/replace bounds");
-                compiled.body.push(ResponseBodyRule {
-                    id: Some(format!("{}:{}", manifest.id, item.id)),
+                let (search, value, match_whole) = compile_body_action(&item.action)?;
+                rewrites.body.push(ResponseBodyRule {
+                    id: Some(full_id),
                     source: Some(source.clone()),
                     enabled: true,
                     host: item.condition.host.clone(),
                     path,
                     method,
                     regex,
-                    search: search.to_owned(),
-                    value: replace.to_owned(),
-                    match_whole: match_whole.filter(|whole| *whole),
+                    search,
+                    value,
+                    match_whole,
                 });
+            }
+            "mock" | "map-local" => {
+                let (rule, asset_file) = compile_local_action(
+                    item.kind == "mock",
+                    LocalRuleContext {
+                        id: full_id,
+                        source: source.clone(),
+                        host: item.condition.host.clone(),
+                        path,
+                        method,
+                        regex,
+                    },
+                    &item.action,
+                    &mut inline_blobs,
+                )?;
+                let idx = rewrites.local.len();
+                rewrites.local.push(rule);
+                if let Some(file) = asset_file {
+                    map_local_files.push((idx, file));
+                }
             }
             other => bail!("unsupported rewrite type \"{other}\""),
         }
     }
     ensure!(
-        compiled.request.len() <= MAX_REWRITE_ENTRIES && compiled.response.len() <= MAX_REWRITE_ENTRIES,
+        rewrites.request.len() <= MAX_REWRITE_ENTRIES && rewrites.response.len() <= MAX_REWRITE_ENTRIES,
         "expanded module header rules exceed 16 per phase"
     );
-
     let mut seen_scripts = BTreeSet::new();
     for script in &manifest.scripts {
         ensure!(valid_local_entry_id(&script.id) && seen_scripts.insert(script.id.as_str()), "invalid or duplicate script ID \"{}\"", script.id);
@@ -458,166 +434,8 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<(RawModuleM
         ensure!(script.timeout.is_none_or(|t| (1..=5).contains(&t)), "script timeout must be 1..=5 seconds");
         ensure!(script.argument.as_ref().is_none_or(|arg| arg.len() <= 1024), "script argument exceeds 1024 bytes");
     }
-    Ok((manifest, compiled))
+    Ok(CompiledManifestOutput { manifest, rewrites, inline_blobs, map_local_files })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn response_body_supports_optional_boolean_whole_match() -> Result<()> {
-        let manifest = r#"
-kind: netverge-module
-schema: 1
-id: com.example.whole-body
-name: Whole response replacement
-version: "1"
-rewrite:
-  - id: body
-    type: response-body
-    match:
-      host: api.example.test
-      path: /v1
-    action:
-      search: "original"
-      replace: "new"
-      match-whole: true
-"#;
-        let (_, compiled) = parse_and_compile_manifest("module.yaml", manifest)
-            .map_err(|diag| anyhow::anyhow!(diag.message))?;
-        assert_eq!(compiled.body[0].match_whole, Some(true));
-        let legacy = manifest.replace("      match-whole: true\n", "");
-        let (_, compiled) = parse_and_compile_manifest("module.yaml", &legacy)
-            .map_err(|diag| anyhow::anyhow!(diag.message))?;
-        assert_eq!(compiled.body[0].match_whole, None);
-        let invalid = manifest.replace("match-whole: true", "match-whole: 'true'");
-        assert!(parse_and_compile_manifest("module.yaml", &invalid).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn url_query_removal_compiles_and_checks_names() -> Result<()> {
-        let manifest = r#"
-kind: netverge-module
-schema: 1
-id: com.example.query
-name: Query removal
-version: "1"
-rewrite:
-  - id: drop-debug
-    type: url
-    match:
-      host: api.example.test
-      path: /v1
-    action:
-      remove-query: [debug, trace.id]
-"#;
-        let (_, compiled) = parse_and_compile_manifest("module.yaml", manifest)
-            .map_err(|diag| anyhow::anyhow!(diag.message))?;
-        let rule = &compiled.path[0];
-        assert_eq!(rule.remove_query.as_ref().unwrap(), &["debug".to_owned(), "trace.id".to_owned()]);
-        assert!(rule.target.is_empty());
-
-        for names in ["[]", "[debug, debug]", "['raw=name']", "['debug%20']"] {
-            let invalid = manifest.replace("[debug, trace.id]", names);
-            assert!(parse_and_compile_manifest("module.yaml", &invalid).is_err(), "{names}");
-        }
-        let ambiguous = manifest.replace("      remove-query:", "      replace: /v2\n      remove-query:");
-        assert!(parse_and_compile_manifest("module.yaml", &ambiguous).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn header_removal_compiles_and_checks_names() -> Result<()> {
-        let manifest = r#"
-kind: netverge-module
-schema: 1
-id: com.example.remove
-name: Remove diagnostic header
-version: "1"
-rewrite:
-  - id: drop-debug
-    type: request-header
-    match:
-      host: api.example.test
-      path: /v1
-    action:
-      remove: [X-Custom-Debug]
-"#;
-        let (_, compiled) = parse_and_compile_manifest("module.yaml", manifest)
-            .map_err(|diag| anyhow::anyhow!(diag.message))?;
-        let rule = &compiled.request[0];
-        assert_eq!(rule.remove, Some(true));
-        assert_eq!(rule.header, "X-Custom-Debug");
-        assert!(rule.value.is_empty());
-
-        for headers in ["[]", "[Host]", "[X-Custom-Debug, x-custom-debug]"] {
-            let invalid = manifest.replace("[X-Custom-Debug]", headers);
-            assert!(parse_and_compile_manifest("module.yaml", &invalid).is_err(), "{headers}");
-        }
-        let ambiguous = manifest.replace("      remove:", "      set: {X-Custom-Debug: '1'}\n      remove:");
-        assert!(parse_and_compile_manifest("module.yaml", &ambiguous).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn parses_native_manifest_and_rejects_unsafe_yaml_constructs() -> Result<()> {
-        let valid = r#"
-kind: netverge-module
-schema: 1
-id: com.example.api-debug
-name: API debug
-version: "1.0.0"
-mitm:
-  hostnames:
-    - api.example.test
-rewrite:
-  - id: redirect-v1
-    type: url
-    match:
-      host: api.example.test
-      path: /v1
-    action:
-      replace: /v2
-  - id: add-debug
-    type: request-header
-    match:
-      host: api.example.test
-    action:
-      set:
-        X-Custom-Debug: "true"
-scripts:
-  - id: inspect-res
-    type: http-response
-    match:
-      host: api.example.test
-    script: modules/api-debug/debug.js
-    requires-body: true
-    timeout: 5
-"#;
-        let (parsed, compiled) = parse_and_compile_manifest("modules/api-debug/module.yaml", valid)
-            .map_err(|diag| anyhow::anyhow!(diag.message))?;
-        assert_eq!(parsed.id, "com.example.api-debug");
-        assert_eq!(compiled.path[0].id.as_deref(), Some("com.example.api-debug:redirect-v1"));
-        assert_eq!(compiled.request[0].source.as_deref(), Some("module:com.example.api-debug"));
-        assert_eq!(compiled.request[0].path, "");
-        assert_eq!(compiled.request[0].regex.as_deref(), Some(r"^https://api\.example\.test/"));
-
-        for bad in [
-            "kind: netverge-module\nschema: 2\nid: com.example.a\nname: A\nversion: '1'\n",
-            "kind: netverge-module\nschema: 1\nid: com.example.a\nname: &a A\nauthor: *a\nversion: '1'\n",
-            "kind: netverge-module\nschema: 1\nid: com.example.a\nname: !custom A\nversion: '1'\n",
-            "kind: netverge-module\nschema: 1\nid: com.example.a\nname: A\nversion: '1'\n<<: {}\n",
-            "kind: netverge-module\nschema: 1\nid: com.example.a\nname: A\nname: B\nversion: '1'\n",
-            "kind: netverge-module\nschema: 1\nid: com.example.a\nname: A\nversion: '1'\nextra: 1\n",
-            "kind: netverge-module\nschema: 1\nid: com.example.a\nname: A\nversion: '1'\n---\nkind: netverge-module\n",
-        ] {
-            let Err(diag) = parse_and_compile_manifest("module.yaml", bad) else {
-                bail!("expected rejection for malformed manifest");
-            };
-            assert!(!diag.message.is_empty());
-        }
-        Ok(())
-    }
-}
+mod tests;

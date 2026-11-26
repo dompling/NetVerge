@@ -102,7 +102,8 @@ export function RecentRequests() {
           !entry.requestRule &&
           !entry.responseRule &&
           !entry.bodyRule &&
-          !entry.pathRule
+          !entry.pathRule &&
+          !entry.localRule
         )
       default:
         return true
@@ -209,6 +210,7 @@ export function RecentRequests() {
           <Stack spacing={1} sx={{ maxHeight: 360, overflow: 'auto' }}>
             {rows?.map((entry) => {
               const rules = [
+                entry.localRule && 'Local response',
                 entry.requestRule && t('settings.mitm.rewrite.requestTitle'),
                 entry.responseRule && t('settings.mitm.rewrite.title'),
                 entry.bodyRule && t('settings.mitm.rewrite.bodyTitle'),

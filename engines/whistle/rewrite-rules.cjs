@@ -5,6 +5,7 @@ const http = require('node:http');
 const net = require('node:net');
 const path = require('node:path');
 const { installBodyRewrite, validateBodyRule } = require('./body-rewrite.cjs');
+const { createBlobLoader, validateLocalRule, writeLocalResponse } = require('./local-response.cjs');
 const { compileUrlRegex, cacheCompiledRegex, getCompiledRegex } = require('./url-regex.cjs');
 
 const MAX_FILE_BYTES = 8192;
@@ -97,22 +98,26 @@ function parseRuleEntries(filePath, validateRule, maxBytes, phase) {
   return { revision, rules: normalizeRuleItems(list, revision, validateRule, phase) };
 }
 
-function parseModuleBundle(filePath) {
+function parseModuleBundle(filePath, dataDir) {
   const stat = fs.lstatSync(filePath);
   if (!stat.isFile() || stat.size > MAX_MODULE_BUNDLE_BYTES) throw new Error();
   const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.version !== 1 ||
-      Object.keys(raw).sort().join(',') !== 'body,path,profileUid,request,response,revision,version' ||
+  const keys = raw && typeof raw === 'object' && !Array.isArray(raw) ? Object.keys(raw).sort().join(',') : '';
+  if (raw?.version !== 1 ||
+      (keys !== 'body,path,profileUid,request,response,revision,version' &&
+       keys !== 'body,local,path,profileUid,request,response,revision,version') ||
       typeof raw.profileUid !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(raw.profileUid) ||
       !Number.isInteger(raw.revision) || raw.revision < 1 || raw.revision > 0xffffffff) {
     throw new Error();
   }
+  const loadBlob = createBlobLoader(dataDir);
   return {
     revision: raw.revision,
     request: normalizeRuleItems(raw.request, raw.revision, r => validateHeaderRule(r, /^x-custom-[a-z0-9-]{1,91}$/i, true), 'request-header', true),
     response: normalizeRuleItems(raw.response, raw.revision, r => validateHeaderRule(r, /^x-[a-z0-9-]{1,100}$/i, true), 'response-header', true),
     path: normalizeRuleItems(raw.path, raw.revision, r => validatePathRule(r, true), 'url-path', true),
     body: normalizeRuleItems(raw.body, raw.revision, r => validateBodyRule(r, validHost, true), 'response-body', true),
+    local: raw.local == null ? [] : normalizeRuleItems(raw.local, raw.revision, r => validateLocalRule(r, validHost, loadBlob), 'local-response', true),
   };
 }
 
@@ -201,6 +206,16 @@ function planRequest(allowedHosts, lists, rawTarget, authority, method) {
     }
     return true;
   };
+  const localRule = Array.isArray(lists.local) ? lists.local.find(matches) : undefined;
+  if (localRule) {
+    return {
+      request: [],
+      response: lists.response.filter(r => r.source === 'local' && matches(r)),
+      body: [],
+      pathTarget: null,
+      localResponse: localRule,
+    };
+  }
   const pathRule = lists.path.find(matches);
   let pathTarget = null;
   if (pathRule?.remove_query) {
@@ -241,15 +256,16 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
     body: path.join(dataDir, 'response-body-rule.json'),
     modules: path.join(dataDir, 'compiled-module-rules.json'),
   };
-  const emptyModules = () => ({ request: [], response: [], path: [], body: [] });
+  const emptyModules = () => ({ revision: 0, request: [], response: [], path: [], body: [], local: [] });
   let responseRules = [], requestRules = [], pathRules = [], bodyRules = [];
   let moduleBundle = emptyModules();
-  let rewriteHits = 0, requestRewriteHits = 0, pathHits = 0, bodyHits = 0;
+  let rewriteHits = 0, requestRewriteHits = 0, pathHits = 0, bodyHits = 0, localHits = 0;
   const diag = {
     'response-header': { phase: 'response-header', revision: 0, activeRules: 0, error: null, ruleHits: {} },
     'request-header': { phase: 'request-header', revision: 0, activeRules: 0, error: null, ruleHits: {} },
     'url-path': { phase: 'url-path', revision: 0, activeRules: 0, error: null, ruleHits: {} },
     'response-body': { phase: 'response-body', revision: 0, activeRules: 0, error: null, ruleHits: {} },
+    'local-response': { phase: 'local-response', revision: 0, activeRules: 0, error: null, ruleHits: {} },
   };
 
   function watch(filePath, phase, label, validator, assign, maxBytes = MAX_FILE_BYTES) {
@@ -282,9 +298,23 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
   const reloadModules = () => {
     moduleBundle = emptyModules();
     try {
-      moduleBundle = parseModuleBundle(files.modules);
+      moduleBundle = parseModuleBundle(files.modules, dataDir);
+      const retainedHits = {};
+      for (const rule of moduleBundle.local) retainedHits[rule.id] = diag['local-response'].ruleHits[rule.id] || 0;
+      diag['local-response'] = {
+        phase: 'local-response',
+        revision: moduleBundle.local.length ? moduleBundle.revision : 0,
+        activeRules: moduleBundle.local.length,
+        error: null,
+        ruleHits: retainedHits,
+      };
     } catch (error) {
-      if (error?.code !== 'ENOENT') console.error('Invalid compiled module rules; module rewrites disabled');
+      if (error?.code === 'ENOENT') {
+        diag['local-response'] = { phase: 'local-response', revision: 0, activeRules: 0, error: null, ruleHits: {} };
+      } else {
+        diag['local-response'] = { phase: 'local-response', revision: 0, activeRules: 0, error: 'INVALID_MODULE_BUNDLE', ruleHits: {} };
+        console.error('Invalid compiled module rules; module rewrites disabled');
+      }
     }
   };
   reloadModules();
@@ -298,6 +328,7 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
       response: [...moduleBundle.response, ...responseRules],
       body: [...moduleBundle.body, ...bodyRules],
       path: [...pathRules, ...moduleBundle.path],
+      local: moduleBundle.local,
     }, req.url, authority, req.method);
   }
 
@@ -363,13 +394,22 @@ function createRewriteEngine({ dataDir, hosts, strip }) {
     });
   }
 
+  function sendLocalResponse(req, res, localRule, entry) {
+    writeLocalResponse(req, res, localRule, () => {
+      entry.localRule = true;
+      localHits = Math.min(localHits + 1, 0xfffffffe);
+      recordMatchedIds(entry, diag['local-response'], [localRule.id]);
+    });
+  }
+
   return {
     plan,
     applyRequestRules,
     applyResponseRules,
     applyPathRules,
     applyBodyRules,
-    counts: () => ({ rewriteHits, requestRewriteHits, pathHits, bodyHits }),
+    sendLocalResponse,
+    counts: () => ({ rewriteHits, requestRewriteHits, pathHits, bodyHits, localHits }),
     diagnostics: () => Object.values(diag).map(item => ({ ...item, ruleHits: { ...item.ruleHits } })),
     close: () => { for (const f of Object.values(files)) fs.unwatchFile(f); },
   };

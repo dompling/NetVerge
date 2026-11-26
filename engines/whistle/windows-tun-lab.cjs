@@ -23,9 +23,11 @@ async function serve(dir) {
   fs.writeFileSync(path.join(dir, 'origin-ca.pem'), certs.ca);
   fs.writeFileSync(path.join(dir, 'origin-leaf.pem'), certs.cert);
   fs.writeFileSync(path.join(dir, 'exit-observations'), '');
+  fs.writeFileSync(path.join(dir, 'origin-requests'), '');
   const dns = await startLabDns(hosts);
   dns.on('error', err => { throw err; });
   const origin = https.createServer({ key: certs.key, cert: certs.cert }, (req, res) => {
+    fs.appendFileSync(path.join(dir, 'origin-requests'), req.method + ' ' + (req.headers.host || '') + req.url + '\n');
     const [pathname, rawQuery = ''] = req.url.split('?');
     if (!['/netverge-proof', '/demo', '/demo/other', '/changed'].includes(pathname) || req.headers['proxy-authorization'] || req.headers['x-whistle-tunnel-data']) {
       res.writeHead(400).end();
@@ -138,10 +140,12 @@ function decodeHttpResponse(raw) {
 
 async function probe(dir, port, mode, rewrite) {
   const log = path.join(dir, 'exit-observations');
+  const originLog = path.join(dir, 'origin-requests');
   const originCA = fs.readFileSync(path.join(dir, 'origin-ca.pem'));
   const originLeaf = new X509Certificate(fs.readFileSync(path.join(dir, 'origin-leaf.pem')));
   const wholeBody = rewrite === 'body-whole';
   const bodyRewrite = wholeBody || rewrite === 'body-on' || rewrite === 'body-off';
+  const mapLocal = ['map-local-v1', 'map-local-v2', 'mock-local-override'].includes(rewrite);
   const cases = bodyRewrite
     ? [[selected, '/demo'], [selected, '/demo/other'], [selected, '/demo?oversize=1'], [selected, '/demo?binary=1'], [bypass, '/demo']]
     : rewrite ? [[selected, '/demo'], [selected, '/demo/other'], [bypass, '/demo']]
@@ -150,6 +154,7 @@ async function probe(dir, port, mode, rewrite) {
   for (const [host, requestPath] of cases) {
     const ip = await fakeAddress(port, host);
     const before = fs.readFileSync(log, 'utf8');
+    const beforeOrigin = fs.readFileSync(originLog, 'utf8');
     if (mode === 'pending') {
       await assert.rejects(dialTun(ip, host, 443, originCA, 2200),
         /TUN\/TLS timeout|ECONNRESET|socket disconnected before secure TLS connection|TUN closed without response/);
@@ -170,7 +175,8 @@ async function probe(dir, port, mode, rewrite) {
       pathRewrite ? '?id=7&id=8&raw=a%2Fb' : '';
     const extraHeaders = bodyRewrite && (!requestPath.includes('?') || requestPath === '/demo?variant=1') ? 'X-NetVerge-Body-Probe: gzip\r\n' : '';
     const result = await dialTun(ip, host, 443, ca, 15000, requestPath + query, requestRewrite, extraHeaders);
-    assert.match(result.response, /^HTTP\/1\.[01] 200 /);
+    const expectedCode = mapLocal && activeDemo && rewrite !== 'mock-local-override' ? '201' : '200';
+    assert.match(result.response, new RegExp('^HTTP/1\\.[01] ' + expectedCode + ' '));
     if (bodyRewrite) {
       const decoded = decodeHttpResponse(result.raw);
       if (requestPath === '/demo?oversize=1') {
@@ -191,11 +197,22 @@ async function probe(dir, port, mode, rewrite) {
           requestPath === '/demo?variant=1' ? expectedText + '\n' : expectedText);
         assert.match(decoded.head, /^etag:\s*"origin-etag"\s*$/im);
       }
+    } else if (mapLocal && activeDemo) {
+      const decoded = decodeHttpResponse(result.raw);
+      assert.match(decoded.head, /^content-type:\s*application\/json;\s*charset=utf-8\s*$/im);
+      const expectedMarker = rewrite === 'map-local-v1' ? 'netverge-map-local-v1' :
+        rewrite === 'map-local-v2' ? 'netverge-map-local-v2' : 'netverge-inline-mock';
+      assert.deepEqual(JSON.parse(decoded.body.toString('utf8')), { marker: expectedMarker, path: '/demo' });
+      assert.equal(fs.readFileSync(originLog, 'utf8'), beforeOrigin, 'local response must not send an application request upstream');
     } else {
       assert.ok(result.response.includes(body), 'missing controlled origin response');
+      if (mapLocal) {
+        assert.equal(fs.readFileSync(originLog, 'utf8'), beforeOrigin + 'GET ' + host + requestPath + '\n');
+      }
     }
     if (rewrite && !bodyRewrite) {
-      const expected = activeDemo && (rewrite === 'on' || rewrite === 'multi-both' || rewrite === 'module-pending') ? '1' :
+      const expected = activeDemo && (rewrite === 'on' || rewrite === 'multi-both' || rewrite === 'module-pending' || rewrite === 'mock-local-override') ? '1' :
+        activeDemo && (rewrite === 'map-local-v1' || rewrite === 'map-local-v2') ? 'map-local' :
         activeDemo && rewrite === 'multi-override' ? 'override' : 'origin';
       const rawHeaders = result.response.split('\r\n\r\n')[0].split('\r\n');
       const fields = rawHeaders.filter(line => /^x-netverge-test:/i.test(line));

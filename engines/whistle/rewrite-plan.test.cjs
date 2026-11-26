@@ -356,3 +356,138 @@ test('compiled module bundle applies with local-wins precedence and fails closed
     request: [], response: [], body: [], pathTarget: null,
   });
 });
+
+test('terminal local responses verify blob integrity, supersede forwarding and keep local header overrides', t => {
+  const { createHash } = require('node:crypto');
+  const { EMPTY_SHA256 } = require('./local-response.cjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nv-local-resp-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const blobsDir = path.join(dir, 'approved-blobs');
+  fs.mkdirSync(blobsDir, { recursive: true });
+  const modFile = path.join(dir, 'compiled-module-rules.json');
+  const respFile = path.join(dir, 'response-header-rule.json');
+  const pathFile = path.join(dir, 'url-path-rule.json');
+
+  const payload = Buffer.from('{"mock":"v1"}', 'utf8');
+  const sha = createHash('sha256').update(payload).digest('hex');
+  fs.writeFileSync(path.join(blobsDir, sha), payload);
+
+  fs.writeFileSync(modFile, JSON.stringify({
+    version: 1,
+    profileUid: 'prof-a',
+    revision: 4,
+    request: [{ id: 'com.example.mod:req', source: 'module:com.example.mod', enabled: true, host, path: '/v1', header: 'X-Custom-Mod', value: '1' }],
+    response: [{ id: 'com.example.mod:res', source: 'module:com.example.mod', enabled: true, host, path: '/v1', header: 'X-Mod-Extra', value: 'skip' }],
+    path: [{ id: 'com.example.mod:url', source: 'module:com.example.mod', enabled: true, host, path: '/v1', target: '/changed' }],
+    body: [{ id: 'com.example.mod:body', source: 'module:com.example.mod', enabled: true, host, path: '/v1', search: 'v1', value: 'mutated' }],
+    local: [
+      {
+        id: 'com.example.mod:map-1',
+        source: 'module:com.example.mod',
+        enabled: true,
+        host,
+        path: '/v1',
+        status: 201,
+        contentType: 'application/json; charset=utf-8',
+        headers: [['X-Mock', 'module-default'], ['X-Origin-Note', 'local']],
+        bodySha256: sha,
+        bodyLen: payload.length,
+      },
+      {
+        id: 'com.example.mod:mock-2',
+        source: 'module:com.example.mod',
+        enabled: true,
+        host,
+        path: '/v1',
+        status: 200,
+        contentType: 'text/plain; charset=utf-8',
+        bodySha256: sha,
+        bodyLen: payload.length,
+      },
+      {
+        id: 'com.example.mod:empty-204',
+        source: 'module:com.example.mod',
+        enabled: true,
+        host,
+        path: '/v1/empty',
+        method: 'DELETE',
+        status: 204,
+        bodySha256: EMPTY_SHA256,
+        bodyLen: 0,
+      },
+    ],
+  }));
+  fs.writeFileSync(respFile, JSON.stringify({
+    version: 2,
+    rules: [{ enabled: true, host, path: '/v1', header: 'X-Mock', value: 'local-override' }],
+  }));
+  fs.writeFileSync(pathFile, JSON.stringify({
+    version: 2,
+    rules: [{ enabled: true, host, path: '/v1', target: '/local-forward' }],
+  }));
+
+  const engine = createRewriteEngine({ dataDir: dir, hosts: [host], strip: () => {} });
+  t.after(() => engine.close());
+
+  const planned = engine.plan({ url: '/v1?keep=1', method: 'GET' }, authority);
+  assert.equal(planned.localResponse?.id, 'com.example.mod:map-1');
+  assert.deepEqual(planned.request, []);
+  assert.deepEqual(planned.body, []);
+  assert.equal(planned.pathTarget, null);
+  assert.deepEqual(planned.response.map(r => r.id), ['local:response-header:1']);
+
+  for (const method of ['GET', 'HEAD']) {
+    let statusOut = 0, headersOut = [], bodyOut = null;
+    const entry = { matchedRuleIds: [] };
+    const res = {
+      removeHeader() {},
+      writeHead(s, h) { statusOut = s; headersOut = h; },
+      end(b) { bodyOut = b ?? null; },
+    };
+    engine.applyResponseRules(res, planned.response, entry);
+    engine.sendLocalResponse({ url: '/v1', method, resume() {}, on() {} }, res, planned.localResponse, entry);
+    assert.equal(statusOut, 201);
+    assert.equal(entry.localRule, true);
+    assert.deepEqual(entry.matchedRuleIds, ['com.example.mod:map-1', 'local:response-header:1']);
+    const map = new Map();
+    for (let i = 0; i + 1 < headersOut.length; i += 2) map.set(headersOut[i].toLowerCase(), headersOut[i + 1]);
+    assert.equal(map.get('content-type'), 'application/json; charset=utf-8');
+    assert.equal(map.get('content-length'), String(payload.length));
+    assert.equal(map.get('x-mock'), 'local-override');
+    assert.equal(map.get('x-origin-note'), 'local');
+    assert.equal(map.has('x-mod-extra'), false);
+    assert.deepEqual(bodyOut, method === 'HEAD' ? null : payload);
+  }
+
+  const plan204 = engine.plan({ url: '/v1/empty', method: 'DELETE' }, authority);
+  let status204 = 0, headers204 = [], body204 = 'unset';
+  engine.sendLocalResponse(
+    { url: '/v1/empty', method: 'DELETE', resume() {}, on() {} },
+    { writeHead(s, h) { status204 = s; headers204 = h; }, end(b) { body204 = b ?? null; } },
+    plan204.localResponse,
+    { matchedRuleIds: [] },
+  );
+  assert.equal(status204, 204);
+  assert.equal(body204, null);
+  assert.ok(!headers204.some(k => /^content-(?:type|length)$/i.test(k)));
+  assert.equal(engine.counts().localHits, 3);
+  assert.deepEqual(engine.diagnostics().find(d => d.phase === 'local-response'), {
+    phase: 'local-response',
+    revision: 4,
+    activeRules: 3,
+    error: null,
+    ruleHits: {
+      'com.example.mod:map-1': 2,
+      'com.example.mod:mock-2': 0,
+      'com.example.mod:empty-204': 1,
+    },
+  });
+
+  // Tampering with the approved blob fails closed on reload.
+  engine.close();
+  fs.writeFileSync(path.join(blobsDir, sha), Buffer.from('{"mock":"tampered"}', 'utf8'));
+  const tampered = createRewriteEngine({ dataDir: dir, hosts: [host], strip: () => {} });
+  t.after(() => tampered.close());
+  assert.equal(tampered.plan({ url: '/v1', method: 'GET' }, authority).localResponse, undefined);
+  assert.equal(tampered.diagnostics().find(d => d.phase === 'local-response')?.error, 'INVALID_MODULE_BUNDLE');
+});

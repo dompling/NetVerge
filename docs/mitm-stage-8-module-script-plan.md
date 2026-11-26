@@ -247,9 +247,13 @@ approved rules on unapproved edits, and compiling active module rewrites to
   URL rule takes precedence. For response-body rules, optional match-whole: true
   requires search to equal the entire decoded text before the literal replacement.
   Whitespace is significant and the usual size limits and stream guards apply.
-- 8.5: Mock / Map Local, scoped asset access and terminal-action precedence;
-  prove no application request goes upstream for local responses (the original lease
-  may already have opened a connection under the existing architecture).
+- 8.5: approved modules support terminal `mock` (inline UTF-8 `body` <= 16 KiB or `204`
+  no-content) and `map-local` (`file` resolved relative to the active profile workspace root,
+  <= 256 KiB, hashed into `contentSha256` and staged into content-addressed `approved-blobs`
+  so unapproved asset edits preserve last-known approved bytes) with safe status codes,
+  `content-type`, and `1..=4` `X-*` headers. First matching terminal local rule supersedes
+  upstream URL/header/body forwarding without sending any application HTTP request upstream,
+  while local editor `response-header` overrides retain precedence.
 - 8.6: inspector, optional bounded body preview, redacted HAR/cURL, explicit replay.
 - 8.7: isolated script runner and Surge-compatible APIs, timeout/crash tests,
   permission review.

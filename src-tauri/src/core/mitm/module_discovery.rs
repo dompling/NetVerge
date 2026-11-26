@@ -2,12 +2,13 @@ use anyhow::{Context as _, Result, ensure};
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::ErrorKind,
+    io::{ErrorKind, Read as _},
     path::{Path, PathBuf},
 };
 
 use super::module_manifest::{
-    CompiledModuleRewrites, ModuleDiagnostic, MAX_MANIFEST_BYTES, parse_and_compile_manifest,
+    CompiledManifestOutput, CompiledModuleRewrites, MAX_MANIFEST_BYTES, ModuleDiagnostic,
+    parse_and_compile_manifest, sha256_hex,
 };
 use crate::config::workspace::{ensure_not_symlink_or_reparse, resolve_workspace_asset};
 
@@ -27,15 +28,7 @@ pub(super) struct VerifiedLiveModule {
     pub(super) script_count: u32,
     pub(super) content_sha256: String,
     pub(super) compiled: CompiledModuleRewrites,
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        use std::fmt::Write as _;
-        let _ = write!(&mut out, "{b:02x}");
-    }
-    out
+    pub(super) blobs: BTreeMap<String, Vec<u8>>,
 }
 
 fn collect_manifest_paths(workspace_root: &Path) -> Result<Vec<(String, PathBuf)>> {
@@ -79,6 +72,92 @@ fn collect_manifest_paths(workspace_root: &Path) -> Result<Vec<(String, PathBuf)
     Ok(found)
 }
 
+fn read_bounded_asset(
+    workspace_root: &Path,
+    asset_rel: &str,
+    allow_empty: bool,
+    label: &str,
+    total_bytes: &mut usize,
+) -> std::result::Result<Vec<u8>, String> {
+    let resolved = resolve_workspace_asset(workspace_root, asset_rel).map_err(|e| e.to_string())?;
+    let meta = match std::fs::symlink_metadata(&resolved) {
+        Ok(m) if m.is_file() => m,
+        _ => return Err(format!("referenced {label} \"{asset_rel}\" does not exist")),
+    };
+    let len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
+    if (!allow_empty && len == 0) || len > MAX_ASSET_BYTES {
+        let min = usize::from(!allow_empty);
+        return Err(format!("{label} \"{asset_rel}\" must be {min}..={MAX_ASSET_BYTES} bytes"));
+    }
+    *total_bytes = total_bytes.saturating_add(len);
+    if *total_bytes > MAX_AGGREGATE_BYTES {
+        return Err("aggregate module manifest/asset size exceeds 1 MiB".into());
+    }
+    let mut bytes = Vec::with_capacity(len);
+    let read_res = std::fs::File::open(&resolved)
+        .and_then(|f| f.take((MAX_ASSET_BYTES + 1) as u64).read_to_end(&mut bytes));
+    if read_res.is_err() || bytes.len() != len {
+        return Err(format!("failed to read {label} \"{asset_rel}\" cleanly"));
+    }
+    Ok(bytes)
+}
+
+fn verify_and_hash_assets(
+    workspace_root: &Path,
+    rel_path: &str,
+    raw: &str,
+    parsed: &mut CompiledManifestOutput,
+    total_bytes: &mut usize,
+) -> std::result::Result<String, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"manifest\0");
+    hasher.update(rel_path.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(raw.as_bytes());
+
+    let script_paths: BTreeSet<&str> = parsed.manifest.scripts.iter().map(|s| s.script.as_str()).collect();
+    for script_rel in script_paths {
+        let bytes = read_bounded_asset(workspace_root, script_rel, false, "script", total_bytes)?;
+        if std::str::from_utf8(&bytes).is_err() {
+            return Err(format!("script \"{script_rel}\" must be valid UTF-8"));
+        }
+        hasher.update(b"\0asset\0");
+        hasher.update(script_rel.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(&bytes);
+    }
+
+    let map_paths: BTreeSet<&str> = parsed.map_local_files.iter().map(|(_, p)| p.as_str()).collect();
+    let mut resolved_blobs: BTreeMap<&str, (String, u32)> = BTreeMap::new();
+    for file_rel in map_paths {
+        let bytes = read_bounded_asset(workspace_root, file_rel, true, "map-local file", total_bytes)?;
+        hasher.update(b"\0map-local\0");
+        hasher.update(file_rel.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(&bytes);
+        let sha = sha256_hex(&bytes);
+        let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+        if !bytes.is_empty() {
+            parsed.inline_blobs.insert(sha.clone(), bytes);
+        }
+        resolved_blobs.insert(file_rel, (sha, len));
+    }
+    for (idx, file_rel) in &parsed.map_local_files {
+        if let Some((sha, len)) = resolved_blobs.get(file_rel.as_str())
+            && let Some(rule) = parsed.rewrites.local.get_mut(*idx)
+        {
+            rule.body_sha256.clone_from(sha);
+            rule.body_len = *len;
+        }
+    }
+    let mut hex = String::with_capacity(64);
+    for b in hasher.finalize() {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{b:02x}");
+    }
+    Ok(hex)
+}
+
 pub(super) fn scan_live_modules(
     workspace_root: &Path,
 ) -> Result<(Vec<VerifiedLiveModule>, Vec<ModuleDiagnostic>)> {
@@ -115,77 +194,32 @@ pub(super) fn scan_live_modules(
             });
             continue;
         };
-        let (manifest, compiled) = match parse_and_compile_manifest(&rel_path, &raw) {
-            Ok(pair) => pair,
+        let mut parsed = match parse_and_compile_manifest(&rel_path, &raw) {
+            Ok(out) => out,
             Err(diag) => {
                 diagnostics.push(diag);
                 continue;
             }
         };
-        let mut hasher = Sha256::new();
-        hasher.update(b"manifest\0");
-        hasher.update(rel_path.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(raw.as_bytes());
-
-        let mut asset_paths: BTreeSet<String> = BTreeSet::new();
-        for script in &manifest.scripts {
-            asset_paths.insert(script.script.clone());
-        }
-        let mut asset_error = None;
-        for asset_rel in &asset_paths {
-            let resolved = match resolve_workspace_asset(workspace_root, asset_rel) {
-                Ok(p) => p,
-                Err(err) => {
-                    asset_error = Some(err.to_string());
-                    break;
-                }
-            };
-            let asset_meta = match std::fs::symlink_metadata(&resolved) {
-                Ok(m) if m.is_file() => m,
-                _ => {
-                    asset_error = Some(format!("referenced script \"{asset_rel}\" does not exist"));
-                    break;
-                }
-            };
-            let asset_len = usize::try_from(asset_meta.len()).unwrap_or(usize::MAX);
-            if asset_len == 0 || asset_len > MAX_ASSET_BYTES {
-                asset_error = Some(format!("script \"{asset_rel}\" must be 1..={MAX_ASSET_BYTES} bytes"));
-                break;
+        let content_sha256 = match verify_and_hash_assets(workspace_root, &rel_path, &raw, &mut parsed, &mut total_bytes) {
+            Ok(sha) => sha,
+            Err(message) => {
+                diagnostics.push(ModuleDiagnostic { manifest_path: rel_path, line: None, message });
+                continue;
             }
-            total_bytes = total_bytes.saturating_add(asset_len);
-            if total_bytes > MAX_AGGREGATE_BYTES {
-                asset_error = Some("aggregate module manifest/asset size exceeds 1 MiB".into());
-                break;
-            }
-            let Ok(asset_text) = std::fs::read_to_string(&resolved) else {
-                asset_error = Some(format!("script \"{asset_rel}\" must be valid UTF-8"));
-                break;
-            };
-            hasher.update(b"\0asset\0");
-            hasher.update(asset_rel.as_bytes());
-            hasher.update(b"\0");
-            hasher.update(asset_text.as_bytes());
-        }
-        if let Some(message) = asset_error {
-            diagnostics.push(ModuleDiagnostic {
-                manifest_path: rel_path,
-                line: None,
-                message,
-            });
-            continue;
-        }
+        };
         candidates.push(VerifiedLiveModule {
             manifest_path: rel_path,
-            id: manifest.id,
-            name: manifest.name,
-            version: manifest.version,
-            description: manifest.description,
-            author: manifest.author,
-            proposed_hostnames: manifest.mitm.map_or_else(Vec::new, |m| m.hostnames),
-            script_count: u32::try_from(manifest.scripts.len()).unwrap_or(u32::MAX),
-            content_sha256: hex_lower(&hasher.finalize()),
-            compiled,
+            id: parsed.manifest.id,
+            name: parsed.manifest.name,
+            version: parsed.manifest.version,
+            description: parsed.manifest.description,
+            author: parsed.manifest.author,
+            proposed_hostnames: parsed.manifest.mitm.map_or_else(Vec::new, |m| m.hostnames),
+            script_count: u32::try_from(parsed.manifest.scripts.len()).unwrap_or(u32::MAX),
+            content_sha256,
+            compiled: parsed.rewrites,
+            blobs: parsed.inline_blobs,
         });
     }
 
