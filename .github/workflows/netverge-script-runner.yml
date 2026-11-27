@@ -1,0 +1,31 @@
+name: NetVerge isolated script runner
+on:
+  push:
+    branches: [feat/mitm-route-integration, feat/mitm-script-runner-8-7a]
+    paths:
+      - 'engines/script-runner/**'
+      - '.github/workflows/netverge-script-runner.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-runner:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    defaults:
+      run:
+        working-directory: engines/script-runner
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+      - name: Install pinned QuickJS WASM dependency
+        run: npm install --ignore-scripts --no-audit --no-fund --package-lock=false
+      - name: Verify disposable script process and fail-closed API
+        run: npm test
