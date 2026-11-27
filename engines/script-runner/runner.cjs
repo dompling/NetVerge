@@ -4,11 +4,13 @@
 // until the Windows isolation/approval gates are complete.
 const { spawn } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
+const path = require('node:path');
 
 const MAX_BODY = 256 * 1024;
 const MAX_SOURCE = 64 * 1024;
 const MAX_WIRE = 512 * 1024;
 const MAX_CONCURRENT = 4;
+const WINDOWS_JOB = path.join(__dirname, 'windows-job', 'target', 'release', 'netverge-script-job.exe');
 let active = 0;
 
 const fail = error => ({ ok: false, error });
@@ -218,7 +220,14 @@ function runScript(input) {
           if (process.env[key]) env[key] = process.env[key];
         }
       }
-      child = spawn(process.execPath, ['--max-old-space-size=64', __filename], {
+      // Windows never falls back to an uncontained child. The trusted launcher
+      // joins a kill-on-close Job Object before it starts Node.
+      const windows = process.platform === 'win32';
+      const executable = windows ? WINDOWS_JOB : process.execPath;
+      const args = windows
+        ? [process.execPath, __filename, String(snapshot.timeoutMs + 1500)]
+        : ['--max-old-space-size=64', __filename];
+      child = spawn(executable, args, {
         cwd: __dirname, env, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'],
       });
     } catch {
@@ -235,7 +244,7 @@ function runScript(input) {
       if (!reason) chunks.push(chunk);
     });
     child.once('close', (code, signal) => {
-      if (reason || code !== 0 || signal) { finish(fail(reason || 'runner-failure')); return; }
+      if (reason || code !== 0 || signal) { finish(fail(reason || (process.platform === 'win32' && code === 124 ? 'timeout' : 'runner-failure'))); return; }
       try {
         const response = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         if (fields(response, ['ok', 'result']) && response.ok === true && validResult(response.result, snapshot)) {

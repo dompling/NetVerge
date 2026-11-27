@@ -268,6 +268,15 @@ approved rules on unapproved edits, and compiling active module rewrites to
   Module approval/pinning is not permission to execute. Windows Rust and packaged
   regression tests required; OS-level runner resource/process-tree containment,
   separate execution consent, and verified live HTTP integration remain later gates.
+- 8.7c1: require the Windows Job Object launcher for every Windows standalone
+  runner invocation; no fallback to an unconstrained child. The launcher joins
+  an unnamed non-inheritable kill-on-close job before spawning Node, limits the
+  entire job to two processes (launcher plus one runner) and 256 MiB committed
+  memory, and enforces a wall-clock deadline including startup. Verify real
+  Windows descendant denial, memory cap, timeout, and child cleanup when the
+  launcher is killed. This is resource containment, not a Windows identity or
+  filesystem/network sandbox, and does not grant consent or package/enable HTTP
+  execution. Non-Windows development tests are not an OS isolation claim.
 - 8.8: module subscriptions, reviewed updates and rollback; foreign-format import
   adapters only after native semantics are stable.
 - 8.9: Windows real TUN/TLS, route identity, existing service/Sidecar lifecycle,

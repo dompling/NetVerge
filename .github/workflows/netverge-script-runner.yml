@@ -25,6 +25,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.23.3'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Windows Job Object launcher
+        run: cargo build --release --manifest-path windows-job/Cargo.toml
       - name: Install pinned QuickJS WASM dependency
         run: npm install --ignore-scripts --no-audit --no-fund --package-lock=false
       - name: Verify disposable script process and fail-closed API
