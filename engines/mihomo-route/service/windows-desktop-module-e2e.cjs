@@ -38,10 +38,10 @@ async function verifyModuleApproval({
       { stdio: 'inherit', timeout: 75000 });
   };
 
-  await until('discovered module awaiting approval', () => automation(app, 'ModulePending') === 'OK');
+  await until('discovered module awaiting approval', () => automation(app, 'ModulePending', '1.0') === 'OK');
   probe('off');
-  await until('click Approve for discovered module', () => automation(app, 'ApproveModule') === 'OK');
-  await until('module is active', () => automation(app, 'ModuleActive') === 'OK');
+  await until('click Approve for discovered module', () => automation(app, 'ApproveModule', '1.0') === 'OK');
+  await until('module is active', () => automation(app, 'ModuleActive', '1.0') === 'OK');
   await sleep(1200);
   probe('on');
   console.log('PASS: desktop module approval enabled the scoped rewrite over TUN/TLS');
@@ -60,10 +60,10 @@ async function verifyModuleApproval({
   ];
   writeModuleManifest(manifest, selected, '1.1', updatedActions);
   await until('refresh module list after a manifest edit', () => automation(app, 'RefreshMitm') === 'OK');
-  await until('updated module awaiting approval', () => automation(app, 'ModuleUpdatePending') === 'OK');
+  await until('updated module awaiting approval', () => automation(app, 'ModuleUpdatePending', '1.1') === 'OK');
   probe(advancedModule ? 'module-pending' : 'on');
-  await until('click Approve for updated module', () => automation(app, 'ApproveModule') === 'OK');
-  await until('updated module is active', () => automation(app, 'ModuleActive') === 'OK');
+  await until('click Approve for updated module', () => automation(app, 'ApproveModule', '1.1') === 'OK');
+  await until('updated module is active', () => automation(app, 'ModuleActive', '1.1') === 'OK');
   await sleep(1200);
   probe(advancedModule ? 'module-remove' : 'multi-override');
   if (!advancedModule) {
@@ -93,9 +93,9 @@ async function verifyModuleApproval({
     }],
   ]);
   await until('refresh module list after adding map-local', () => automation(app, 'RefreshMitm') === 'OK');
-  await until('map-local module awaiting approval', () => automation(app, 'ModuleUpdatePending') === 'OK');
-  await until('approve map-local module', () => automation(app, 'ApproveModule') === 'OK');
-  await until('map-local module active', () => automation(app, 'ModuleActive') === 'OK');
+  await until('map-local module awaiting approval', () => automation(app, 'ModuleUpdatePending', '1.2') === 'OK');
+  await until('approve map-local module', () => automation(app, 'ApproveModule', '1.2') === 'OK');
+  await until('map-local module active', () => automation(app, 'ModuleActive', '1.2') === 'OK');
   await sleep(1200);
   probe('map-local-v1');
   console.log('PASS: map-local took terminal precedence with zero upstream origin HTTP request');
@@ -103,10 +103,10 @@ async function verifyModuleApproval({
   // Editing only the referenced workspace asset must mark UpdatePending while keeping approved v1 bytes active.
   fs.writeFileSync(assetFile, '{"marker":"netverge-map-local-v2","path":"/demo"}');
   await until('refresh module list after editing map-local asset', () => automation(app, 'RefreshMitm') === 'OK');
-  await until('asset edit marks module UpdatePending', () => automation(app, 'ModuleUpdatePending') === 'OK');
+  await until('asset edit marks module UpdatePending', () => automation(app, 'ModuleUpdatePending', '1.2') === 'OK');
   probe('map-local-v1');
-  await until('approve updated map-local asset', () => automation(app, 'ApproveModule') === 'OK');
-  await until('re-approved map-local module active', () => automation(app, 'ModuleActive') === 'OK');
+  await until('approve updated map-local asset', () => automation(app, 'ApproveModule', '1.2') === 'OK');
+  await until('re-approved map-local module active', () => automation(app, 'ModuleActive', '1.2') === 'OK');
   await sleep(1200);
   probe('map-local-v2');
   console.log('PASS: unapproved asset edit preserved v1 bytes until re-approval committed v2');

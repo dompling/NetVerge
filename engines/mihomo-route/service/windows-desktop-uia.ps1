@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'Inspect')][string]$Action
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'Inspect')][string]$Action,
+    [string]$ModuleVersion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -303,17 +304,24 @@ switch ($Action) {
     'RecentEmpty' {
         if (Find-Element 'No completed requests in this worker session.') { 'OK' }
     }
-    'ModulePending' {
-        if ((Find-Element 'Desktop Approval Fixture (1.0)') -and (Find-Element 'Pending approval')) { 'OK' }
-    }
-    'ModuleUpdatePending' {
-        if ((Find-Element 'Desktop Approval Fixture (1.1)') -and (Find-Element 'Modified (review required)')) { 'OK' }
-    }
-    'ModuleActive' {
-        $switch = Find-Element 'Enable module com.example.desktop-approval'
-        if ($switch -and $switch.Current.IsEnabled -and !(Find-Element 'Approve' ([Windows.Automation.ControlType]::Button))) { 'OK' }
+    { $_ -in 'ModulePending', 'ModuleUpdatePending', 'ModuleActive' } {
+        if (!$ModuleVersion) { throw 'Expected module fixture version is required' }
+        if (!(Find-Element "Desktop Approval Fixture ($ModuleVersion)")) { break }
+        $expectedState = switch ($Action) {
+            'ModulePending' { 'Pending approval' }
+            'ModuleUpdatePending' { 'Modified (review required)' }
+            'ModuleActive' { 'Active' }
+        }
+        if (!(Find-Element $expectedState)) { break }
+        if ($Action -eq 'ModuleActive') {
+            $switch = Find-Element 'Enable module com.example.desktop-approval'
+            if (!$switch -or !$switch.Current.IsEnabled -or (Find-Element 'Approve' ([Windows.Automation.ControlType]::Button))) { break }
+        }
+        'OK'
     }
     'ApproveModule' {
+        if (!$ModuleVersion) { throw 'Expected module fixture version is required' }
+        if (!(Find-Element "Desktop Approval Fixture ($ModuleVersion)")) { break }
         $button = Find-Element 'Approve' ([Windows.Automation.ControlType]::Button)
         if ($button -and $button.Current.IsEnabled) {
             $button.GetCurrentPattern($invoke).Invoke()

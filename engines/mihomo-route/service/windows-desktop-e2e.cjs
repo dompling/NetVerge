@@ -75,10 +75,11 @@ function stopTree(child) {
   catch { child.kill(); }
 }
 
-function automation(app, action) {
+function automation(app, action, moduleVersion) {
   return execFileSync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'RemoteSigned',
     '-File', path.join(__dirname, 'windows-desktop-uia.ps1'), '-App', app, '-Action', action,
+    ...(moduleVersion ? ['-ModuleVersion', moduleVersion] : []),
   ], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true }).trim();
 }
 

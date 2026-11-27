@@ -207,7 +207,13 @@ async function probe(dir, port, mode, rewrite) {
     } else {
       assert.ok(result.response.includes(body), 'missing controlled origin response');
       if (mapLocal) {
-        assert.equal(fs.readFileSync(originLog, 'utf8'), beforeOrigin + 'GET ' + host + requestPath + '\n');
+        // Both Host spellings are valid for HTTPS on port 443. Keep the full
+        // append-only assertion: exactly one HTTP request, expected host/path,
+        // no extra requests, and no unexpected port.
+        const observed = fs.readFileSync(originLog, 'utf8');
+        assert.ok([host, host + ':443'].some(authority =>
+          observed === beforeOrigin + 'GET ' + authority + requestPath + '\n'),
+        'non-matching request must reach the expected origin exactly once: ' + host + requestPath);
       }
     }
     if (rewrite && !bodyRewrite) {
