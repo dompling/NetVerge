@@ -61,7 +61,7 @@ impl MitmTrustStatus {
     }
 }
 
-fn ca_der(ca: &MitmPublicCa) -> Result<Vec<u8>> {
+pub(super) fn ca_der(ca: &MitmPublicCa) -> Result<Vec<u8>> {
     let encoded = ca.pem.strip_prefix("-----BEGIN CERTIFICATE-----\n")
         .and_then(|pem| pem.strip_suffix("-----END CERTIFICATE-----\n"))
         .context("invalid MITM CA PEM")?;

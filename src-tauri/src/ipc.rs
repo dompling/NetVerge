@@ -41,6 +41,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
             cmd::get_mitm_rewrite_diagnostics,
             cmd::get_mitm_profile_modules,
             cmd::set_mitm_module_approval,
+            cmd::replay_mitm_request,
             cmd::arm_mitm_response_preview,
             cmd::clear_mitm_recent_requests,
             cmd::get_mitm_public_ca,

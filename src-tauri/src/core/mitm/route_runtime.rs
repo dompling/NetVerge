@@ -285,6 +285,104 @@ pub(crate) fn rewrite_diagnostics() -> Vec<RewritePhaseDiagnostic> {
     Vec::new()
 }
 
+// Replay is a new credential-free request through the native TUN. A mixed
+// proxy port cannot be used: original-route interception admits TUN only.
+static REPLAY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+fn replay_target(method: &str, host: &str, path: &str) -> Result<tauri::Url> {
+    ensure!(matches!(method, "GET" | "HEAD"), "only GET and HEAD can be replayed");
+    ensure!(valid_host(host) && path.starts_with('/') && !path.starts_with("//") &&
+        path.len() <= 256 && path.bytes().all(|b| b.is_ascii_graphic() && !matches!(b, b'?' | b'#' | b'\\')),
+        "invalid or truncated replay target");
+    for (i, _) in path.match_indices('%') {
+        ensure!(path.as_bytes().get(i+1..i+3).is_some_and(|p| p.iter().all(u8::is_ascii_hexdigit)), "invalid escaped replay path");
+    }
+    let url = tauri::Url::parse(&format!("https://{host}{path}"))?;
+    ensure!(url.host_str() == Some(host) && url.path() == path && url.query().is_none() &&
+        url.fragment().is_none() && url.username().is_empty() && url.password().is_none(),
+        "ambiguous replay target");
+    Ok(url)
+}
+
+fn replay_fake_range(config: &serde_yaml_ng::Mapping) -> Result<(u32, u32)> {
+    require_tun_rule(config)?;
+    let dns = config.get("dns").and_then(serde_yaml_ng::Value::as_mapping).context("replay requires fake-IP DNS")?;
+    ensure!(dns.get("enable").and_then(serde_yaml_ng::Value::as_bool) == Some(true) &&
+        dns.get("enhanced-mode").and_then(serde_yaml_ng::Value::as_str) == Some("fake-ip"),
+        "replay requires enabled fake-IP DNS");
+    let range = dns.get("fake-ip-range").and_then(serde_yaml_ng::Value::as_str).unwrap_or("198.18.0.1/16");
+    let (base, bits) = range.split_once('/').context("invalid fake-IP range")?;
+    let base: Ipv4Addr = base.parse()?;
+    let bits: u32 = bits.parse()?;
+    ensure!((15..=30).contains(&bits), "replay requires a bounded IPv4 fake-IP range");
+    let mask = u32::MAX << (32-bits);
+    let network = u32::from(base) & mask;
+    ensure!(network & 0xfffe0000 == u32::from(Ipv4Addr::new(198,18,0,0)),
+        "replay requires a fake-IP range within 198.18.0.0/15");
+    Ok((network, mask))
+}
+
+pub(crate) async fn replay_request(id: u32, completed_at: String, expected_method: String, expected_url: String) -> Result<u16> {
+    let _permit = REPLAY.try_acquire().context("a replay is already in progress")?;
+    let manager = crate::core::CoreManager::global();
+    let generation = manager.current_core_readiness_generation().context("core is not ready")?;
+    let worker = ACTIVE_WORKER.lock().clone().context("MITM worker is unavailable")?;
+    let ca = {
+        let state = PUBLIC_STATE.lock();
+        ensure!(matches!(state.health, Health::LocalLinkHealthy) && state.generation == Some(generation),
+            "MITM generation is not ready");
+        state.ca.clone().context("MITM CA is unavailable")?
+    };
+    let epoch = CLEAR_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+    let entry = RECENT_REQUESTS.lock().iter().find(|e| e.id == id && e.completed_at == completed_at)
+        .cloned().context("request is no longer in the live inspector")?;
+    let url = replay_target(&entry.method, &entry.host, &entry.path)?;
+    ensure!(entry.method == expected_method && url.as_str() == expected_url, "replay target changed");
+    ensure!(configured_hostnames().await?.contains(&entry.host), "host is no longer in the MITM selection");
+    let (network, mask) = {
+        let runtime = crate::config::Config::runtime().await.data_arc();
+        replay_fake_range(runtime.config.as_ref().context("runtime profile is unavailable")?)?
+    };
+    // Do not create a new DNS client or independent route. Resolve through the
+    // system's existing DNS path; only an address in the active fake-IP range
+    // is acceptable. Pin it to this request to avoid a second DNS lookup.
+    let address = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host((entry.host.as_str(), 443))).await??
+        .find(|address| match address.ip() {
+            std::net::IpAddr::V4(ip) => u32::from(ip) & mask == network,
+            _ => false,
+        }).context("system DNS did not return an active fake IP; verify TUN DNS integration")?;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(rustls::pki_types::CertificateDer::from(super::trust::ca_der(&ca)?))?;
+    let tls = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()?.with_root_certificates(roots).with_no_client_auth();
+    let client = reqwest::Client::builder()
+        .tls_backend_preconfigured(tls)
+        .no_proxy().http1_only().redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .pool_max_idle_per_host(0)
+        .resolve(&entry.host, address)
+        .connect_timeout(Duration::from_secs(4)).timeout(Duration::from_secs(10))
+        .build()?;
+    // Recheck immediately before dispatch. Never retry or fall back if the
+    // route changes. Trust ONLY the verified worker CA, not system roots.
+    ensure!(manager.current_core_readiness_generation() == Some(generation) &&
+        ACTIVE_WORKER.lock().as_ref() == Some(&worker) &&
+        CLEAR_EPOCH.load(std::sync::atomic::Ordering::Acquire) == epoch &&
+        recent_requests().iter().any(|e| e.id == id && e.completed_at == completed_at),
+        "MITM session or request changed before replay");
+    let method = reqwest::Method::from_bytes(entry.method.as_bytes())?;
+    let mut response = client.request(method, url).send().await.context("replay failed; request may have been sent, no automatic retry")?;
+    let status = response.status().as_u16();
+    // Consume only a bounded amount so small responses finish normally in
+    // the inspector. No response body is returned or stored by replay itself.
+    let mut received = 0usize;
+    while let Ok(Some(chunk)) = response.chunk().await {
+        received = received.saturating_add(chunk.len());
+        if received > 262_144 { break; }
+    }
+    Ok(status)
+}
+
 pub(crate) async fn arm_response_preview() -> Result<()> {
     ensure!(matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy), "MITM worker is unavailable");
     let (port, secret) = ACTIVE_WORKER.lock().clone().context("MITM worker is unavailable")?;
@@ -739,6 +837,38 @@ pub(super) async fn guard_runtime() -> Result<()> {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+
+    #[test]
+    fn replay_rejects_ambiguous_targets_and_mutating_methods() -> Result<()> {
+        assert_eq!(replay_target("GET", "api.example.test", "/demo")?.as_str(), "https://api.example.test/demo");
+        assert!(replay_target("HEAD", "api.example.test", "/a%2Fb").is_ok());
+        for (method, host, path) in [
+            ("POST", "api.example.test", "/demo"),
+            ("GET", "api.example.test:8443", "/demo"),
+            ("GET", "api.example.test", "//evil.test"),
+            ("GET", "api.example.test", "/a/../demo"),
+            ("GET", "api.example.test", "/demo?token=x"),
+            ("GET", "api.example.test", "/demo#x"),
+            ("GET", "api.example.test", "/demo%xx"),
+            ("GET", "api.example.test", "/demo…"),
+        ] {
+            assert!(replay_target(method, host, path).is_err(), "{method} {host}{path}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn replay_fake_range_requires_rule_mode_and_benchmark_fake_ip() -> Result<()> {
+        let config: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(
+            "mode: rule\ntun: {enable: true}\ndns: {enable: true, enhanced-mode: fake-ip, fake-ip-range: 198.18.17.1/24}"
+        )?;
+        assert_eq!(replay_fake_range(&config)?, (u32::from(Ipv4Addr::new(198,18,17,0)), 0xffffff00));
+        let bad: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(
+            "mode: rule\ntun: {enable: true}\ndns: {enable: true, enhanced-mode: fake-ip, fake-ip-range: 192.168.1.1/24}"
+        )?;
+        assert!(replay_fake_range(&bad).is_err());
+        Ok(())
+    }
 
     #[test]
     fn original_route_settings_exclude_fixed_policy() -> Result<()> {

@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { setTimeout: sleep } = require('node:timers/promises');
+const { fakeAddress } = require('../../whistle/windows-tun-lab.cjs');
 
 function writeModuleManifest(file, selected, version, changes) {
   fs.writeFileSync(file + '.tmp', JSON.stringify({
@@ -132,6 +133,32 @@ async function verifyModuleApproval({
   await until('copy sanitized cURL from request details', () => automation(app, 'CopyCurl') === 'OK');
   assert.equal(automation(app, 'ReadExportClipboard'), "curl.exe --disable --globoff --path-as-is --request 'GET' --url 'https://api.example.test/demo'");
   console.log('PASS: desktop copied sanitized HAR metadata and a Windows cURL template; response preview and credentials omitted');
+  // The disposable runner uses an isolated TUN range and DNS listener, not
+  // system DNS hijacking. Map only the fixture host to its verified fake IP
+  // for the real native app resolver, then restore the exact hosts file.
+  assert.equal(process.env.GITHUB_ACTIONS, 'true');
+  const fakeIp = await fakeAddress(dnsPort, selected);
+  const hostsFile = path.join(process.env.SystemRoot, 'System32', 'drivers', 'etc', 'hosts');
+  const originalHosts = fs.readFileSync(hostsFile);
+  assert.ok(!originalHosts.toString('utf8').includes(selected));
+  try {
+    fs.appendFileSync(hostsFile, '\r\n' + fakeIp + ' ' + selected + '\r\n');
+    execFileSync('ipconfig.exe', ['/flushdns'], { stdio: 'ignore', timeout: 15000 });
+    const originLog = path.join(temp, 'origin-requests');
+    const exitLog = path.join(temp, 'exit-observations');
+    const beforeOrigin = fs.readFileSync(originLog, 'utf8');
+    const beforeExit = fs.readFileSync(exitLog, 'utf8');
+    await until('show explicit replay confirmation', () => automation(app, 'ReplayPrepare') === 'OK');
+    assert.equal(fs.readFileSync(exitLog, 'utf8'), beforeExit, 'replay preparation must not send traffic');
+    await until('confirm one native replay', () => automation(app, 'ReplayConfirm') === 'DISPATCHED');
+    await until('replay result status', () => automation(app, 'ReplayComplete') === 'OK');
+    assert.equal(fs.readFileSync(exitLog, 'utf8'), beforeExit + selected + ':443\n', 'replay must take original route exactly once');
+    assert.equal(fs.readFileSync(originLog, 'utf8'), beforeOrigin, 'map-local replay must not send an upstream HTTP request');
+    console.log('PASS: explicit native replay used the original TUN exit exactly once and returned the local HTTP 201 response');
+  } finally {
+    fs.writeFileSync(hostsFile, originalHosts);
+    execFileSync('ipconfig.exe', ['/flushdns'], { stdio: 'ignore', timeout: 15000 });
+  }
   await until('clear preview and recent requests', () => automation(app, 'ClearRecent') === 'OK');
   await sleep(2500);
   assertEmptyRecent();

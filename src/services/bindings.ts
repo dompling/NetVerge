@@ -89,6 +89,12 @@ export const commands = {
       expectedSha256,
       enabled,
     }),
+  replayMitmRequest: (
+    id: number,
+    completedAt: string,
+    expectedMethod: string,
+    expectedUrl: string,
+  ) => __TAURI_INVOKE<number>('replay_mitm_request', { id, completedAt, expectedMethod, expectedUrl }),
   armMitmResponsePreview: () => __TAURI_INVOKE<null>('arm_mitm_response_preview'),
   clearMitmRecentRequests: () =>
     __TAURI_INVOKE<null>('clear_mitm_recent_requests'),

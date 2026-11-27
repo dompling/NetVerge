@@ -250,4 +250,5 @@ async function main() {
   else throw new Error('expected serve or probe with a valid TUN phase');
 }
 
-main().catch(err => { console.error(err.message); process.exitCode = 1; });
+if (require.main === module) main().catch(err => { console.error(err.message); process.exitCode = 1; });
+module.exports = { fakeAddress };

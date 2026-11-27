@@ -16,7 +16,7 @@ import { useTranslation } from 'react-i18next'
 import useSWR, { useSWRConfig } from 'swr'
 
 import type { RecentRequest } from '@/services/bindings'
-import { armMitmResponsePreview, clearMitmRecentRequests, getMitmRecentRequests } from '@/services/cmds'
+import { armMitmResponsePreview, clearMitmRecentRequests, getMitmRecentRequests, replayMitmRequest } from '@/services/cmds'
 import getSystem from '@/utils/get-system'
 
 import { exportRequestUrl, sanitizedCurl, sanitizedHar } from './recent-request-export'
@@ -72,6 +72,9 @@ export function RecentRequests() {
   const [armedNotice, setArmedNotice] = useState(false)
   const [exportBusy, setExportBusy] = useState(false)
   const [exportNotice, setExportNotice] = useState('')
+  const [replayTarget, setReplayTarget] = useState<RecentRequest | null>(null)
+  const [replaying, setReplaying] = useState(false)
+  const [replayNotice, setReplayNotice] = useState('')
   const needle = query.trim().toLowerCase()
   const [snapshot, setSnapshot] = useState<RecentRequest[] | null>(null)
   const { mutate } = useSWRConfig()
@@ -125,6 +128,23 @@ export function RecentRequests() {
       setExportBusy(false)
     }
   }
+  const confirmReplay = async () => {
+    const target = replayTarget
+    if (!target || replaying || snapshot !== null) return
+    const url = exportRequestUrl(target)
+    if (!url || !['GET', 'HEAD'].includes(target.method)) return
+    setReplayTarget(null)
+    setReplayNotice('')
+    setReplaying(true)
+    try {
+      const status = await replayMitmRequest(target.id, target.completedAt, target.method, url)
+      setReplayNotice(`Replay completed: HTTP ${status}`)
+    } catch {
+      setReplayNotice('Replay failed. Request may have been sent; no automatic retry.')
+    } finally {
+      setReplaying(false)
+    }
+  }
   const clear = async () => {
     setClearing(true)
     setActionError(false)
@@ -132,6 +152,8 @@ export function RecentRequests() {
       await clearMitmRecentRequests()
       setArmedNotice(false)
       setExportNotice('')
+      setReplayTarget(null)
+      setReplayNotice('')
       setExpandedId(null)
       setSnapshot((current) => (current === null ? null : []))
       await mutate('mitm-recent-requests', [], { revalidate: false })
@@ -172,6 +194,7 @@ export function RecentRequests() {
         onClick={() => {
           setOpen(!open)
           setSnapshot(null)
+          setReplayTarget(null)
         }}
       >
         {t('settings.mitm.recent.title')}
@@ -198,8 +221,8 @@ export function RecentRequests() {
             <Stack direction="row" spacing={1}>
               <Button
                 size="small"
-                disabled={clearing || !data}
-                onClick={() => setSnapshot(snapshot === null ? (live ?? []) : null)}
+                disabled={clearing || replaying || !data}
+                onClick={() => { setReplayTarget(null); setSnapshot(snapshot === null ? (live ?? []) : null) }}
               >
                 {t(
                   snapshot === null
@@ -209,7 +232,7 @@ export function RecentRequests() {
               </Button>
               <Button
                 size="small"
-                disabled={clearing || arming || exportBusy || (!data?.length && !armedNotice)}
+                disabled={clearing || arming || exportBusy || replaying || (!data?.length && !armedNotice)}
                 onClick={() => void clear()}
               >
                 {t('settings.mitm.recent.clear')}
@@ -272,6 +295,25 @@ export function RecentRequests() {
             </TextField>
           </Stack>
           {exportNotice && <Typography variant="caption" role="status">{exportNotice}</Typography>}
+          {replayNotice && <Typography variant="caption" role="status">{replayNotice}</Typography>}
+          {replayTarget && (
+            <Alert severity="warning">
+              <Stack spacing={1}>
+                <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>
+                  {`Send one new ${replayTarget.method} request to ${exportRequestUrl(replayTarget)}?`}
+                  {' '}Original query, headers, credentials and body are omitted.
+                  Current TUN rules apply; even GET can change server state.
+                </Typography>
+                <Stack direction="row" spacing={1}>
+                  <Button size="small" onClick={() => setReplayTarget(null)}>Cancel replay</Button>
+                  <Button size="small" variant="contained"
+                    disabled={replaying || clearing || snapshot !== null ||
+                      !live?.some(e => e.id === replayTarget.id && e.completedAt === replayTarget.completedAt)}
+                    onClick={() => void confirmReplay()}>Confirm replay</Button>
+                </Stack>
+              </Stack>
+            </Alert>
+          )}
           {(Boolean(error) || actionError) && (
             <Alert severity="error">{t('settings.mitm.error')}</Alert>
           )}
@@ -382,6 +424,10 @@ export function RecentRequests() {
                             onClick={() => void exportRequest(entry, 'har-copy')}>Copy sanitized HAR</Button>
                           <Button size="small" disabled={exportBusy || clearing || !exportRequestUrl(entry)}
                             onClick={() => void exportRequest(entry, 'curl')}>Copy sanitized cURL</Button>
+                          {['GET', 'HEAD'].includes(entry.method) && (
+                            <Button size="small" disabled={replaying || clearing || snapshot !== null || !exportRequestUrl(entry)}
+                              onClick={() => { setReplayNotice(''); setReplayTarget(entry) }}>Replay request</Button>
+                          )}
                         </Stack>
                         <Typography variant="caption" color="text.secondary">
                           Metadata only: query, credentials, arbitrary header values and bodies omitted.
