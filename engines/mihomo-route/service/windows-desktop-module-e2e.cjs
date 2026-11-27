@@ -121,6 +121,17 @@ async function verifyModuleApproval({
   await until('arm one-shot JSON response preview', () => automation(app, 'ArmPreview') === 'OK');
   probe('map-local-v2');
   await until('inspect captured local JSON response', () => automation(app, 'PreviewCaptured') === 'OK');
+  await until('copy sanitized HAR from request details', () => automation(app, 'CopyHar') === 'OK');
+  const exportedHar = automation(app, 'ReadExportClipboard');
+  const exported = JSON.parse(exportedHar).log.entries[0];
+  assert.equal(exported.request.url, 'https://api.example.test/demo');
+  assert.equal(exported.response.status, 201);
+  assert.equal(exported._netverge.localResponse, true);
+  assert.equal(exported.response.content.text, undefined);
+  assert.ok(!/netverge-map-local-v2|origin-sensitive-secret|client-sensitive-secret/.test(exportedHar), 'HAR leaked response preview or credential');
+  await until('copy sanitized cURL from request details', () => automation(app, 'CopyCurl') === 'OK');
+  assert.equal(automation(app, 'ReadExportClipboard'), "curl.exe --disable --globoff --path-as-is --request 'GET' --url 'https://api.example.test/demo'");
+  console.log('PASS: desktop copied sanitized HAR metadata and a Windows cURL template; response preview and credentials omitted');
   await until('clear preview and recent requests', () => automation(app, 'ClearRecent') === 'OK');
   await sleep(2500);
   assertEmptyRecent();

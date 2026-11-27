@@ -8,12 +8,18 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
+import { writeText } from '@tauri-apps/plugin-clipboard-manager'
+import { save } from '@tauri-apps/plugin-dialog'
+import { writeFile } from '@tauri-apps/plugin-fs'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR, { useSWRConfig } from 'swr'
 
 import type { RecentRequest } from '@/services/bindings'
 import { armMitmResponsePreview, clearMitmRecentRequests, getMitmRecentRequests } from '@/services/cmds'
+import getSystem from '@/utils/get-system'
+
+import { exportRequestUrl, sanitizedCurl, sanitizedHar } from './recent-request-export'
 
 function HeaderList({
   title,
@@ -64,6 +70,8 @@ export function RecentRequests() {
   const [actionError, setActionError] = useState(false)
   const [arming, setArming] = useState(false)
   const [armedNotice, setArmedNotice] = useState(false)
+  const [exportBusy, setExportBusy] = useState(false)
+  const [exportNotice, setExportNotice] = useState('')
   const needle = query.trim().toLowerCase()
   const [snapshot, setSnapshot] = useState<RecentRequest[] | null>(null)
   const { mutate } = useSWRConfig()
@@ -86,12 +94,44 @@ export function RecentRequests() {
       setArming(false)
     }
   }
+  const exportRequest = async (entry: RecentRequest, kind: 'curl' | 'har-copy' | 'har-save') => {
+    setExportBusy(true)
+    setExportNotice('')
+    setActionError(false)
+    try {
+      if (kind === 'curl') {
+        await writeText(sanitizedCurl(entry, getSystem() === 'windows'))
+        setExportNotice('Sanitized cURL copied')
+      } else {
+        const har = sanitizedHar(entry)
+        if (kind === 'har-copy') {
+          await writeText(har)
+          setExportNotice('Sanitized HAR copied')
+        } else {
+          const file = await save({
+            title: 'Export sanitized HAR',
+            defaultPath: 'NetVerge-request.har',
+            filters: [{ name: 'HTTP Archive', extensions: ['har'] }],
+          })
+          if (file) {
+            await writeFile(file, new TextEncoder().encode(har))
+            setExportNotice('Sanitized HAR saved')
+          }
+        }
+      }
+    } catch {
+      setActionError(true)
+    } finally {
+      setExportBusy(false)
+    }
+  }
   const clear = async () => {
     setClearing(true)
     setActionError(false)
     try {
       await clearMitmRecentRequests()
       setArmedNotice(false)
+      setExportNotice('')
       setExpandedId(null)
       setSnapshot((current) => (current === null ? null : []))
       await mutate('mitm-recent-requests', [], { revalidate: false })
@@ -169,7 +209,7 @@ export function RecentRequests() {
               </Button>
               <Button
                 size="small"
-                disabled={clearing || arming || (!data?.length && !armedNotice)}
+                disabled={clearing || arming || exportBusy || (!data?.length && !armedNotice)}
                 onClick={() => void clear()}
               >
                 {t('settings.mitm.recent.clear')}
@@ -231,6 +271,7 @@ export function RecentRequests() {
               <option value="none">{t('settings.mitm.recent.none')}</option>
             </TextField>
           </Stack>
+          {exportNotice && <Typography variant="caption" role="status">{exportNotice}</Typography>}
           {(Boolean(error) || actionError) && (
             <Alert severity="error">{t('settings.mitm.error')}</Alert>
           )}
@@ -333,6 +374,21 @@ export function RecentRequests() {
                         empty={t('settings.mitm.recent.noHeaders')}
                         headers={entry.responseHeaders}
                       />
+                      <Stack spacing={0.5}>
+                        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
+                          <Button size="small" disabled={exportBusy || clearing || !exportRequestUrl(entry)}
+                            onClick={() => void exportRequest(entry, 'har-save')}>Save sanitized HAR</Button>
+                          <Button size="small" disabled={exportBusy || clearing || !exportRequestUrl(entry)}
+                            onClick={() => void exportRequest(entry, 'har-copy')}>Copy sanitized HAR</Button>
+                          <Button size="small" disabled={exportBusy || clearing || !exportRequestUrl(entry)}
+                            onClick={() => void exportRequest(entry, 'curl')}>Copy sanitized cURL</Button>
+                        </Stack>
+                        <Typography variant="caption" color="text.secondary">
+                          Metadata only: query, credentials, arbitrary header values and bodies omitted.
+                          The original hostname and path may contain private identifiers; review before sharing.
+                          cURL is a command template, not a complete replay.
+                        </Typography>
+                      </Stack>
                       {entry.responsePreview != null && (
                         <Box>
                           <Typography variant="caption" sx={{ fontWeight: 600 }}>

@@ -46,7 +46,7 @@ export function hasMitmConfigConflict(draft: MitmConfigDraft | null, view: MitmC
   return Boolean(draft && (!view?.available || draft.revision !== view.revision))
 }
 
-function validHostname(host: string) {
+export function validHostname(host: string) {
   return host.length <= 253 && host.includes('.') &&
     !/^\d+(?:\.\d+){3}$/.test(host) &&
     host.split('.').every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))

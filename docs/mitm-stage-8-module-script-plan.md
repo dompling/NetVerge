@@ -255,7 +255,8 @@ approved rules on unapproved edits, and compiling active module rewrites to
   upstream URL/header/body forwarding without sending any application HTTP request upstream,
   while local editor `response-header` overrides retain precedence.
 - 8.6a: optional one-shot response preview, default off. Capture only the next admitted response within 30 seconds; accept complete uncompressed UTF-8 JSON objects/arrays up to 2 KiB, observe final bytes after rewrite/local response without changing forwarding, redact known sensitive keys, warn that other sensitive content may remain. Clear cancels capture and discards previews. In-memory only, within the existing recent-request cap. Unit and packaged Windows UI/TLS acceptance required.
-- 8.6b/c: redacted HAR/cURL export and explicit replay, not yet implemented.
+- 8.6b: export one selected inspector entry as sanitized HAR 1.2 metadata (copy or explicit save dialog) and a shell-quoted cURL template (Windows PowerShell or POSIX). Omit query, cookies, request and response bodies, previews and arbitrary header values; retain known MIME/length values only and label unknown timing phases and body size. Validate canonical original target and reject truncated/ambiguous paths. Warn that hostname/path may contain private identifiers. No network execution. Unit and packaged UI clipboard verification required.
+- 8.6c: explicit replay, not yet implemented.
 - 8.7: isolated script runner and Surge-compatible APIs, timeout/crash tests,
   permission review.
 - 8.8: module subscriptions, reviewed updates and rollback; foreign-format import

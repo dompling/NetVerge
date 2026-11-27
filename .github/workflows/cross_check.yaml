@@ -83,7 +83,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           pnpm typecheck
-          pnpm test src/components/mitm/mitm-config-model.test.ts src/components/mitm/mitm-view-model.test.ts
+          pnpm test src/components/mitm/mitm-config-model.test.ts src/components/mitm/mitm-view-model.test.ts src/components/mitm/recent-request-export.test.ts
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:

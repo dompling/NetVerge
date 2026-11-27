@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'OpenPreviewPanel', 'ArmPreview', 'PreviewCaptured', 'Inspect')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'OpenPreviewPanel', 'ArmPreview', 'PreviewCaptured', 'CopyHar', 'CopyCurl', 'ReadExportClipboard', 'Inspect')][string]$Action,
     [string]$ModuleVersion
 )
 
@@ -368,6 +368,24 @@ switch ($Action) {
             $details.SetFocus()
             if ($details.Current.HasKeyboardFocus) { $keys.SendKeys(' '); Start-Sleep -Milliseconds 400 }
         }
+    }
+    { $_ -in 'CopyHar', 'CopyCurl' } {
+        $label, $notice = if ($Action -eq 'CopyHar') {
+            'Copy sanitized HAR', 'Sanitized HAR copied'
+        } else { 'Copy sanitized cURL', 'Sanitized cURL copied' }
+        if (Find-Element $notice) { 'OK'; break }
+        $button = Find-Element $label ([Windows.Automation.ControlType]::Button)
+        if (!$button -or !$button.Current.IsEnabled) { break }
+        $keys = New-Object -ComObject WScript.Shell
+        if (!$keys.AppActivate($process.Id)) { break }
+        $button.SetFocus()
+        Start-Sleep -Milliseconds 150
+        if (!$button.Current.HasKeyboardFocus) { break }
+        $keys.SendKeys(' ')
+        Start-Sleep -Milliseconds 500
+    }
+    'ReadExportClipboard' {
+        Get-Clipboard -Raw
     }
     'Inspect' {
         $elements = $root.FindAll($scope, [Windows.Automation.Condition]::TrueCondition)
