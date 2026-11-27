@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'ArmPreview', 'PreviewCaptured', 'Inspect')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'OpenPreviewPanel', 'ArmPreview', 'PreviewCaptured', 'Inspect')][string]$Action,
     [string]$ModuleVersion
 )
 
@@ -339,11 +339,24 @@ switch ($Action) {
             if ($Action -eq 'RefreshMitm') { 'OK' }
         }
     }
-    'ArmPreview' {
-        if (Find-Element 'Capture requested (30-second window)') { 'OK'; break }
-        $button = Find-Element 'Capture next JSON response' ([Windows.Automation.ControlType]::Button)
-        if (!$button) { $button = Find-Element 'Recent requests' ([Windows.Automation.ControlType]::Button) }
-        if ($button -and $button.Current.IsEnabled) { $button.GetCurrentPattern($invoke).Invoke() }
+    { $_ -in 'OpenPreviewPanel', 'ArmPreview' } {
+        # Recent requests exposes an expandable button in WebView2, not
+        # necessarily InvokePattern. Reuse the focused Space activation used
+        # by RecentRequests and verify the actual UI state on the next poll.
+        $capture = Find-Element 'Capture next JSON response' ([Windows.Automation.ControlType]::Button)
+        if ($Action -eq 'OpenPreviewPanel' -and $capture) { 'OK'; break }
+        if ($Action -eq 'ArmPreview' -and (Find-Element 'Capture requested (30-second window)')) { 'OK'; break }
+        $button = if ($Action -eq 'ArmPreview') { $capture } else {
+            Find-Element 'Recent requests' ([Windows.Automation.ControlType]::Button)
+        }
+        if (!$button -or !$button.Current.IsEnabled) { break }
+        $keys = New-Object -ComObject WScript.Shell
+        if (!$keys.AppActivate($process.Id)) { break }
+        $button.SetFocus()
+        Start-Sleep -Milliseconds 150
+        if (!$button.Current.HasKeyboardFocus) { break }
+        $keys.SendKeys(' ')
+        Start-Sleep -Milliseconds 500
     }
     'PreviewCaptured' {
         $preview = Find-Element 'Response preview: {"marker":"netverge-map-local-v2","path":"/demo"}'

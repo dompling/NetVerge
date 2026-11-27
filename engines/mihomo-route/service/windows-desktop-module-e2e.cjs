@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
@@ -37,6 +38,7 @@ async function verifyModuleApproval({
     execFileSync(process.execPath, [netFixture, 'probe', temp, String(dnsPort), 'enabled', expected],
       { stdio: 'inherit', timeout: 75000 });
   };
+  const assertEmptyRecent = () => assert.equal(automation(app, 'RecentEmpty'), 'OK');
 
   await until('discovered module awaiting approval', () => automation(app, 'ModulePending', '1.0') === 'OK');
   probe('off');
@@ -110,10 +112,18 @@ async function verifyModuleApproval({
   await sleep(1200);
   probe('map-local-v2');
   console.log('PASS: unapproved asset edit preserved v1 bytes until re-approval committed v2');
+  await until('open recent requests for JSON preview', () => automation(app, 'OpenPreviewPanel') === 'OK');
+  // Old map-local probes have the same method/path/status. Start with an
+  // empty inspector so the details button identifies the new captured row.
+  await until('clear old requests before capture', () => automation(app, 'ClearRecent') === 'OK');
+  await sleep(2500);
+  assertEmptyRecent();
   await until('arm one-shot JSON response preview', () => automation(app, 'ArmPreview') === 'OK');
   probe('map-local-v2');
   await until('inspect captured local JSON response', () => automation(app, 'PreviewCaptured') === 'OK');
   await until('clear preview and recent requests', () => automation(app, 'ClearRecent') === 'OK');
+  await sleep(2500);
+  assertEmptyRecent();
   console.log('PASS: opt-in JSON preview observed final local response; clear discarded the session preview');
 }
 
