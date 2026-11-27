@@ -124,7 +124,55 @@ scripts:
         approve(&first.content_sha256, true)?;
         assert_eq!(preview()?.modules[0].state, ModuleApprovalState::Active);
 
+        let hosts = vec!["api.example.test".to_owned()];
+        let review = || preview_modules_in_dirs(&mitm, Some("prof-a"), Some(&ws), &hosts);
+        let snap = WorkspaceSnapshot { generation: 1, uid: Some("prof-a".into()), root: Some(ws.clone()) };
+        let id = "com.example.scripts";
+        let mut grants = ScriptAuthorizations::new();
+        let mut view = review()?;
+        assert!(view.modules[0].script_authorization_ready);
+        assert!(!view.modules[0].script_authorized);
+        assert_eq!(view.modules[0].scripts[0].source_sha256, digest);
+        assert!(grants.authorize(&snap, &view, id, "stale").is_err());
+        assert!(grants.authorize(&snap, &preview()?, id, &first.content_sha256).is_err());
+        grants.authorize(&snap, &view, id, &first.content_sha256)?;
+        grants.apply(&snap, &mut view);
+        assert!(view.modules[0].script_authorized);
+        let mut restarted = ScriptAuthorizations::new();
+        restarted.apply(&snap, &mut view);
+        assert!(!view.modules[0].script_authorized);
+
+        // Revocation and a profile switch (including a return to the same
+        // profile with a new generation) cannot resurrect the session grant.
+        grants.revoke(id);
+        grants.apply(&snap, &mut view);
+        assert!(!view.modules[0].script_authorized);
+        grants.authorize(&snap, &view, id, &first.content_sha256)?;
+        grants.select(&WorkspaceSnapshot { generation: 2, uid: Some("prof-b".into()), root: None });
+        let returned = WorkspaceSnapshot { generation: 3, ..snap.clone() };
+        grants.apply(&returned, &mut view);
+        assert!(!view.modules[0].script_authorized);
+        grants.authorize(&returned, &view, id, &first.content_sha256)?;
+
+        // A corrupt content-addressed blob makes even an approved module
+        // ineligible; restoring the bytes requires explicit new consent.
+        std::fs::write(&blob_path, b"corrupt")?;
+        let mut corrupt = review()?;
+        assert!(!corrupt.modules[0].script_authorization_ready);
+        grants.apply(&returned, &mut corrupt);
+        assert!(!corrupt.modules[0].script_authorized);
+        std::fs::write(&blob_path, original)?;
+        let mut restored = review()?;
+        grants.apply(&returned, &mut restored);
+        assert!(!restored.modules[0].script_authorized);
+        grants.authorize(&returned, &restored, id, &first.content_sha256)?;
+
         std::fs::write(&source, changed)?;
+        let mut changed_view = review()?;
+        grants.apply(&returned, &mut changed_view);
+        assert!(!changed_view.modules[0].script_authorized);
+        assert!(!changed_view.modules[0].script_authorization_ready);
+        assert!(grants.authorize(&returned, &changed_view, id, &first.content_sha256).is_err());
         let pending = preview()?.modules.remove(0);
         assert_eq!(pending.state, ModuleApprovalState::UpdatePending);
         assert_ne!(pending.content_sha256, first.content_sha256);
@@ -141,6 +189,10 @@ scripts:
         assert!(!blob_path.exists());
         let next_blob = mitm.join(APPROVED_BLOBS_DIR).join(sha256_hex(changed));
         assert_eq!(std::fs::read(&next_blob)?, changed);
+        let mut next = review()?;
+        grants.apply(&returned, &mut next);
+        assert!(next.modules[0].script_authorization_ready);
+        assert!(!next.modules[0].script_authorized);
         assert!(!mitm.join(COMPILED_MODULE_FILE).exists());
 
         std::fs::write(&source, vec![b'x'; 65_537])?;

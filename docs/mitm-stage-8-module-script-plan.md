@@ -277,6 +277,17 @@ approved rules on unapproved edits, and compiling active module rewrites to
   launcher is killed. This is resource containment, not a Windows identity or
   filesystem/network sandbox, and does not grant consent or package/enable HTTP
   execution. Non-Windows development tests are not an OS isolation claim.
+- 8.7c2: session-only per-workspace script consent, distinct from module approval.
+  Review script source path/digest, phase, match conditions and body access in
+  the desktop confirmation dialog. Grant only when the current module is
+  approved/enabled, every script's exact host is admitted, and each pinned
+  source has the expected length, UTF-8 encoding and digest. Bind consent to
+  workspace generation, profile UID, module ID and full approved content digest;
+  drop grants on profile switch/restart, approval/disable, revocation or an
+  observed change/invalid asset/host scope. No grant is written to disk or to
+  the rewrite-worker bundle. A later dispatcher must recheck this gate at
+  invocation and mutation commit, handle in-flight cancellation, and package
+  the contained runner; no real HTTP script execution in this increment.
 - 8.8: module subscriptions, reviewed updates and rollback; foreign-format import
   adapters only after native semantics are stable.
 - 8.9: Windows real TUN/TLS, route identity, existing service/Sidecar lifecycle,

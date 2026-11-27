@@ -16,11 +16,15 @@ use crate::config::workspace::{
     WorkspaceSnapshot, active_workspace_snapshot, ensure_not_symlink_or_reparse, validate_profile_uid,
 };
 
+mod script_authorization;
+use script_authorization::{ScriptAuthorizations, script_pins_valid};
+
 const MAX_COMPILED_PER_PHASE: usize = 16;
 pub(crate) const COMPILED_MODULE_FILE: &str = "compiled-module-rules.json";
 const APPROVED_BLOBS_DIR: &str = "approved-blobs";
 
 static SNAPSHOT_REVISION: AtomicU32 = AtomicU32::new(1);
+static SCRIPT_AUTHORIZATIONS: parking_lot::Mutex<ScriptAuthorizations> = parking_lot::Mutex::new(ScriptAuthorizations::new());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +52,25 @@ pub struct DiscoveredModulePreview {
     pub missing_mitm_hostnames: Vec<String>,
     pub rewrite_count: u32,
     pub script_count: u32,
+    pub script_authorization_ready: bool,
+    pub script_authorized: bool,
+    pub scripts: Vec<ScriptReview>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptReview {
+    pub id: String,
+    pub phase: String,
+    pub host: String,
+    pub path: Option<String>,
+    pub method: Option<String>,
+    pub regex: Option<String>,
+    pub source_path: String,
+    pub source_sha256: String,
+    pub requires_body: bool,
+    pub max_size: u32,
+    pub timeout: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -319,6 +342,10 @@ pub(crate) fn preview_modules_in_dirs(
             .filter(|h| !active_set.contains(h.as_str()))
             .cloned()
             .collect();
+        let script_authorization_ready = state == ModuleApprovalState::Active
+            && !item.scripts.is_empty()
+            && item.scripts.iter().all(|pin| active_set.contains(pin.entry.condition.host.as_str()))
+            && script_pins_valid(mitm_dir, &item.scripts);
         previews.push(DiscoveredModulePreview {
             id: item.id.clone(),
             name: item.name.clone(),
@@ -334,6 +361,21 @@ pub(crate) fn preview_modules_in_dirs(
             missing_mitm_hostnames: missing,
             rewrite_count: u32::try_from(rewrite_total).unwrap_or(u32::MAX),
             script_count: u32::try_from(item.scripts.len()).unwrap_or(u32::MAX),
+            script_authorization_ready,
+            script_authorized: false,
+            scripts: item.scripts.iter().map(|pin| ScriptReview {
+                id: pin.entry.id.clone(),
+                phase: pin.entry.kind.clone(),
+                host: pin.entry.condition.host.clone(),
+                path: pin.entry.condition.path.clone(),
+                method: pin.entry.condition.method.clone(),
+                regex: pin.entry.condition.regex.clone(),
+                source_path: pin.entry.script.clone(),
+                source_sha256: pin.source_sha256.clone(),
+                requires_body: pin.entry.requires_body,
+                max_size: pin.entry.max_size.unwrap_or(262_144),
+                timeout: u32::from(pin.entry.timeout.unwrap_or(1)),
+            }).collect(),
         });
     }
     Ok(ProfileModulesView {
@@ -405,6 +447,12 @@ pub(crate) fn sync_for_workspace_snapshot(snapshot: &WorkspaceSnapshot) {
     if !cfg!(all(windows, feature = "verge-dev")) || !super::route_runtime::requested() {
         return;
     }
+    {
+        let mut grants = SCRIPT_AUTHORIZATIONS.lock();
+        if active_workspace_snapshot() == *snapshot {
+            grants.select(snapshot);
+        }
+    }
     if let Ok(home) = crate::utils::dirs::app_home_dir() {
         let mitm_dir = home.join("netverge-mitm-dev");
         let _ = write_compiled_snapshot_in_dirs(
@@ -420,7 +468,12 @@ pub async fn get_profile_modules() -> Result<ProfileModulesView> {
     let snap = active_workspace_snapshot();
     let hosts = super::route_runtime::configured_hostnames().await?;
     tokio::task::spawn_blocking(move || {
-        preview_modules_in_dirs(&mitm_dir, snap.uid.as_deref(), snap.root.as_deref(), &hosts)
+        let mut grants = SCRIPT_AUTHORIZATIONS.lock();
+        ensure!(active_workspace_snapshot() == snap, "active profile changed; reload modules");
+        let mut view = preview_modules_in_dirs(&mitm_dir, snap.uid.as_deref(), snap.root.as_deref(), &hosts)?;
+        ensure!(active_workspace_snapshot() == snap, "active profile changed; reload modules");
+        grants.apply(&snap, &mut view);
+        Ok(view)
     })
     .await?
 }
@@ -434,18 +487,58 @@ pub async fn set_module_approval(
     let mitm_dir = mitm_data_dir()?;
     let snap = active_workspace_snapshot();
     ensure!(snap.uid.as_deref() == Some(profile_uid.as_str()), "active profile changed; reload modules");
-    let ws_root = snap.root.context("active profile has no dedicated workspace")?;
     let hosts = super::route_runtime::configured_hostnames().await?;
     tokio::task::spawn_blocking(move || {
-        set_module_approval_in_dirs(
+        let mut grants = SCRIPT_AUTHORIZATIONS.lock();
+        ensure!(active_workspace_snapshot() == snap, "active profile changed; reload modules");
+        let ws_root = snap.root.as_deref().context("active profile has no dedicated workspace")?;
+        // Approval/disable is separate from execution consent. Revoke even on
+        // an attempted update; approval must never silently carry consent over.
+        grants.select(&snap);
+        grants.revoke(&module_id);
+        let mut view = set_module_approval_in_dirs(
             &mitm_dir,
             &profile_uid,
-            &ws_root,
+            ws_root,
             &module_id,
             &expected_sha256,
             enabled,
             &hosts,
-        )
+        )?;
+        ensure!(active_workspace_snapshot() == snap, "active profile changed; reload modules");
+        grants.apply(&snap, &mut view);
+        Ok(view)
+    })
+    .await?
+}
+
+pub async fn set_script_authorization(
+    profile_uid: String,
+    module_id: String,
+    expected_sha256: String,
+    authorized: bool,
+) -> Result<ProfileModulesView> {
+    let mitm_dir = mitm_data_dir()?;
+    ensure!(valid_module_id(&module_id), "invalid module ID");
+    let snap = active_workspace_snapshot();
+    ensure!(snap.uid.as_deref() == Some(profile_uid.as_str()), "active profile changed; reload modules");
+    let hosts = super::route_runtime::configured_hostnames().await?;
+    tokio::task::spawn_blocking(move || {
+        let mut grants = SCRIPT_AUTHORIZATIONS.lock();
+        ensure!(active_workspace_snapshot() == snap, "active profile changed; reload modules");
+        grants.select(&snap);
+        if !authorized {
+            // Revocation does not depend on the current source remaining valid.
+            grants.revoke(&module_id);
+        }
+        let mut view = preview_modules_in_dirs(&mitm_dir, snap.uid.as_deref(), snap.root.as_deref(), &hosts)?;
+        ensure!(active_workspace_snapshot() == snap, "active profile changed; reload modules");
+        grants.apply(&snap, &mut view);
+        if authorized {
+            grants.authorize(&snap, &view, &module_id, &expected_sha256)?;
+            grants.apply(&snap, &mut view);
+        }
+        Ok(view)
     })
     .await?
 }

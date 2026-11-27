@@ -89,6 +89,18 @@ export const commands = {
       expectedSha256,
       enabled,
     }),
+  setMitmScriptAuthorization: (
+    profileUid: string,
+    moduleId: string,
+    expectedSha256: string,
+    authorized: boolean,
+  ) =>
+    __TAURI_INVOKE<ProfileModulesView>('set_mitm_script_authorization', {
+      profileUid,
+      moduleId,
+      expectedSha256,
+      authorized,
+    }),
   replayMitmRequest: (
     id: number,
     completedAt: string,
@@ -761,6 +773,23 @@ export type DiscoveredModulePreview = {
   missingMitmHostnames: string[]
   rewriteCount: number
   scriptCount: number
+  scriptAuthorizationReady: boolean
+  scriptAuthorized: boolean
+  scripts: ScriptReview[]
+}
+
+export type ScriptReview = {
+  id: string
+  phase: string
+  host: string
+  path: string | null
+  method: string | null
+  regex: string | null
+  sourcePath: string
+  sourceSha256: string
+  requiresBody: boolean
+  maxSize: number
+  timeout: number
 }
 
 export type ProfileModulesView = {

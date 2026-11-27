@@ -5,6 +5,10 @@ import {
   Card,
   Chip,
   Divider,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Stack,
   Switch,
   Typography,
@@ -16,6 +20,7 @@ import type { DiscoveredModulePreview } from '@/services/bindings'
 import {
   getMitmProfileModules,
   setMitmModuleApproval,
+  setMitmScriptAuthorization,
 } from '@/services/cmds'
 
 import { errorDetail } from './rewrite-rule-model'
@@ -32,6 +37,7 @@ const STATE_LABELS: Record<DiscoveredModulePreview['state'], string> = {
 export function ModuleListCard() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [actionError, setActionError] = useState('')
+  const [review, setReview] = useState<{ profileUid: string; module: DiscoveredModulePreview } | null>(null)
   const { data, mutate } = useSWR(MITM_MODULES_KEY, getMitmProfileModules, {
     revalidateOnMount: true,
     revalidateOnFocus: true,
@@ -55,6 +61,27 @@ export function ModuleListCard() {
         mod.id,
         mod.contentSha256,
         enabled,
+      )
+      await mutate(updated, { revalidate: false })
+    } catch (err) {
+      setActionError(errorDetail(err))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const updateScriptAuthorization = async (
+    profileUid: string,
+    mod: DiscoveredModulePreview,
+    authorized: boolean,
+  ) => {
+    if (data.profileUid !== profileUid || busyId !== null) return
+    setBusyId(mod.id)
+    setActionError('')
+    setReview(null)
+    try {
+      const updated = await setMitmScriptAuthorization(
+        profileUid, mod.id, mod.contentSha256, authorized,
       )
       await mutate(updated, { revalidate: false })
     } catch (err) {
@@ -144,9 +171,32 @@ export function ModuleListCard() {
                 </Stack>
               </Stack>
               {mod.scriptCount > 0 && (
-                <Alert severity="info">
-                  Script sources are pinned on approval. Script execution is not available yet.
-                </Alert>
+                <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Typography variant="caption" color="text.secondary">
+                    {mod.scriptAuthorized
+                      ? 'Script consent granted for this session (execution not available yet).'
+                      : 'Script execution requires separate session consent.'}
+                  </Typography>
+                  <Button
+                    size="small"
+                    disabled={busyId !== null || (!mod.scriptAuthorized && !mod.scriptAuthorizationReady)}
+                    onClick={() => {
+                      if (!data.profileUid) return
+                      if (mod.scriptAuthorized) {
+                        void updateScriptAuthorization(data.profileUid, mod, false)
+                      } else {
+                        setReview({ profileUid: data.profileUid, module: mod })
+                      }
+                    }}
+                  >
+                    {mod.scriptAuthorized ? 'Revoke script consent' : 'Review script consent'}
+                  </Button>
+                  {!mod.scriptAuthorizationReady && (
+                    <Typography variant="caption" color="text.secondary">
+                      Approve the current module, verify its pinned sources and enable its MITM hosts first.
+                    </Typography>
+                  )}
+                </Stack>
               )}
               {mod.missingMitmHostnames.length > 0 && (
                 <Alert severity="info">
@@ -157,6 +207,52 @@ export function ModuleListCard() {
           )
         })}
       </Stack>
+      <Dialog open={review !== null} onClose={() => setReview(null)} fullWidth maxWidth="sm">
+        <DialogTitle>Authorize module scripts</DialogTitle>
+        <DialogContent>
+          {review && (
+            <Stack spacing={1.5}>
+              <Alert severity="warning">
+                Review the exact local source before consenting. Scripts may read matched HTTP metadata and,
+                when requested, body content, and may modify bodies when execution is implemented.
+                Consent expires on profile switch or app restart; execution is not available in this build.
+              </Alert>
+              <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>
+                {review.module.id} · {review.module.version} · SHA256: {review.module.contentSha256}
+              </Typography>
+              {review.module.scripts.map((script) => (
+                <Box key={script.id} sx={{ overflowWrap: 'anywhere' }}>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                    {script.id} · {script.phase}
+                  </Typography>
+                  <Typography variant="caption" component="div">
+                    {script.method ?? 'Any method'} · {script.host}{script.path ?? ' (any path)'}
+                  </Typography>
+                  {script.regex && <Typography variant="caption" component="div">URL regex: {script.regex}</Typography>}
+                  <Typography variant="caption" component="div">
+                    {script.sourcePath} · SHA256: {script.sourceSha256}
+                  </Typography>
+                  <Typography variant="caption" component="div">
+                    {script.requiresBody ? `Body access up to ${script.maxSize} bytes` : 'No body access'} · {script.timeout}s timeout
+                  </Typography>
+                </Box>
+              ))}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setReview(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={!review || busyId !== null || review.profileUid !== data.profileUid}
+            onClick={() => {
+              if (review) void updateScriptAuthorization(review.profileUid, review.module, true)
+            }}
+          >
+            Authorize this session
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Card>
   )
 }

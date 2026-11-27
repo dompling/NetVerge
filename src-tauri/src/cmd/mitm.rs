@@ -137,6 +137,20 @@ pub async fn set_mitm_module_approval(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn set_mitm_script_authorization(
+    profile_uid: String,
+    module_id: String,
+    expected_sha256: String,
+    authorized: bool,
+) -> super::CmdResult<mitm::module_manager::ProfileModulesView> {
+    use super::StringifyErr as _;
+    mitm::module_manager::set_script_authorization(profile_uid, module_id, expected_sha256, authorized)
+        .await
+        .stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn replay_mitm_request(id: u32, completed_at: String, expected_method: String, expected_url: String) -> super::CmdResult<u16> {
     use super::StringifyErr as _;
     mitm::route_runtime::replay_request(id, completed_at, expected_method, expected_url).await.stringify_err()
