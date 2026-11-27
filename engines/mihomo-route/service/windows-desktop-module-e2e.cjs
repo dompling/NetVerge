@@ -163,6 +163,43 @@ async function verifyModuleApproval({
   await sleep(2500);
   assertEmptyRecent();
   console.log('PASS: opt-in JSON preview observed final local response; clear discarded the session preview');
+
+  // Exercise the current package's consent UI separately from rewrite approval.
+  const scriptRel = 'scripts/consent.js';
+  const scriptFile = path.join(profileRoot, ...scriptRel.split('/'));
+  fs.mkdirSync(path.dirname(scriptFile), { recursive: true });
+  fs.writeFileSync(scriptFile, '$done({body: "should-not-execute"});\n');
+  const withScript = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+  withScript.version = '1.3';
+  withScript.scripts = [{ id: 'consent', type: 'http-response',
+    match: { host: selected, path: '/demo' }, script: scriptRel, 'requires-body': true }];
+  fs.writeFileSync(manifest + '.tmp', JSON.stringify(withScript));
+  fs.renameSync(manifest + '.tmp', manifest);
+  await until('refresh module script fixture', () => automation(app, 'RefreshMitm') === 'OK');
+  await until('script fixture pending approval', () => automation(app, 'ModuleUpdatePending', '1.3') === 'OK');
+  await until('approve pinned script fixture', () => automation(app, 'ApproveModule', '1.3') === 'OK');
+  await until('script fixture active', () => automation(app, 'ModuleActive', '1.3') === 'OK');
+  await until('module approval does not grant script consent', () => automation(app, 'ScriptNotGranted') === 'OK');
+  await until('open separate consent dialog', () => automation(app, 'ScriptReview') === 'OK');
+  await until('cancel consent dialog', () => automation(app, 'ScriptCancel') === 'OK');
+  await until('reopen consent dialog', () => automation(app, 'ScriptReview') === 'OK');
+  await until('confirm session consent', () => automation(app, 'ScriptAuthorize') === 'DISPATCHED');
+  await until('session consent granted', () => automation(app, 'ScriptGranted') === 'OK');
+  probe('map-local-v2');
+  await until('revoke session consent', () => automation(app, 'ScriptRevoke') === 'DISPATCHED');
+  await until('session consent revoked', () => automation(app, 'ScriptNotGranted') === 'OK');
+  await until('open consent for revision test', () => automation(app, 'ScriptReview') === 'OK');
+  await until('grant before revision test', () => automation(app, 'ScriptAuthorize') === 'DISPATCHED');
+  await until('revision test consent granted', () => automation(app, 'ScriptGranted') === 'OK');
+  fs.writeFileSync(scriptFile, '$done();\n');
+  await until('refresh edited script', () => automation(app, 'RefreshMitm') === 'OK');
+  await until('edited script requires module approval', () => automation(app, 'ModuleUpdatePending', '1.3') === 'OK');
+  await until('approve new script revision', () => automation(app, 'ApproveModule', '1.3') === 'OK');
+  await until('new revision requires fresh consent', () => automation(app, 'ScriptNotGranted') === 'OK');
+  await until('open consent before restart', () => automation(app, 'ScriptReview') === 'OK');
+  await until('grant consent before restart', () => automation(app, 'ScriptAuthorize') === 'DISPATCHED');
+  await until('consent granted before restart', () => automation(app, 'ScriptGranted') === 'OK');
+  console.log('PASS: script approval, cancel, grant, revoke and source change require explicit separate session consent; live traffic unchanged');
 }
 
 async function verifyCompiledModuleBundle({ mitm, file, selected, sha256, netFixture, temp, dnsPort }) {

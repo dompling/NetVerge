@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'OpenPreviewPanel', 'ArmPreview', 'PreviewCaptured', 'CopyHar', 'CopyCurl', 'ReadExportClipboard', 'ReplayPrepare', 'ReplayConfirm', 'ReplayComplete', 'Inspect')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'OpenPreviewPanel', 'ArmPreview', 'PreviewCaptured', 'CopyHar', 'CopyCurl', 'ReadExportClipboard', 'ReplayPrepare', 'ReplayConfirm', 'ReplayComplete', 'ScriptReview', 'ScriptCancel', 'ScriptAuthorize', 'ScriptGranted', 'ScriptNotGranted', 'ScriptRevoke', 'Inspect')][string]$Action,
     [string]$ModuleVersion
 )
 
@@ -46,7 +46,9 @@ switch ($Action) {
         $button = Find-Element 'MITM' ([Windows.Automation.ControlType]::Button)
         if ($button -and $button.Current.IsEnabled) {
             $button.GetCurrentPattern($invoke).Invoke()
-            'OK'
+            # Navigation is asynchronous. Only the actual MITM page marker
+            # at the start of a later poll constitutes readiness.
+            'NAVIGATING'
         }
     }
     { $_ -in 'EnableService', 'DisableService' } {
@@ -328,8 +330,50 @@ switch ($Action) {
             'OK'
         }
     }
+    { $_ -in 'ScriptReview', 'ScriptCancel', 'ScriptAuthorize', 'ScriptGranted', 'ScriptNotGranted', 'ScriptRevoke' } {
+        $dialog = Find-Element 'Authorize module scripts'
+        $grant = Find-Element 'Authorize this session' ([Windows.Automation.ControlType]::Button)
+        $review = Find-Element 'Review script consent' ([Windows.Automation.ControlType]::Button)
+        $revoke = Find-Element 'Revoke script consent' ([Windows.Automation.ControlType]::Button)
+        switch ($Action) {
+            'ScriptReview' {
+                if ($dialog -and $grant -and $grant.Current.IsEnabled) { 'OK'; break }
+                if ($review -and $review.Current.IsEnabled) { $review.GetCurrentPattern($invoke).Invoke() }
+            }
+            'ScriptCancel' {
+                if (!$dialog -and !$grant -and $review -and $review.Current.IsEnabled) { 'OK'; break }
+                $cancel = Find-Element 'Cancel' ([Windows.Automation.ControlType]::Button)
+                if ($dialog -and $cancel -and $cancel.Current.IsEnabled) { $cancel.GetCurrentPattern($invoke).Invoke() }
+            }
+            'ScriptAuthorize' {
+                if ($dialog -and $grant -and $grant.Current.IsEnabled) {
+                    $grant.GetCurrentPattern($invoke).Invoke()
+                    'DISPATCHED'
+                }
+            }
+            'ScriptGranted' {
+                if ($revoke -and $revoke.Current.IsEnabled -and !$grant) { 'OK' }
+            }
+            'ScriptNotGranted' {
+                if ($review -and $review.Current.IsEnabled -and !$revoke -and !$grant) { 'OK' }
+            }
+            'ScriptRevoke' {
+                if ($revoke -and $revoke.Current.IsEnabled) {
+                    $revoke.GetCurrentPattern($invoke).Invoke()
+                    'DISPATCHED'
+                }
+            }
+        }
+    }
     { $_ -in 'Healthy', 'RefreshMitm' } {
-        if ($Action -eq 'Healthy' -and (Find-Element 'Local link healthy')) { 'OK'; break }
+        if ($Action -eq 'Healthy') {
+            if (Find-Element 'Local link healthy') { 'OK'; break }
+            if (!(Find-Element 'Windows MITM service mode')) {
+                $nav = Find-Element 'MITM' ([Windows.Automation.ControlType]::Button)
+                if ($nav -and $nav.Current.IsEnabled) { $nav.GetCurrentPattern($invoke).Invoke() }
+                break
+            }
+        }
         # The icon contributes a zero-width character to WebView2's accessible name.
         $buttons = $root.FindAll($scope, [Windows.Automation.PropertyCondition]::new(
             [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button))

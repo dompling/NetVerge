@@ -288,6 +288,11 @@ approved rules on unapproved edits, and compiling active module rewrites to
   the rewrite-worker bundle. A later dispatcher must recheck this gate at
   invocation and mutation commit, handle in-flight cancellation, and package
   the contained runner; no real HTTP script execution in this increment.
+  Acceptance: automatic desktop scenarios must use the exact same-revision
+  package from the current build. A previous revision is not valid evidence.
+  Wait for the actual MITM page marker after navigation/restart. Test separate
+  script consent through native UI (cancel, grant, revoke, source edit, restart)
+  without introducing live execution.
 - 8.8: module subscriptions, reviewed updates and rollback; foreign-format import
   adapters only after native semantics are stable.
 - 8.9: Windows real TUN/TLS, route identity, existing service/Sidecar lifecycle,

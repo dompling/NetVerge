@@ -1,34 +1,16 @@
 name: NetVerge Windows desktop MITM acceptance
 
+# Automatic desktop scenarios now run after the package job in
+# netverge-custom-core.yml, so they cannot pick a previous revision.
 on:
-  push:
-    branches: [feat/mitm-route-integration]
-    paths:
-      - '.github/workflows/netverge-windows-desktop-e2e.yml'
-      - 'src-tauri/src/core/mitm/module_manager.rs'
-      - 'src-tauri/src/core/mitm/module_manager/**'
-      - 'src/pages/mitm.tsx'
-      - 'engines/mihomo-route/service/windows-desktop-*.cjs'
-      - 'engines/mihomo-route/service/windows-desktop-uia.ps1'
-      - 'engines/whistle/route-worker.cjs'
-      - 'engines/whistle/rewrite-rules.cjs'
-      - 'engines/whistle/url-regex.cjs'
-      - 'engines/whistle/rewrite-plan.test.cjs'
-      - 'engines/whistle/body-rewrite.cjs'
-      - 'engines/whistle/local-response.cjs'
-      - 'engines/whistle/windows-tun-lab.cjs'
-      - 'engines/whistle/windows-tun-dns-readiness*.cjs'
-      - 'engines/whistle/mitm-lab.cjs'
   workflow_dispatch:
     inputs:
       package_run:
-        description: Successful Windows test-package run ID (editor-body capable)
-        default: '45865363952'
+        description: Successful Windows test-package run ID for the selected ref
         required: true
         type: string
       package_name:
-        description: Windows x64 ZIP artifact name
-        default: NetVerge-MITM-Test-Windows-x64-4f082c9.zip
+        description: Exact Windows x64 ZIP artifact name for the selected ref
         required: true
         type: string
 
@@ -41,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [packaged, rewrite, editor-body, modules]
+        scenario: [packaged, rewrite, editor-body, modules, modules-advanced]
     runs-on: windows-latest
     timeout-minutes: 12
     steps:
@@ -54,8 +36,8 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.package_run || '45865363952' }}
-          name: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-4f082c9.zip' }}
+          run-id: ${{ inputs.package_run }}
+          name: ${{ inputs.package_name }}
           path: desktop-artifact
       - name: Verify DNS readiness and original-request match plan
         run: node --test engines/whistle/windows-tun-dns-readiness.test.cjs engines/whistle/rewrite-plan.test.cjs
@@ -65,7 +47,7 @@ jobs:
       - name: Click the MITM service switch and verify native TLS after app restart
         shell: pwsh
         env:
-          TEST_PACKAGE_NAME: ${{ inputs.package_name || 'NetVerge-MITM-Test-Windows-x64-4f082c9.zip' }}
+          TEST_PACKAGE_NAME: ${{ inputs.package_name }}
         run: |
           $package = (Resolve-Path -LiteralPath 'desktop-artifact').Path
           $archive = Join-Path $package $env:TEST_PACKAGE_NAME

@@ -131,6 +131,7 @@ async function main() {
   const mitm = path.join(appRoot, 'netverge-mitm-dev');
   const netFixture = path.resolve(__dirname, '../../whistle/windows-tun-lab.cjs');
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8').replace(/^\uFEFF/, ''));
+  assert.equal(manifest.revision, process.env.GITHUB_SHA, 'desktop artifact revision must match the checked-out test source');
   const coreDigest = manifest.sha256['service/netverge-mihomo-service.exe'].toLowerCase();
   assert.equal(sha256(fs.readFileSync(app)), manifest.sha256['NetVerge-MITM.exe'].toLowerCase());
   assert.ok(!fs.existsSync(appRoot), 'development app state must be clean');
@@ -433,6 +434,10 @@ async function main() {
     await changeServiceMode(app, mitm, false, coreDigest);
     await restartDesktop(app, serviceDesktopPid);
     await until('restored Sidecar MITM state', () => automation(app, 'Healthy') === 'OK', 90000);
+    if (advancedModule) {
+      await until('script consent expired on app restart', () => automation(app, 'ScriptNotGranted') === 'OK');
+      console.log('PASS: app restart expired script execution consent');
+    }
     const sidecarPath = powershell("(Get-Process -Name 'verge-mihomo').Path");
     assert.equal(path.normalize(sidecarPath).toLowerCase(), path.join(root, 'verge-mihomo.exe').toLowerCase());
     assert.equal(powershell("if (Get-Process -Name 'netverge-mihomo-service' -ErrorAction SilentlyContinue) { 'running' }; exit 0"), '');

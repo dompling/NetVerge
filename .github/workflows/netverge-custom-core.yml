@@ -4,6 +4,10 @@ on:
     branches: [feat/mitm-route-integration]
     paths:
       - 'engines/mihomo-route/**'
+      - 'engines/whistle/windows-tun-dns-readiness*.cjs'
+      - 'engines/whistle/mitm-lab.cjs'
+      - 'src/pages/mitm.tsx'
+      - '.github/workflows/netverge-windows-desktop-e2e.yml'
       - 'src/components/mitm/recent-requests.tsx'
       - 'src/components/mitm/recent-request-export.ts'
       - 'src/components/mitm/recent-request-export.test.ts'
@@ -258,7 +262,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [editor-body, modules-advanced]
+        scenario: [packaged, rewrite, editor-body, modules, modules-advanced]
     needs: windows-test-package
     runs-on: windows-latest
     timeout-minutes: 12
@@ -274,10 +278,12 @@ jobs:
           pattern: NetVerge-MITM-Test-Windows-x64-*.zip
           merge-multiple: true
           path: desktop-artifact
+      - name: Verify DNS readiness and original-request match plan
+        run: node --test engines/whistle/windows-tun-dns-readiness.test.cjs engines/whistle/rewrite-plan.test.cjs
       - name: Install probe dependencies
         working-directory: engines/whistle
         run: npm install --ignore-scripts --no-audit --no-fund
-      - name: Verify packaged rewrite editor through Windows UI and TLS
+      - name: Verify same-revision packaged desktop through Windows UI and TLS
         shell: pwsh
         run: |
           $package = (Resolve-Path desktop-artifact).Path
