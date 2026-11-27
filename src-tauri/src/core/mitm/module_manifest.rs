@@ -52,7 +52,7 @@ pub(crate) struct RawMitmSection {
     pub(crate) hostnames: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawMatchCondition {
     pub(crate) host: String,
@@ -75,7 +75,7 @@ pub(crate) struct RawRewriteEntry {
     pub(crate) action: serde_yaml_ng::Mapping,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct RawScriptEntry {
     pub(crate) id: String,
@@ -425,9 +425,8 @@ fn compile_validated_manifest(manifest: RawModuleManifest) -> Result<CompiledMan
         rewrites.request.len() <= MAX_REWRITE_ENTRIES && rewrites.response.len() <= MAX_REWRITE_ENTRIES,
         "expanded module header rules exceed 16 per phase"
     );
-    let mut seen_scripts = BTreeSet::new();
     for script in &manifest.scripts {
-        ensure!(valid_local_entry_id(&script.id) && seen_scripts.insert(script.id.as_str()), "invalid or duplicate script ID \"{}\"", script.id);
+        ensure!(valid_local_entry_id(&script.id) && seen_ids.insert(script.id.as_str()), "invalid or duplicate script ID \"{}\"", script.id);
         ensure!(matches!(script.kind.as_str(), "http-request" | "http-response"), "unsupported script type \"{}\"", script.kind);
         let _ = normalize_match_condition(&script.condition, false)?;
         ensure!(script.max_size.is_none_or(|sz| (1024..=262_144).contains(&sz)), "script max-size must be 1024..=262144");

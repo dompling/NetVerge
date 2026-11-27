@@ -1,5 +1,4 @@
 use super::*;
-use crate::core::mitm::module_manifest::sha256_hex;
 
 #[test]
 fn discovers_validates_approves_preserves_on_edit_and_switches_profiles() -> Result<()> {
@@ -59,6 +58,97 @@ fn discovers_validates_approves_preserves_on_edit_and_switches_profiles() -> Res
         let blob_v2 = sha256_hex(br#"{"version":2}"#);
         assert!(!mitm_dir.join(APPROVED_BLOBS_DIR).join(&blob_v1).exists());
         assert_eq!(std::fs::read(mitm_dir.join(APPROVED_BLOBS_DIR).join(&blob_v2))?, br#"{"version":2}"#);
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&root);
+    result
+}
+
+#[test]
+fn script_assets_are_pinned_and_legacy_approvals_require_review() -> Result<()> {
+    let rev = SNAPSHOT_REVISION.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("nv-script-approval-{}-{rev}", std::process::id()));
+    let result = (|| -> Result<()> {
+        let mitm = root.join("mitm");
+        let ws = root.join("profiles/prof-a");
+        std::fs::create_dir_all(ws.join("scripts"))?;
+        let source = ws.join("scripts/hook.js");
+        let original = b"$done({});";
+        let changed = b"$done({body: 'new'});";
+        std::fs::write(&source, original)?;
+        std::fs::write(ws.join("module.yaml"), r#"
+kind: netverge-module
+schema: 1
+id: com.example.scripts
+name: Scripts
+version: '1'
+scripts:
+  - id: response
+    type: http-response
+    match:
+      host: api.example.test
+      path: /demo
+      method: GET
+    script: scripts/hook.js
+    requires-body: true
+    max-size: 4096
+    timeout: 2
+    argument: example
+"#)?;
+        let preview = || preview_modules_in_dirs(&mitm, Some("prof-a"), Some(&ws), &[]);
+        let approve = |sha: &str, enabled| set_module_approval_in_dirs(
+            &mitm, "prof-a", &ws, "com.example.scripts", sha, enabled, &[]);
+        let first = preview()?.modules.remove(0);
+        assert_eq!(first.state, ModuleApprovalState::Unapproved);
+        let digest = sha256_hex(original);
+        let blob_path = mitm.join(APPROVED_BLOBS_DIR).join(&digest);
+        assert!(!blob_path.exists());
+        approve(&first.content_sha256, true)?;
+        let stored = read_approval_store(&mitm, "prof-a")?;
+        let pins = &stored.modules["com.example.scripts"].approved_scripts;
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].source_sha256, digest);
+        assert_eq!(pins[0].source_len as usize, original.len());
+        assert_eq!(pins[0].entry.timeout, Some(2));
+        assert_eq!(pins[0].entry.condition.method.as_deref(), Some("GET"));
+        assert_eq!(std::fs::read(&blob_path)?, original);
+        // No script instructions reach the current production rewrite worker.
+        assert!(!mitm.join(COMPILED_MODULE_FILE).exists());
+
+        // Simulate a store created before script pinning was implemented.
+        let store_path = approval_file(&mitm, "prof-a")?;
+        let mut legacy = stored;
+        legacy.modules.get_mut("com.example.scripts").context("missing module")?.approved_scripts.clear();
+        std::fs::write(&store_path, serde_json::to_vec(&legacy)?)?;
+        assert_eq!(preview()?.modules[0].state, ModuleApprovalState::UpdatePending);
+        approve(&first.content_sha256, true)?;
+        assert_eq!(preview()?.modules[0].state, ModuleApprovalState::Active);
+
+        std::fs::write(&source, changed)?;
+        let pending = preview()?.modules.remove(0);
+        assert_eq!(pending.state, ModuleApprovalState::UpdatePending);
+        assert_ne!(pending.content_sha256, first.content_sha256);
+        assert!(approve(&first.content_sha256, true).is_err());
+        assert_eq!(std::fs::read(&blob_path)?, original);
+        let disabled = approve(&pending.content_sha256, false)?;
+        assert!(!disabled.modules[0].enabled);
+        let store = read_approval_store(&mitm, "prof-a")?;
+        assert_eq!(store.modules["com.example.scripts"].approved_sha256, first.content_sha256);
+        assert_eq!(store.modules["com.example.scripts"].approved_scripts[0].source_sha256, digest);
+        assert_eq!(std::fs::read(&blob_path)?, original);
+
+        approve(&pending.content_sha256, true)?;
+        assert!(!blob_path.exists());
+        let next_blob = mitm.join(APPROVED_BLOBS_DIR).join(sha256_hex(changed));
+        assert_eq!(std::fs::read(&next_blob)?, changed);
+        assert!(!mitm.join(COMPILED_MODULE_FILE).exists());
+
+        std::fs::write(&source, vec![b'x'; 65_537])?;
+        let invalid = preview()?;
+        assert!(invalid.modules.is_empty());
+        assert_eq!(invalid.diagnostics.len(), 1);
+        assert!(invalid.diagnostics[0].message.contains("65536"));
+        assert_eq!(std::fs::read(next_blob)?, changed);
         Ok(())
     })();
     let _ = std::fs::remove_dir_all(&root);

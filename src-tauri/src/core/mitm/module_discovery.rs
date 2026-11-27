@@ -1,4 +1,5 @@
 use anyhow::{Context as _, Result, ensure};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -7,7 +8,7 @@ use std::{
 };
 
 use super::module_manifest::{
-    CompiledManifestOutput, CompiledModuleRewrites, MAX_MANIFEST_BYTES, ModuleDiagnostic,
+    CompiledManifestOutput, CompiledModuleRewrites, MAX_MANIFEST_BYTES, ModuleDiagnostic, RawScriptEntry,
     parse_and_compile_manifest, sha256_hex,
 };
 use crate::config::workspace::{ensure_not_symlink_or_reparse, resolve_workspace_asset};
@@ -15,7 +16,20 @@ use crate::config::workspace::{ensure_not_symlink_or_reparse, resolve_workspace_
 const MAX_SCAN_DEPTH: usize = 6;
 const MAX_MODULES: usize = 32;
 const MAX_ASSET_BYTES: usize = 262_144;
+// Match the standalone runner source limit, not its body limit.
+const MAX_SCRIPT_SOURCE_BYTES: usize = 65_536;
 const MAX_AGGREGATE_BYTES: usize = 1_048_576;
+
+// The entry retains its reviewed manifest metadata. The source path is display
+// metadata only: a future execution gate must load and verify the pinned blob,
+// never open a mutable workspace script or accept these records as execution consent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PinnedScript {
+    pub(super) entry: RawScriptEntry,
+    pub(super) source_sha256: String,
+    pub(super) source_len: u32,
+}
 
 pub(super) struct VerifiedLiveModule {
     pub(super) manifest_path: String,
@@ -25,7 +39,7 @@ pub(super) struct VerifiedLiveModule {
     pub(super) description: Option<String>,
     pub(super) author: Option<String>,
     pub(super) proposed_hostnames: Vec<String>,
-    pub(super) script_count: u32,
+    pub(super) scripts: Vec<PinnedScript>,
     pub(super) content_sha256: String,
     pub(super) compiled: CompiledModuleRewrites,
     pub(super) blobs: BTreeMap<String, Vec<u8>>,
@@ -76,6 +90,7 @@ fn read_bounded_asset(
     workspace_root: &Path,
     asset_rel: &str,
     allow_empty: bool,
+    max_bytes: usize,
     label: &str,
     total_bytes: &mut usize,
 ) -> std::result::Result<Vec<u8>, String> {
@@ -85,9 +100,9 @@ fn read_bounded_asset(
         _ => return Err(format!("referenced {label} \"{asset_rel}\" does not exist")),
     };
     let len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
-    if (!allow_empty && len == 0) || len > MAX_ASSET_BYTES {
+    if (!allow_empty && len == 0) || len > max_bytes {
         let min = usize::from(!allow_empty);
-        return Err(format!("{label} \"{asset_rel}\" must be {min}..={MAX_ASSET_BYTES} bytes"));
+        return Err(format!("{label} \"{asset_rel}\" must be {min}..={max_bytes} bytes"));
     }
     *total_bytes = total_bytes.saturating_add(len);
     if *total_bytes > MAX_AGGREGATE_BYTES {
@@ -95,7 +110,7 @@ fn read_bounded_asset(
     }
     let mut bytes = Vec::with_capacity(len);
     let read_res = std::fs::File::open(&resolved)
-        .and_then(|f| f.take((MAX_ASSET_BYTES + 1) as u64).read_to_end(&mut bytes));
+        .and_then(|f| f.take((max_bytes + 1) as u64).read_to_end(&mut bytes));
     if read_res.is_err() || bytes.len() != len {
         return Err(format!("failed to read {label} \"{asset_rel}\" cleanly"));
     }
@@ -108,7 +123,7 @@ fn verify_and_hash_assets(
     raw: &str,
     parsed: &mut CompiledManifestOutput,
     total_bytes: &mut usize,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<(String, Vec<PinnedScript>), String> {
     let mut hasher = Sha256::new();
     hasher.update(b"manifest\0");
     hasher.update(rel_path.as_bytes());
@@ -116,8 +131,9 @@ fn verify_and_hash_assets(
     hasher.update(raw.as_bytes());
 
     let script_paths: BTreeSet<&str> = parsed.manifest.scripts.iter().map(|s| s.script.as_str()).collect();
+    let mut script_blobs: BTreeMap<&str, (String, u32)> = BTreeMap::new();
     for script_rel in script_paths {
-        let bytes = read_bounded_asset(workspace_root, script_rel, false, "script", total_bytes)?;
+        let bytes = read_bounded_asset(workspace_root, script_rel, false, MAX_SCRIPT_SOURCE_BYTES, "script", total_bytes)?;
         if std::str::from_utf8(&bytes).is_err() {
             return Err(format!("script \"{script_rel}\" must be valid UTF-8"));
         }
@@ -125,12 +141,25 @@ fn verify_and_hash_assets(
         hasher.update(script_rel.as_bytes());
         hasher.update(b"\0");
         hasher.update(&bytes);
+        let sha = sha256_hex(&bytes);
+        let len = u32::try_from(bytes.len()).map_err(|_| "script source length overflow".to_owned())?;
+        script_blobs.insert(script_rel, (sha.clone(), len));
+        parsed.inline_blobs.insert(sha, bytes);
     }
+    let scripts = parsed.manifest.scripts.iter().map(|entry| {
+        let (source_sha256, source_len) = script_blobs.get(entry.script.as_str())
+            .ok_or_else(|| "missing verified script asset".to_owned())?;
+        Ok(PinnedScript {
+            entry: entry.clone(),
+            source_sha256: source_sha256.clone(),
+            source_len: *source_len,
+        })
+    }).collect::<std::result::Result<Vec<_>, String>>()?;
 
     let map_paths: BTreeSet<&str> = parsed.map_local_files.iter().map(|(_, p)| p.as_str()).collect();
     let mut resolved_blobs: BTreeMap<&str, (String, u32)> = BTreeMap::new();
     for file_rel in map_paths {
-        let bytes = read_bounded_asset(workspace_root, file_rel, true, "map-local file", total_bytes)?;
+        let bytes = read_bounded_asset(workspace_root, file_rel, true, MAX_ASSET_BYTES, "map-local file", total_bytes)?;
         hasher.update(b"\0map-local\0");
         hasher.update(file_rel.as_bytes());
         hasher.update(b"\0");
@@ -155,7 +184,7 @@ fn verify_and_hash_assets(
         use std::fmt::Write as _;
         let _ = write!(&mut hex, "{b:02x}");
     }
-    Ok(hex)
+    Ok((hex, scripts))
 }
 
 pub(super) fn scan_live_modules(
@@ -201,7 +230,7 @@ pub(super) fn scan_live_modules(
                 continue;
             }
         };
-        let content_sha256 = match verify_and_hash_assets(workspace_root, &rel_path, &raw, &mut parsed, &mut total_bytes) {
+        let (content_sha256, scripts) = match verify_and_hash_assets(workspace_root, &rel_path, &raw, &mut parsed, &mut total_bytes) {
             Ok(sha) => sha,
             Err(message) => {
                 diagnostics.push(ModuleDiagnostic { manifest_path: rel_path, line: None, message });
@@ -216,7 +245,7 @@ pub(super) fn scan_live_modules(
             description: parsed.manifest.description,
             author: parsed.manifest.author,
             proposed_hostnames: parsed.manifest.mitm.map_or_else(Vec::new, |m| m.hostnames),
-            script_count: u32::try_from(parsed.manifest.scripts.len()).unwrap_or(u32::MAX),
+            scripts,
             content_sha256,
             compiled: parsed.rewrites,
             blobs: parsed.inline_blobs,

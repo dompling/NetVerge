@@ -111,6 +111,15 @@ export function ModuleListCard() {
                 </Box>
                 <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
                   <Chip size="small" label={STATE_LABELS[mod.state]} />
+                  {needsApproval && mod.enabled && (
+                    <Button
+                      size="small"
+                      disabled={busyId !== null}
+                      onClick={() => void updateApproval(mod, false)}
+                    >
+                      Disable
+                    </Button>
+                  )}
                   {needsApproval ? (
                     <Button
                       size="small"
@@ -134,6 +143,11 @@ export function ModuleListCard() {
                   )}
                 </Stack>
               </Stack>
+              {mod.scriptCount > 0 && (
+                <Alert severity="info">
+                  Script sources are pinned on approval. Script execution is not available yet.
+                </Alert>
+              )}
               {mod.missingMitmHostnames.length > 0 && (
                 <Alert severity="info">
                   {`Proposed MITM hostnames not yet enabled: ${mod.missingMitmHostnames.join(', ')}`}

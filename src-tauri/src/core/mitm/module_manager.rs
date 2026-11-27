@@ -8,12 +8,12 @@ use std::{
 };
 
 use super::{
-    module_discovery::{VerifiedLiveModule, scan_live_modules},
-    module_manifest::{CompiledModuleRewrites, ModuleDiagnostic, valid_module_id},
+    module_discovery::{PinnedScript, VerifiedLiveModule, scan_live_modules},
+    module_manifest::{CompiledModuleRewrites, ModuleDiagnostic, sha256_hex, valid_module_id},
     rewrite::{LocalResponseRule, ResponseBodyRule, ResponseHeaderRule, UrlPathRule},
 };
 use crate::config::workspace::{
-    WorkspaceSnapshot, active_workspace_snapshot, validate_profile_uid,
+    WorkspaceSnapshot, active_workspace_snapshot, ensure_not_symlink_or_reparse, validate_profile_uid,
 };
 
 const MAX_COMPILED_PER_PHASE: usize = 16;
@@ -74,6 +74,10 @@ struct ApprovedModuleEntry {
     enabled: bool,
     approved_sha256: String,
     approved_rewrites: CompiledModuleRewrites,
+    // Old stores deserialize with no script pins, requiring a fresh review.
+    // These pins do not grant permission to execute scripts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    approved_scripts: Vec<PinnedScript>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -141,9 +145,13 @@ fn stage_approved_blobs(mitm_dir: &Path, blobs: &BTreeMap<String, Vec<u8>>) -> R
         return Ok(());
     }
     let dir = mitm_dir.join(APPROVED_BLOBS_DIR);
+    ensure_not_symlink_or_reparse(mitm_dir)?;
+    ensure_not_symlink_or_reparse(&dir)?;
     for (sha, bytes) in blobs {
-        ensure!(valid_hex_sha256(sha), "invalid approved blob digest");
-        write_atomic_private(&dir.join(sha), bytes)?;
+        ensure!(valid_hex_sha256(sha) && sha256_hex(bytes) == *sha, "invalid approved blob digest");
+        let path = dir.join(sha);
+        ensure_not_symlink_or_reparse(&path)?;
+        write_atomic_private(&path, bytes)?;
     }
     Ok(())
 }
@@ -167,6 +175,9 @@ fn prune_unreferenced_blobs(mitm_dir: &Path) {
             for rec in store.modules.values() {
                 for local in &rec.approved_rewrites.local {
                     keep.insert(local.body_sha256.clone());
+                }
+                for script in &rec.approved_scripts {
+                    keep.insert(script.source_sha256.clone());
                 }
             }
         }
@@ -291,7 +302,7 @@ pub(crate) fn preview_modules_in_dirs(
         let approved = store.modules.get(&item.id);
         let (enabled, approved_sha256, state) = match approved {
             None => (false, None, ModuleApprovalState::Unapproved),
-            Some(rec) if rec.approved_sha256 != item.content_sha256 => {
+            Some(rec) if rec.approved_sha256 != item.content_sha256 || rec.approved_scripts != item.scripts => {
                 (rec.enabled, Some(rec.approved_sha256.clone()), ModuleApprovalState::UpdatePending)
             }
             Some(rec) if rec.enabled => (true, Some(rec.approved_sha256.clone()), ModuleApprovalState::Active),
@@ -322,7 +333,7 @@ pub(crate) fn preview_modules_in_dirs(
             proposed_hostnames: item.proposed_hostnames.clone(),
             missing_mitm_hostnames: missing,
             rewrite_count: u32::try_from(rewrite_total).unwrap_or(u32::MAX),
-            script_count: item.script_count,
+            script_count: u32::try_from(item.scripts.len()).unwrap_or(u32::MAX),
         });
     }
     Ok(ProfileModulesView {
@@ -352,20 +363,31 @@ pub(crate) fn set_module_approval_in_dirs(
     );
     let mut store = read_approval_store(mitm_dir, profile_uid)?;
     store.version = 1;
-    if !store.order.iter().any(|id| id == module_id) {
-        store.order.push(module_id.to_owned());
+    if enabled {
+        if !store.order.iter().any(|id| id == module_id) {
+            store.order.push(module_id.to_owned());
+        }
+        store.modules.insert(
+            module_id.to_owned(),
+            ApprovedModuleEntry {
+                enabled: true,
+                approved_sha256: found.content_sha256,
+                approved_rewrites: found.compiled,
+                approved_scripts: found.scripts,
+            },
+        );
+    } else {
+        // Disabling is not an approval of changed files.
+        let entry = store.modules.get_mut(module_id).context("module has no approved revision")?;
+        entry.enabled = false;
     }
-    stage_approved_blobs(mitm_dir, &found.blobs)?;
-    store.modules.insert(
-        module_id.to_owned(),
-        ApprovedModuleEntry {
-            enabled,
-            approved_sha256: found.content_sha256,
-            approved_rewrites: found.compiled,
-        },
-    );
+    let store_bytes = serde_json::to_vec(&store)?;
+    ensure!(store_bytes.len() as u64 <= super::settings::MAX_YAML, "module approval store exceeds size limit");
+    if enabled {
+        stage_approved_blobs(mitm_dir, &found.blobs)?;
+    }
     let store_path = approval_file(mitm_dir, profile_uid)?;
-    write_atomic_private(&store_path, &serde_json::to_vec(&store)?)?;
+    write_atomic_private(&store_path, &store_bytes)?;
     write_compiled_snapshot_in_dirs(mitm_dir, Some(profile_uid), Some(workspace_root))?;
     prune_unreferenced_blobs(mitm_dir);
     preview_modules_in_dirs(mitm_dir, Some(profile_uid), Some(workspace_root), active_mitm_hosts)

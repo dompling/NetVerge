@@ -9,7 +9,7 @@ use std::{collections::BTreeSet, io::Read, path::{Path, PathBuf}, sync::OnceLock
 use tokio::sync::Semaphore;
 
 pub(super) const FILE_NAME: &str = "netverge-mitm-config.yaml";
-const MAX_YAML: u64 = 65536;
+pub(super) const MAX_YAML: u64 = 65536;
 static BOOT: OnceLock<std::result::Result<Boot, String>> = OnceLock::new();
 static SAVE: Semaphore = Semaphore::const_new(1);
 

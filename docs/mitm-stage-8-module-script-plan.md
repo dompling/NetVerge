@@ -257,8 +257,17 @@ approved rules on unapproved edits, and compiling active module rewrites to
 - 8.6a: optional one-shot response preview, default off. Capture only the next admitted response within 30 seconds; accept complete uncompressed UTF-8 JSON objects/arrays up to 2 KiB, observe final bytes after rewrite/local response without changing forwarding, redact known sensitive keys, warn that other sensitive content may remain. Clear cancels capture and discards previews. In-memory only, within the existing recent-request cap. Unit and packaged Windows UI/TLS acceptance required.
 - 8.6b: export one selected inspector entry as sanitized HAR 1.2 metadata (copy or explicit save dialog) and a shell-quoted cURL template (Windows PowerShell or POSIX). Omit query, cookies, request and response bodies, previews and arbitrary header values; retain known MIME/length values only and label unknown timing phases and body size. Validate canonical original target and reject truncated/ambiguous paths. Warn that hostname/path may contain private identifiers. No network execution. Unit and packaged UI clipboard verification required.
 - 8.6c: one explicitly confirmed GET/HEAD replay from a live inspector row, validated again by native IPC against the original id/time/method/URL. No original query, cookies, headers or body, no redirects/retries, one in flight, bounded timeout and response drain. Rule-mode TUN with enabled fake-IP DNS in 198.18.0.0/15 required; resolve using the system DNS path, pin the resolved fake IP and current verified worker CA, fail without direct/system-proxy fallback. No mixed-port proxy (the current core admits only TUN). Packaged Windows acceptance must demonstrate one original exit, no origin application HTTP request for Map Local, and explicit confirmation.
-- 8.7: isolated script runner and Surge-compatible APIs, timeout/crash tests,
-  permission review.
+- 8.7a: standalone QuickJS/WASM runner in a disposable Node child process,
+  with read-only snapshots, synchronous exactly-once $done(), bounded body-only
+  output, guest memory/deadline and parent concurrency limits. Windows standalone
+  runner tests passed at d4150d3 and merged a31599b; no live HTTP or packaged runner.
+- 8.7b: pin reviewed script metadata and exact UTF-8 source bytes (1..=64 KiB)
+  using the existing per-profile approval store and content-addressed approved blobs.
+  Preserve approved bytes on edits/disable; legacy approvals without pins require
+  fresh review. Keep script pins out of the compiled rewrite-worker snapshot.
+  Module approval/pinning is not permission to execute. Windows Rust and packaged
+  regression tests required; OS-level runner resource/process-tree containment,
+  separate execution consent, and verified live HTTP integration remain later gates.
 - 8.8: module subscriptions, reviewed updates and rollback; foreign-format import
   adapters only after native semantics are stable.
 - 8.9: Windows real TUN/TLS, route identity, existing service/Sidecar lifecycle,
