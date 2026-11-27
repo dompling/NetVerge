@@ -137,6 +137,13 @@ pub async fn set_mitm_module_approval(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn arm_mitm_response_preview() -> super::CmdResult<()> {
+    use super::StringifyErr as _;
+    mitm::route_runtime::arm_response_preview().await.stringify_err()
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn clear_mitm_recent_requests() -> super::CmdResult<()> {
     use super::StringifyErr as _;
     mitm::route_runtime::clear_recent_requests().await.stringify_err()

@@ -89,6 +89,7 @@ export const commands = {
       expectedSha256,
       enabled,
     }),
+  armMitmResponsePreview: () => __TAURI_INVOKE<null>('arm_mitm_response_preview'),
   clearMitmRecentRequests: () =>
     __TAURI_INVOKE<null>('clear_mitm_recent_requests'),
   /**  Returns the last verified public CA only. Never installs trust or exports a private key. */
@@ -716,6 +717,7 @@ export type RecentRequest = {
   durationMs: number
   requestHeaders: [string, string][]
   responseHeaders: [string, string][]
+  responsePreview?: string | null
 }
 
 export type RewritePhaseDiagnostic = {

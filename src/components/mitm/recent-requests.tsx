@@ -13,7 +13,7 @@ import { useTranslation } from 'react-i18next'
 import useSWR, { useSWRConfig } from 'swr'
 
 import type { RecentRequest } from '@/services/bindings'
-import { clearMitmRecentRequests, getMitmRecentRequests } from '@/services/cmds'
+import { armMitmResponsePreview, clearMitmRecentRequests, getMitmRecentRequests } from '@/services/cmds'
 
 function HeaderList({
   title,
@@ -62,6 +62,8 @@ export function RecentRequests() {
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [clearing, setClearing] = useState(false)
   const [actionError, setActionError] = useState(false)
+  const [arming, setArming] = useState(false)
+  const [armedNotice, setArmedNotice] = useState(false)
   const needle = query.trim().toLowerCase()
   const [snapshot, setSnapshot] = useState<RecentRequest[] | null>(null)
   const { mutate } = useSWRConfig()
@@ -71,11 +73,25 @@ export function RecentRequests() {
     { refreshInterval: 2000 },
   )
   const data = snapshot ?? live
+  const armPreview = async () => {
+    setArming(true)
+    setArmedNotice(false)
+    setActionError(false)
+    try {
+      await armMitmResponsePreview()
+      setArmedNotice(true)
+    } catch {
+      setActionError(true)
+    } finally {
+      setArming(false)
+    }
+  }
   const clear = async () => {
     setClearing(true)
     setActionError(false)
     try {
       await clearMitmRecentRequests()
+      setArmedNotice(false)
       setExpandedId(null)
       setSnapshot((current) => (current === null ? null : []))
       await mutate('mitm-recent-requests', [], { revalidate: false })
@@ -153,12 +169,33 @@ export function RecentRequests() {
               </Button>
               <Button
                 size="small"
-                disabled={clearing || !data?.length}
+                disabled={clearing || arming || (!data?.length && !armedNotice)}
                 onClick={() => void clear()}
               >
                 {t('settings.mitm.recent.clear')}
               </Button>
             </Stack>
+          </Stack>
+          <Stack spacing={0.5}>
+            <Button
+              size="small"
+              sx={{ alignSelf: 'flex-start' }}
+              disabled={arming || clearing || snapshot !== null}
+              onClick={() => void armPreview()}
+            >
+              Capture next JSON response
+            </Button>
+            <Typography variant="caption" color="text.secondary">
+              Optional one-shot preview of the next admitted response within 30 seconds.
+              Only complete uncompressed UTF-8 JSON up to 2 KiB. Known sensitive keys
+              are redacted; other sensitive content may remain. Clear requests to cancel
+              capture and discard previews. Nothing is saved to disk.
+            </Typography>
+            {armedNotice && (
+              <Typography variant="caption" role="status">
+                Capture requested (30-second window)
+              </Typography>
+            )}
           </Stack>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
             <TextField
@@ -296,6 +333,22 @@ export function RecentRequests() {
                         empty={t('settings.mitm.recent.noHeaders')}
                         headers={entry.responseHeaders}
                       />
+                      {entry.responsePreview != null && (
+                        <Box>
+                          <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                            Response body preview (redacted keys)
+                          </Typography>
+                          <Typography
+                            component="pre"
+                            variant="caption"
+                            role="group"
+                            aria-label={`Response preview: ${entry.responsePreview}`}
+                            sx={{ m: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'monospace' }}
+                          >
+                            {entry.responsePreview}
+                          </Typography>
+                        </Box>
+                      )}
                     </Stack>
                   )}
                 </Stack>

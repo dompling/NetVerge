@@ -517,6 +517,7 @@ export const getMitmRecentRequests = commands.getMitmRecentRequests
 export const getMitmRewriteDiagnostics = commands.getMitmRewriteDiagnostics
 export const getMitmProfileModules = commands.getMitmProfileModules
 export const setMitmModuleApproval = commands.setMitmModuleApproval
+export const armMitmResponsePreview = commands.armMitmResponsePreview
 export const clearMitmRecentRequests = commands.clearMitmRecentRequests
 export const getResponseHeaderRules = commands.getResponseHeaderRules
 export const saveResponseHeaderRules = commands.saveResponseHeaderRules

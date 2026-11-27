@@ -254,7 +254,8 @@ approved rules on unapproved edits, and compiling active module rewrites to
   `content-type`, and `1..=4` `X-*` headers. First matching terminal local rule supersedes
   upstream URL/header/body forwarding without sending any application HTTP request upstream,
   while local editor `response-header` overrides retain precedence.
-- 8.6: inspector, optional bounded body preview, redacted HAR/cURL, explicit replay.
+- 8.6a: optional one-shot response preview, default off. Capture only the next admitted response within 30 seconds; accept complete uncompressed UTF-8 JSON objects/arrays up to 2 KiB, observe final bytes after rewrite/local response without changing forwarding, redact known sensitive keys, warn that other sensitive content may remain. Clear cancels capture and discards previews. In-memory only, within the existing recent-request cap. Unit and packaged Windows UI/TLS acceptance required.
+- 8.6b/c: redacted HAR/cURL export and explicit replay, not yet implemented.
 - 8.7: isolated script runner and Surge-compatible APIs, timeout/crash tests,
   permission review.
 - 8.8: module subscriptions, reviewed updates and rollback; foreign-format import

@@ -5,6 +5,8 @@ on:
     paths:
       - 'engines/mihomo-route/**'
       - 'src/components/mitm/recent-requests.tsx'
+      - 'src-tauri/src/cmd/mitm.rs'
+      - 'src-tauri/src/ipc.rs'
       - 'src/components/mitm/response-rule-editor.tsx'
       - 'src/components/mitm/rewrite-rule-model.ts'
       - 'src/components/mitm/module-list-card.tsx'
@@ -20,7 +22,6 @@ on:
       - 'src-tauri/src/config/workspace.rs'
       - 'src-tauri/src/config/profiles.rs'
       - 'src-tauri/src/config/prfitem.rs'
-      - 'src-tauri/src/cmd/mitm.rs'
       - 'src-tauri/src/core/mitm/route_runtime/installed_service.rs'
       - 'src-tauri/src/core/mitm/service_generation.rs'
       - 'src-tauri/src/core/mitm/service_pipe.rs'

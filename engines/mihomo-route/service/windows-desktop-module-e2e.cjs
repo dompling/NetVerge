@@ -110,6 +110,11 @@ async function verifyModuleApproval({
   await sleep(1200);
   probe('map-local-v2');
   console.log('PASS: unapproved asset edit preserved v1 bytes until re-approval committed v2');
+  await until('arm one-shot JSON response preview', () => automation(app, 'ArmPreview') === 'OK');
+  probe('map-local-v2');
+  await until('inspect captured local JSON response', () => automation(app, 'PreviewCaptured') === 'OK');
+  await until('clear preview and recent requests', () => automation(app, 'ClearRecent') === 'OK');
+  console.log('PASS: opt-in JSON preview observed final local response; clear discarded the session preview');
 }
 
 async function verifyCompiledModuleBundle({ mitm, file, selected, sha256, netFixture, temp, dnsPort }) {

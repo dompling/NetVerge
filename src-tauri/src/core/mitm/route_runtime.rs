@@ -251,6 +251,9 @@ pub struct RecentRequest {
     duration_ms: u32,
     request_headers: Vec<(String, String)>,
     response_headers: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    response_preview: Option<String>,
 }
 
 #[derive(Clone, Deserialize, serde::Serialize, specta::Type)]
@@ -280,6 +283,17 @@ pub(crate) fn rewrite_diagnostics() -> Vec<RewritePhaseDiagnostic> {
         return REWRITE_DIAGNOSTICS.lock().clone();
     }
     Vec::new()
+}
+
+pub(crate) async fn arm_response_preview() -> Result<()> {
+    ensure!(matches!(PUBLIC_STATE.lock().health, Health::LocalLinkHealthy), "MITM worker is unavailable");
+    let (port, secret) = ACTIVE_WORKER.lock().clone().context("MITM worker is unavailable")?;
+    tokio::task::spawn_blocking(move || {
+        let auth = format!("Basic {}", STANDARD.encode(format!("netverge:{secret}")));
+        let (code, _) = request(port, "POST", "/__netverge_recent_requests", "Proxy-Authorization", &auth, &[])?;
+        ensure!(code == 204, "MITM worker refused arming response preview");
+        Ok(())
+    }).await?
 }
 
 pub(crate) async fn clear_recent_requests() -> Result<()> {

@@ -7,6 +7,7 @@ const http = require('node:http');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { readVerifiedCa } = require('./ca-integrity.cjs');
 const { createRewriteEngine, validHost } = require('./rewrite-rules.cjs');
+const { createResponsePreview } = require('./body-rewrite.cjs');
 if (process.platform !== 'win32') process.umask(0o077);
 const settings = JSON.parse(process.env.NETVERGE_MITM_WORKER_CONFIG || '{}');
 delete process.env.NETVERGE_MITM_WORKER_CONFIG;
@@ -32,6 +33,7 @@ const recentRequests = [], REDACTED = '[redacted]';
 const isSensitiveHeader = name =>
   /^(?:authorization|proxy-authorization|cookie|set-cookie|www-authenticate|proxy-authenticate)$/i.test(name) ||
   /(?:^|[-_])(?:auth|token|secret|password|passwd|api[-_]?key|access[-_]?key|private[-_]?key|client[-_]?secret|cookie|session|credential|jwt|bearer)(?:$|[-_])/i.test(name);
+const responsePreview = createResponsePreview(isSensitiveHeader);
 function cleanHeaderValue(name, raw) {
   if (isSensitiveHeader(name)) return REDACTED;
   const text = (Array.isArray(raw) ? raw.join(', ') : String(raw ?? '')).replace(/[\x00-\x08\x0b-\x1f\x7f\r\n]+/g, ' ');
@@ -123,7 +125,11 @@ function control(req,res) {
   }
   if (req.url === recentPath) {
     if (req.method === 'DELETE' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
+      responsePreview.cancel();
       recentRequests.length = 0;
+      reply(res,204);
+    } else if (req.method === 'POST' && !req.headers['transfer-encoding'] && !Number(req.headers['content-length'] || 0)) {
+      responsePreview.arm();
       reply(res,204);
     } else reply(res,400);
     return true;
@@ -244,6 +250,7 @@ server.emit = function(event, ...args) {
       requestRule: false, responseRule: false, pathRule: false, bodyRule: false,
       matchedRuleIds: [], status: 0,
       completedAt: '', durationMs: 0, requestHeaders: [], responseHeaders: [] };
+    responsePreview.attach(req, res, entry);
     const rawWriteHead = res.writeHead;
     res.writeHead = function(status, reason, fields) {
       entry.responseHeaders = sanitizeHeaders(this.getHeaders(), typeof reason === 'string' ? fields : (reason ?? fields));

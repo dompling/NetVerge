@@ -256,4 +256,89 @@ function installBodyRewrite(req, res, matched, onHit) {
   };
 }
 
-module.exports = { installBodyRewrite, validateBodyRule };
+// Inspector-only, one-shot capture. Observe final response bytes without
+// delaying writes, changing framing, buffering streams or decompressing data.
+function createResponsePreview(isSensitiveKey) {
+  const limit = 2048;
+  let capture;
+  function cancel() {
+    if (!capture) return;
+    clearTimeout(capture.timer);
+    capture.chunks.length = 0;
+    capture = undefined;
+  }
+  function arm() {
+    cancel();
+    const token = { claimed: false, chunks: [], size: 0 };
+    capture = token;
+    token.timer = setTimeout(() => { if (capture === token) cancel(); }, 30000);
+    token.timer.unref();
+  }
+  function attach(req, res, entry) {
+    const token = capture;
+    if (!token || token.claimed) return;
+    token.claimed = true;
+    const current = () => capture === token;
+    let eligible;
+    const check = (status, explicit) => {
+      const ct = getHeader(res, explicit, 'content-type');
+      const ce = getHeader(res, explicit, 'content-encoding').trim().toLowerCase();
+      const len = getHeader(res, explicit, 'content-length').trim();
+      eligible = req.method !== 'HEAD' && status >= 200 && ![204, 205, 206, 304].includes(status) &&
+        /^application\/(?:json|[a-z0-9!#$&^_.+-]+\+json)(?:\s*;|$)/i.test(ct) &&
+        parseCharset(ct) === 'utf-8' && (!ce || ce === 'identity') &&
+        (!len || (/^\d+$/.test(len) && Number(len) <= limit));
+      if (!eligible) { token.chunks.length = 0; token.size = 0; }
+    };
+    const observe = (chunk, enc) => {
+      if (!current() || chunk == null || typeof chunk === 'function') return;
+      try {
+        if (eligible === undefined) check(res.statusCode, undefined);
+        if (!eligible) return;
+        const encoding = typeof enc === 'string' ? enc : 'utf8';
+        const size = typeof chunk === 'string' ? Buffer.byteLength(chunk, encoding) : chunk.byteLength;
+        if (!Number.isSafeInteger(size) || token.size + size > limit) {
+          cancel(); return;
+        }
+        const bytes = Buffer.from(chunk, encoding);
+        if (token.size + bytes.length > limit) { cancel(); return; }
+        token.chunks.push(bytes);
+        token.size += bytes.length;
+      } catch { if (current()) cancel(); }
+    };
+    const rawHead = res.writeHead, rawWrite = res.write, rawEnd = res.end;
+    res.writeHead = function(status, reason, fields) {
+      if (current()) {
+        try { check(Number(status), typeof reason === 'string' ? fields : (reason ?? fields)); }
+        catch { cancel(); }
+      }
+      return rawHead.apply(this, arguments);
+    };
+    res.write = function(chunk, enc) {
+      observe(chunk, enc);
+      return rawWrite.apply(this, arguments);
+    };
+    res.end = function(chunk, enc) {
+      observe(chunk, enc);
+      return rawEnd.apply(this, arguments);
+    };
+    res.once('finish', () => {
+      if (!current()) return;
+      try {
+        if (eligible && token.size) {
+          const value = JSON.parse(decodeText(Buffer.concat(token.chunks, token.size), 'utf-8'));
+          if (value && typeof value === 'object') {
+            const preview = JSON.stringify(value, (key, v) =>
+              key && isSensitiveKey(key.replace(/([a-z0-9])([A-Z])/g, '$1-$2')) ? '[redacted]' : v);
+            if (Buffer.byteLength(preview) <= limit) entry.responsePreview = preview;
+          }
+        }
+      } catch { /* invalid JSON or UTF-8: omit the preview */ }
+      finally { cancel(); }
+    });
+    res.once('close', () => { if (current()) cancel(); });
+  }
+  return { arm, cancel, attach };
+}
+
+module.exports = { installBodyRewrite, validateBodyRule, createResponsePreview };

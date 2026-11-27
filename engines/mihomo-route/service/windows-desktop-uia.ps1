@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$App,
-    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'Inspect')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('Open', 'EnableService', 'DisableService', 'ServicePending', 'Restart', 'Healthy', 'FillRule', 'AddSecondRule', 'ConflictSecondRule', 'ToggleSecondRule', 'MoveUpSecondRule', 'DeleteSecondRule', 'OpenRequestRule', 'FillRequestRule', 'OpenPathRule', 'FillPathRule', 'OpenBodyRule', 'FillBodyRule', 'ToggleRule', 'DeleteRule', 'RuleHits', 'RuleHitsZero', 'RecentRequests', 'FilterRecent', 'InspectRecent', 'ClearRecent', 'RecentEmpty', 'PauseRecent', 'ResumeRecent', 'RecentPathVisible', 'ModulePending', 'ModuleActive', 'ModuleUpdatePending', 'ApproveModule', 'RefreshMitm', 'ArmPreview', 'PreviewCaptured', 'Inspect')][string]$Action,
     [string]$ModuleVersion
 )
 
@@ -337,6 +337,23 @@ switch ($Action) {
         if ($refresh -and $refresh.Current.IsEnabled) {
             $refresh.GetCurrentPattern($invoke).Invoke()
             if ($Action -eq 'RefreshMitm') { 'OK' }
+        }
+    }
+    'ArmPreview' {
+        if (Find-Element 'Capture requested (30-second window)') { 'OK'; break }
+        $button = Find-Element 'Capture next JSON response' ([Windows.Automation.ControlType]::Button)
+        if (!$button) { $button = Find-Element 'Recent requests' ([Windows.Automation.ControlType]::Button) }
+        if ($button -and $button.Current.IsEnabled) { $button.GetCurrentPattern($invoke).Invoke() }
+    }
+    'PreviewCaptured' {
+        $preview = Find-Element 'Response preview: {"marker":"netverge-map-local-v2","path":"/demo"}'
+        if ($preview) { 'OK'; break }
+        $details = Find-Element ("Details GET api.example.test/demo " + [char]0xb7 + " 201") ([Windows.Automation.ControlType]::Button)
+        if ($details -and $details.Current.IsEnabled) {
+            $keys = New-Object -ComObject WScript.Shell
+            if (!$keys.AppActivate($process.Id)) { break }
+            $details.SetFocus()
+            if ($details.Current.HasKeyboardFocus) { $keys.SendKeys(' '); Start-Sleep -Milliseconds 400 }
         }
     }
     'Inspect' {
