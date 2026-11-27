@@ -10,7 +10,8 @@ $PSNativeCommandUseErrorActionPreference = $false
 $staging = Join-Path $env:RUNNER_TEMP ('netverge-payload-' + [guid]::NewGuid().ToString('N'))
 $worker = Join-Path $staging 'worker'
 $service = Join-Path $staging 'service'
-$null = New-Item -ItemType Directory -Path $worker, $service
+$scripts = Join-Path $staging 'script-runner'
+$null = New-Item -ItemType Directory -Path $worker, $service, $scripts
 
 try {
     Copy-Item -LiteralPath $Desktop -Destination (Join-Path $staging 'NetVerge-MITM.exe')
@@ -41,6 +42,23 @@ try {
         Pop-Location
     }
 
+    # Package only the trusted runner and runtime dependencies; no tests or
+    # unreviewed workspace scripts. The runner is still not a live traffic hook.
+    $runnerSource = Join-Path $SourceRoot 'engines/script-runner'
+    foreach ($name in @('runner.cjs', 'package.json')) {
+        Copy-Item -LiteralPath (Join-Path $runnerSource $name) -Destination $scripts
+    }
+    Copy-Item -LiteralPath (Join-Path $runnerSource 'windows-job/target/release/netverge-script-job.exe') -Destination $scripts
+    Push-Location $scripts
+    try {
+        npm install --omit=dev --ignore-scripts --no-audit --no-fund --package-lock=false
+        if ($LASTEXITCODE -ne 0) { throw 'QuickJS runtime dependency installation failed.' }
+        $quickjs = Get-Content -LiteralPath 'node_modules/quickjs-emscripten/package.json' -Raw | ConvertFrom-Json
+        if ($quickjs.version -ne '0.31.0') { throw 'Unexpected packaged QuickJS version.' }
+    } finally {
+        Pop-Location
+    }
+
     $digests = [ordered]@{}
     foreach ($name in @(
         'NetVerge-MITM.exe', 'verge-mihomo.exe', 'verge-mihomo-alpha.exe',
@@ -49,6 +67,13 @@ try {
         'worker/node.exe', 'worker/route-worker.cjs', 'worker/rewrite-rules.cjs', 'worker/url-regex.cjs', 'worker/body-rewrite.cjs', 'worker/local-response.cjs', 'worker/ca-integrity.cjs'
     )) {
         $digests[$name] = (Get-FileHash -LiteralPath (Join-Path $staging $name) -Algorithm SHA256).Hash
+    }
+    # Cover every packaged runner dependency, including WASM and JS loaders.
+    foreach ($entry in Get-ChildItem -LiteralPath $scripts -Recurse -Force) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unexpected runner reparse point.' }
+        if ($entry.PSIsContainer) { continue }
+        $relative = $entry.FullName.Substring($staging.Length + 1).Replace('\', '/')
+        $digests[$relative] = (Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256).Hash
     }
     @{ revision = $env:GITHUB_SHA; sha256 = $digests } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $staging 'manifest.json')
     Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $Archive

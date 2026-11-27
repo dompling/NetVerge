@@ -4,6 +4,7 @@ on:
     branches: [feat/mitm-route-integration]
     paths:
       - 'engines/mihomo-route/**'
+      - 'engines/script-runner/**'
       - 'engines/whistle/windows-tun-dns-readiness*.cjs'
       - 'engines/whistle/mitm-lab.cjs'
       - 'src/pages/mitm.tsx'
@@ -243,6 +244,11 @@ jobs:
           pnpm run prebuild x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm exec tauri build --no-bundle --features verge-dev --target x86_64-pc-windows-msvc --config ./engines/mihomo-route/service/windows-test-tauri.json
+      - name: Build the contained script launcher for the test package
+        shell: pwsh
+        run: |
+          cargo build --release --manifest-path engines/script-runner/windows-job/Cargo.toml --target-dir engines/script-runner/windows-job/target
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify install, upgrade and rollback from the extracted Windows test package
         shell: pwsh
         run: |

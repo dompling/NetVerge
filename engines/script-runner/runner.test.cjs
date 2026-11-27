@@ -1,7 +1,10 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { runScript } = require('./runner.cjs');
+const path = require('node:path');
+// CI only: exercise the actual extracted artifact with the same assertions.
+const runnerDir = process.env.NETVERGE_TEST_RUNNER_DIR || __dirname;
+const { runScript } = require(path.join(path.resolve(runnerDir), 'runner.cjs'));
 
 function fixture(source, overrides = {}) {
   return {

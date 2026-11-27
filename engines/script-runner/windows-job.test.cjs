@@ -7,7 +7,7 @@ const { setTimeout: sleep } = require('node:timers/promises');
 const path = require('node:path');
 
 const windows = process.platform === 'win32';
-const launcher = path.join(__dirname, 'windows-job', 'target', 'release', 'netverge-script-job.exe');
+const launcher = path.join(path.resolve(process.env.NETVERGE_TEST_RUNNER_DIR || __dirname), 'netverge-script-job.exe');
 const fixture = path.join(__dirname, 'windows-job-fixture.cjs');
 
 function start(t, mode, timeoutMs = 5000) {

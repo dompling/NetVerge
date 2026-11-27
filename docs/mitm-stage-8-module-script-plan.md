@@ -293,6 +293,15 @@ approved rules on unapproved edits, and compiling active module rewrites to
   Wait for the actual MITM page marker after navigation/restart. Test separate
   script consent through native UI (cancel, grant, revoke, source edit, restart)
   without introducing live execution.
+- 8.7d1: package the isolated runner, its pinned direct QuickJS dependency,
+  complete installed dependency tree, and Windows Job Object executable alongside
+  the actual Windows client. Include every runner file in the test package
+  SHA256 inventory, reject missing/extra/changed files, and exercise the extracted
+  runner with the packaged Node using the existing full standalone test suite.
+  The package manifest is an integrity inventory, not a signed trust root.
+  No production traffic hooks yet. 8.7d2 must establish a session-authenticated
+  execution broker (including source/consent rechecks at execution and commit)
+  before buffering or mutating an admitted request body.
 - 8.8: module subscriptions, reviewed updates and rollback; foreign-format import
   adapters only after native semantics are stable.
 - 8.9: Windows real TUN/TLS, route identity, existing service/Sidecar lifecycle,

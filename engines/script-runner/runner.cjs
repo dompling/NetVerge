@@ -10,7 +10,7 @@ const MAX_BODY = 256 * 1024;
 const MAX_SOURCE = 64 * 1024;
 const MAX_WIRE = 512 * 1024;
 const MAX_CONCURRENT = 4;
-const WINDOWS_JOB = path.join(__dirname, 'windows-job', 'target', 'release', 'netverge-script-job.exe');
+const WINDOWS_JOB = path.join(__dirname, 'netverge-script-job.exe');
 let active = 0;
 
 const fail = error => ({ ok: false, error });

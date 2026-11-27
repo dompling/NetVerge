@@ -44,6 +44,46 @@ $priorManifest.sha256."$coreRelative" = $previousDigest
 ConvertTo-Json -InputObject $priorManifest -Depth 5 | Set-Content (Join-Path $previous 'manifest.json')
 
 try {
+    # Verify and run the extracted payload with its bundled Node, not a source
+    # checkout or the runner installed in the CI environment.
+    & $candidateLauncher -Action VerifyScripts
+    $runnerDir = Join-Path $candidate 'script-runner'
+    $runnerFile = Join-Path $runnerDir 'runner.cjs'
+    $savedRunner = [IO.File]::ReadAllBytes($runnerFile)
+    try {
+        [IO.File]::AppendAllText($runnerFile, [Environment]::NewLine + '// altered payload')
+        try {
+            & $candidateLauncher -Action VerifyScripts
+            throw 'Expected rejection of a changed script runner.'
+        } catch {
+            if ($_.Exception.Message -notlike 'Package digest mismatch for script-runner/*') { throw }
+        }
+    } finally {
+        [IO.File]::WriteAllBytes($runnerFile, $savedRunner)
+    }
+    $extraFile = Join-Path $runnerDir 'unexpected.js'
+    try {
+        [IO.File]::WriteAllText($extraFile, 'unexpected')
+        try {
+            & $candidateLauncher -Action VerifyScripts
+            throw 'Expected rejection of an unexpected script runner file.'
+        } catch {
+            if ($_.Exception.Message -ne 'Script runner package inventory mismatch.') { throw }
+        }
+    } finally {
+        Remove-Item -LiteralPath $extraFile -Force
+    }
+    & $candidateLauncher -Action VerifyScripts
+    $testSource = Join-Path $PSScriptRoot '../../script-runner'
+    $env:NETVERGE_TEST_RUNNER_DIR = $runnerDir
+    try {
+        & (Join-Path $candidate 'worker/node.exe') --test (Join-Path $testSource 'runner.test.cjs') (Join-Path $testSource 'windows-job.test.cjs')
+        if ($LASTEXITCODE -ne 0) { throw 'Extracted script runner acceptance failed.' }
+        Write-Host 'PASS: extracted script runner passed API, timeout and Windows Job Object tests'
+    } finally {
+        Remove-Item Env:NETVERGE_TEST_RUNNER_DIR -ErrorAction SilentlyContinue
+    }
+
     & $previousLauncher -Action Install
     Assert-Installed $previousDigest
     & $candidateLauncher -Action Install

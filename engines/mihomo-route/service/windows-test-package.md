@@ -15,6 +15,13 @@ Enable TUN and select Rule mode. Close the app, then run the command below from 
 
 In the MITM page, save an explicit hostname selection. Toggle Windows MITM service mode and restart the app from the page. The test does not install a trusted certificate. Use the existing certificate controls only when you want to trust the test CA.
 
+The test package includes the contained QuickJS script runner and Windows job launcher.
+Check the complete packaged runner inventory and hashes with
+`./NetVerge-MITM.ps1 -Action VerifyScripts`. This verifies consistency with
+the package manifest, not a digital signature. The runner is not yet connected
+to live HTTP traffic; approving a module or granting session consent does not
+execute scripts in this increment.
+
 Close the app before changing the installed version. To upgrade, extract the new ZIP into the same test folder and run `-Action Install` again. Keep the prior ZIP so you can re-extract it in the same folder and reinstall it for rollback. If the MITM switch was enabled, re-save the service-mode selection with the intended version after replacing the approved core. The switch binds the expected core digest.
 
 Run `./NetVerge-MITM.ps1 -Action Uninstall` to remove the development service and approved test cores. The app files and your local development profile are kept.

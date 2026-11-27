@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Install', 'Run', 'Uninstall')][string]$Action = 'Run',
+    [ValidateSet('Install', 'Run', 'Uninstall', 'VerifyScripts')][string]$Action = 'Run',
     [string]$Bootstrap
 )
 
@@ -21,7 +21,34 @@ function Get-VerifiedFile([string]$RelativePath) {
     return $file
 }
 
+function Assert-ScriptPayload {
+    $scripts = Join-Path $PSScriptRoot 'script-runner'
+    if (!(Test-Path -LiteralPath $scripts -PathType Container)) { throw 'Missing script runner payload.' }
+    if ((Get-Item -LiteralPath $scripts -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Unexpected runner reparse point.'
+    }
+    $required = @('script-runner/runner.cjs', 'script-runner/package.json',
+        'script-runner/netverge-script-job.exe', 'script-runner/node_modules/quickjs-emscripten/package.json')
+    foreach ($name in $required) { $null = Get-VerifiedFile $name }
+    $expected = @($manifest.sha256.PSObject.Properties.Name | Where-Object { $_.StartsWith('script-runner/', [StringComparison]::Ordinal) })
+    $actual = @(
+        foreach ($entry in Get-ChildItem -LiteralPath $scripts -Recurse -Force) {
+            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unexpected runner reparse point.' }
+            if (!$entry.PSIsContainer) { $entry.FullName.Substring($PSScriptRoot.Length + 1).Replace('\', '/') }
+        }
+    )
+    if ($actual.Count -ne $expected.Count -or @(Compare-Object -ReferenceObject $expected -DifferenceObject $actual -CaseSensitive).Count -ne 0) {
+        throw 'Script runner package inventory mismatch.'
+    }
+    foreach ($name in $actual) { $null = Get-VerifiedFile $name }
+}
+
 switch ($Action) {
+    'VerifyScripts' {
+        $null = Get-VerifiedFile 'worker/node.exe'
+        Assert-ScriptPayload
+        Write-Host 'PASS: packaged script runner file inventory and digests verified'
+    }
     'Install' {
         if (Get-Process -Name 'netverge-mihomo-service' -ErrorAction SilentlyContinue) {
             throw 'Close NetVerge or stop its MITM service core before changing the installed version.'
@@ -47,6 +74,7 @@ switch ($Action) {
             $null = Get-VerifiedFile 'worker/body-rewrite.cjs'
             $null = Get-VerifiedFile 'worker/local-response.cjs'
             $null = Get-VerifiedFile 'worker/ca-integrity.cjs'
+            Assert-ScriptPayload
             $configPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Bootstrap)
             if (!(Test-Path -LiteralPath $configPath)) {
                 $config = @{ node = $node; worker = $worker; hosts = @() }
